@@ -88,6 +88,7 @@ export default {
             }
 
             userProfile = await userRes.json();
+            console.log(userProfile);
         } catch (e) {
             console.error("Auth0 connection error:", e);
             return new Response('{"error":"Failed to validate token"}', { status: 502 });
