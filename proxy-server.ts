@@ -37,6 +37,27 @@ const USER_KEY_MAP = getUserKeyMap();
 const RATE_LIMIT = 60; // requests per minute per user
 const rateLimits = new Map<string, { count: number; resetAt: number }>();
 
+// Token cache to avoid repeated Auth0 calls
+const tokenCache = new Map<string, { userProfile: any; expiresAt: number }>();
+
+// Helper function to decode JWT and extract expiration
+const getTokenExpiration = (token: string): number | null => {
+    try {
+        // JWT format: header.payload.signature
+        const parts = token.split('.');
+        if (parts.length !== 3) return null;
+
+        // Decode the payload (base64url)
+        const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+
+        // Return expiration time in milliseconds (exp is in seconds)
+        return payload.exp ? payload.exp * 1000 : null;
+    } catch (e) {
+        console.error('Failed to decode token:', e);
+        return null;
+    }
+};
+
 // ─────────────────────────── MAIN HANDLER ───────────────────────────
 export default {
     async fetch(request: Request): Promise<Response> {
@@ -71,27 +92,48 @@ export default {
         const token = authHeader.split(" ")[1];
 
         // 2. Validate Token & Get User Info
-        // We use the /userinfo endpoint to validate the token and get the user's email/sub.
-        // This is the simplest method for a lightweight proxy without complex JWT verification logic.
+        // Check cache first to avoid repeated Auth0 calls
+        const currentTime = Date.now();
+        const cachedEntry = tokenCache.get(token);
+
         let userProfile;
-        try {
-            const userRes = await fetch(`https://${AUTH0_DOMAIN}/userinfo`, {
-                headers: { Authorization: `Bearer ${token}` },
-            });
 
-            if (!userRes.ok) {
-                console.error("Auth0 validation failed:", userRes.status);
-                return new Response('{"error":"Invalid Auth0 Token"}', {
-                    status: 401,
-                    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+        if (cachedEntry && cachedEntry.expiresAt > currentTime) {
+            // Use cached profile
+            userProfile = cachedEntry.userProfile;
+            console.log(`Using cached profile for user: ${userProfile.email}`);
+        } else {
+            // Cache miss or expired - validate with Auth0
+            try {
+                const userRes = await fetch(`https://${AUTH0_DOMAIN}/userinfo`, {
+                    headers: { Authorization: `Bearer ${token}` },
                 });
-            }
 
-            userProfile = await userRes.json();
-            console.log(userProfile);
-        } catch (e) {
-            console.error("Auth0 connection error:", e);
-            return new Response('{"error":"Failed to validate token"}', { status: 502 });
+                if (!userRes.ok) {
+                    console.error("Auth0 validation failed:", userRes.status);
+                    return new Response('{"error":"Invalid Auth0 Token"}', {
+                        status: 401,
+                        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                    });
+                }
+
+                userProfile = await userRes.json();
+
+                // Get token expiration from JWT
+                const tokenExpiration = getTokenExpiration(token);
+                const cacheExpiration = tokenExpiration || (currentTime + 60 * 60 * 1000); // Fallback to 1 hour
+
+                console.log(`Validated new token for user: ${userProfile.email}, expires at: ${new Date(cacheExpiration).toISOString()}`);
+
+                // Cache the validated token until it expires
+                tokenCache.set(token, {
+                    userProfile,
+                    expiresAt: cacheExpiration,
+                });
+            } catch (e) {
+                console.error("Auth0 connection error:", e);
+                return new Response('{"error":"Failed to validate token"}', { status: 502 });
+            }
         }
 
         // 3. Map User to Grist API Key
@@ -128,6 +170,7 @@ export default {
 
         // 5. Forward to Grist
         const targetUrl = new URL(url.pathname + url.search, GRIST_BASE_URL);
+        console.log(targetUrl.toString());
 
         const headers = new Headers(request.headers);
         headers.delete("host");
