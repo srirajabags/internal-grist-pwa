@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, LogOut, Database, Server, Key, Loader2, AlertCircle, Save, RefreshCw, Globe, Search, Table, FileText, HelpCircle, X } from 'lucide-react';
+import { Settings, LogOut, Database, Server, Key, Loader2, AlertCircle, Save, RefreshCw, Globe, Search, Table, FileText, HelpCircle, X, User } from 'lucide-react';
+import { useAuth0 } from '@auth0/auth0-react';
 
 // Simple UI Components
 const Card = ({ children, className = "" }) => (
@@ -122,8 +123,9 @@ const HelpSection = ({ onClose }) => (
 
 // Main App Component
 export default function App() {
+  const { loginWithRedirect, logout, user, isAuthenticated, isLoading, getAccessTokenSilently } = useAuth0();
+
   // State for Configuration
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('grist_api_key') || '');
   const [serverUrl, setServerUrl] = useState(() => localStorage.getItem('grist_server_url') || 'https://docs.getgrist.com');
   const [docId, setDocId] = useState(() => localStorage.getItem('grist_doc_id') || '');
   const [tableId, setTableId] = useState(() => localStorage.getItem('grist_table_id') || 'Customers');
@@ -139,15 +141,25 @@ export default function App() {
   const [discoveryError, setDiscoveryError] = useState(null);
 
   // State for Application Logic
-  const [view, setView] = useState(() => apiKey ? 'data' : 'auth'); // 'auth', 'config', 'data'
+  const [view, setView] = useState('auth'); // 'auth', 'config', 'data'
   const [records, setRecords] = useState([]);
   const [columns, setColumns] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  // Update view based on auth status
+  useEffect(() => {
+    if (isAuthenticated) {
+      if (view === 'auth') {
+        setView('data');
+      }
+    } else {
+      setView('auth');
+    }
+  }, [isAuthenticated]);
+
   // Save config to local storage when changed
   const saveConfig = () => {
-    localStorage.setItem('grist_api_key', apiKey);
     localStorage.setItem('grist_server_url', serverUrl);
     localStorage.setItem('grist_doc_id', docId);
     localStorage.setItem('grist_table_id', tableId);
@@ -155,10 +167,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('grist_api_key');
-    setApiKey('');
-    setRecords([]);
-    setView('auth');
+    logout({ logoutParams: { returnTo: window.location.origin } });
   };
 
   // Helper to construct URL with Proxy if needed
@@ -177,10 +186,6 @@ export default function App() {
 
     let targetUrl = `${base}${path}`;
 
-    // MANDATORY: Always append key=demo to the query parameters
-    const separator = targetUrl.includes('?') ? '&' : '?';
-    targetUrl = `${targetUrl}${separator}key=demo`;
-
     if (useProxy) {
       // Using your self-hosted cors-anywhere proxy
       return `https://cors-anywhere-production-2644.up.railway.app/${targetUrl}`;
@@ -188,29 +193,36 @@ export default function App() {
     return targetUrl;
   };
 
-  const getHeaders = () => {
-    const headers = {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-    };
+  const getHeaders = async () => {
+    try {
+      const token = await getAccessTokenSilently();
+      const headers = {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      };
 
-    // Cors-anywhere often requires this header to prevent abuse/misuse
-    if (useProxy) {
-      headers['X-Requested-With'] = 'XMLHttpRequest';
+      // Cors-anywhere often requires this header to prevent abuse/misuse
+      if (useProxy) {
+        headers['X-Requested-With'] = 'XMLHttpRequest';
+      }
+
+      return headers;
+    } catch (e) {
+      console.error("Failed to get access token", e);
+      throw new Error("Failed to authenticate with Auth0");
     }
-
-    return headers;
   };
 
   // --- Discovery Functions ---
 
   const discoverDocs = async () => {
-    if (!apiKey || !serverUrl) return;
+    if (!serverUrl) return;
     setLoadingDocs(true);
     setDiscoveryError(null);
 
     try {
+      const headers = await getHeaders();
       const orgCandidates = new Set();
 
       // 1. Explicitly add 'docs' (common self-hosted default) and 'current'
@@ -218,7 +230,7 @@ export default function App() {
 
       // 2. Try to fetch other organizations (Best effort)
       try {
-        const orgsRes = await fetch(getUrl('/api/orgs'), { headers: getHeaders() });
+        const orgsRes = await fetch(getUrl('/api/orgs'), { headers });
         if (orgsRes.ok) {
           const orgs = await orgsRes.json();
           orgs.forEach(o => orgCandidates.add(o.id || o.subdomain));
@@ -233,7 +245,7 @@ export default function App() {
       // 3. Fetch Workspaces for ALL candidates (docs, current, and discovered)
       for (const orgId of orgCandidates) {
         try {
-          const wsRes = await fetch(getUrl(`/api/orgs/${orgId}/workspaces`), { headers: getHeaders() });
+          const wsRes = await fetch(getUrl(`/api/orgs/${orgId}/workspaces`), { headers });
 
           if (wsRes.ok) {
             const workspaces = await wsRes.json();
@@ -282,7 +294,8 @@ export default function App() {
     setLoadingTables(true);
 
     try {
-      const res = await fetch(getUrl(`/api/docs/${selectedDocId}/tables`), { headers: getHeaders() });
+      const headers = await getHeaders();
+      const res = await fetch(getUrl(`/api/docs/${selectedDocId}/tables`), { headers });
       if (!res.ok) throw new Error("Failed to fetch tables");
       const data = await res.json();
 
@@ -307,16 +320,16 @@ export default function App() {
 
   // Effect to trigger table discovery when docId changes (if in auto mode)
   useEffect(() => {
-    if (view === 'config' && !manualMode && docId && apiKey) {
+    if (view === 'config' && !manualMode && docId && isAuthenticated) {
       discoverTables(docId);
     }
-  }, [docId, manualMode, view]);
+  }, [docId, manualMode, view, isAuthenticated]);
 
 
   // --- Data Fetching ---
 
   const fetchData = async () => {
-    if (!apiKey || !docId || !tableId) {
+    if (!docId || !tableId) {
       setError("Missing configuration details.");
       setView('config');
       return;
@@ -326,16 +339,17 @@ export default function App() {
     setError(null);
 
     try {
+      const headers = await getHeaders();
       const endpoint = getUrl(`/api/docs/${docId}/tables/${tableId}/records`);
 
       const response = await fetch(endpoint, {
         method: 'GET',
-        headers: getHeaders()
+        headers
       });
 
       if (!response.ok) {
         const errText = await response.text().catch(() => '');
-        if (response.status === 401) throw new Error("Unauthorized (401). Check your API Key.");
+        if (response.status === 401) throw new Error("Unauthorized (401). Check your Auth0 login.");
         if (response.status === 404) throw new Error("Not Found (404). Check Document/Table ID.");
         if (response.status === 0) throw new Error("CORS Error: Server blocked the request.");
         throw new Error(`Server Error (${response.status}): ${errText.slice(0, 100) || response.statusText}`);
@@ -369,15 +383,23 @@ export default function App() {
 
   // Initial load 
   useEffect(() => {
-    if (view === 'data' && apiKey && docId) {
+    if (view === 'data' && docId && isAuthenticated) {
       fetchData();
     }
-  }, [view]);
+  }, [view, isAuthenticated]);
 
   // --- VIEWS ---
 
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <Loader2 size={40} className="animate-spin text-green-600" />
+      </div>
+    );
+  }
+
   // 1. Authentication View
-  if (view === 'auth') {
+  if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
         <div className="max-w-md w-full">
@@ -389,26 +411,13 @@ export default function App() {
             <p className="text-slate-500">Connect to your data securely</p>
           </div>
 
-          <Card className="p-6">
-            <Input
-              label="API Key"
-              value={apiKey}
-              onChange={setApiKey}
-              type="password"
-              placeholder="Enter your Grist API Key"
-              helpText="Found in Profile Settings > API Key"
-            />
+          <Card className="p-6 text-center">
+            <p className="mb-6 text-slate-600">Please log in to access your Grist data.</p>
             <Button
-              className="w-full mt-2"
-              onClick={() => {
-                if (apiKey) {
-                  saveConfig();
-                  setView('config');
-                }
-              }}
-              disabled={!apiKey}
+              className="w-full"
+              onClick={() => loginWithRedirect()}
             >
-              Continue
+              Log In
             </Button>
           </Card>
         </div>
@@ -436,6 +445,21 @@ export default function App() {
           {showHelp && <HelpSection onClose={() => setShowHelp(false)} />}
 
           <Card className="p-6 space-y-4">
+            {/* User Info */}
+            <div className="flex items-center gap-3 pb-4 border-b border-slate-100">
+              {user?.picture ? (
+                <img src={user.picture} alt={user.name} className="w-10 h-10 rounded-full" />
+              ) : (
+                <div className="w-10 h-10 bg-slate-200 rounded-full flex items-center justify-center text-slate-500">
+                  <User size={20} />
+                </div>
+              )}
+              <div className="overflow-hidden">
+                <p className="font-medium text-slate-900 truncate">{user?.name}</p>
+                <p className="text-xs text-slate-500 truncate">{user?.email}</p>
+              </div>
+            </div>
+
             {/* Server Config Section */}
             <div className="pb-4 border-b border-slate-100">
               <Input
