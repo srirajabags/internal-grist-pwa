@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User } from 'lucide-react';
+import { Routes, Route, useNavigate } from 'react-router-dom';
+import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft } from 'lucide-react';
 import { useAuth0 } from '@auth0/auth0-react';
 
 // Get server URL from environment
@@ -101,10 +102,189 @@ const SettingsModal = ({ onClose, user, onLogout }) => (
   </div>
 );
 
-// Main App Component
-export default function App() {
-  const { loginWithRedirect, logout, user, isAuthenticated, isLoading, getAccessTokenSilently } = useAuth0();
+// Home Page Component
+const HomePage = ({ onNavigate }) => {
+  const pageOptions = [
+    {
+      id: 'telecaller',
+      title: 'Telecaller View',
+      description: 'Manage telecaller operations and calls',
+      icon: Phone,
+      color: 'bg-blue-600',
+      hoverColor: 'hover:bg-blue-700'
+    },
+    {
+      id: 'design',
+      title: 'Design Confirmation View',
+      description: 'Review and confirm design submissions',
+      icon: CheckSquare,
+      color: 'bg-purple-600',
+      hoverColor: 'hover:bg-purple-700'
+    },
+    {
+      id: 'table',
+      title: 'Custom Table Viewer',
+      description: 'View and explore Grist data tables',
+      icon: Table,
+      color: 'bg-green-600',
+      hoverColor: 'hover:bg-green-700'
+    }
+  ];
 
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col">
+      <header className="bg-white border-b border-slate-200 px-4 py-4">
+        <div className="max-w-7xl mx-auto">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-green-600 rounded-xl flex items-center justify-center text-white">
+              <Database size={24} />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold text-slate-800">Grist Connector</h1>
+              <p className="text-sm text-slate-500">Select a view to get started</p>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main className="flex-1 p-4 md:p-8">
+        <div className="max-w-6xl mx-auto">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {pageOptions.map((option) => {
+              const Icon = option.icon;
+              return (
+                <button
+                  key={option.id}
+                  onClick={() => onNavigate(option.id)}
+                  className="group bg-white rounded-2xl shadow-sm border border-slate-200 p-6 hover:shadow-lg transition-all duration-200 text-left hover:scale-105"
+                >
+                  <div className={`w-16 h-16 ${option.color} rounded-xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-200`}>
+                    <Icon size={32} className="text-white" />
+                  </div>
+                  <h3 className="text-xl font-bold text-slate-800 mb-2">{option.title}</h3>
+                  <p className="text-slate-600 text-sm">{option.description}</p>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+};
+
+// Telecaller View Component (Placeholder)
+const TelecallerView = ({ onBack, user, onLogout }) => {
+  const [showSettings, setShowSettings] = useState(false);
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col">
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-10 px-4 py-3">
+        <div className="max-w-7xl mx-auto flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" onClick={onBack} className="!px-2">
+              <ArrowLeft size={20} />
+            </Button>
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white">
+                <Phone size={18} />
+              </div>
+              <h1 className="font-bold text-slate-800">Telecaller View</h1>
+            </div>
+          </div>
+          <Button
+            variant="secondary"
+            onClick={() => setShowSettings(true)}
+            className="!px-3"
+          >
+            <Settings size={18} />
+          </Button>
+        </div>
+      </header>
+
+      <main className="flex-1 p-4 overflow-auto">
+        <div className="max-w-7xl mx-auto">
+          <Card className="p-8 text-center">
+            <Phone size={64} className="mx-auto mb-4 text-blue-600" />
+            <h2 className="text-2xl font-bold text-slate-800 mb-2">Telecaller View</h2>
+            <p className="text-slate-600 mb-4">
+              This view is ready to be customized with telecaller-specific functionality.
+            </p>
+            <p className="text-sm text-slate-500">
+              Connect this view to your Grist data to manage calls, contacts, and telecaller operations.
+            </p>
+          </Card>
+        </div>
+      </main>
+
+      {showSettings && (
+        <SettingsModal
+          onClose={() => setShowSettings(false)}
+          user={user}
+          onLogout={onLogout}
+        />
+      )}
+    </div>
+  );
+};
+
+// Design Confirmation View Component (Placeholder)
+const DesignConfirmationView = ({ onBack, user, onLogout }) => {
+  const [showSettings, setShowSettings] = useState(false);
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col">
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-10 px-4 py-3">
+        <div className="max-w-7xl mx-auto flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" onClick={onBack} className="!px-2">
+              <ArrowLeft size={20} />
+            </Button>
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-purple-600 rounded-lg flex items-center justify-center text-white">
+                <CheckSquare size={18} />
+              </div>
+              <h1 className="font-bold text-slate-800">Design Confirmation View</h1>
+            </div>
+          </div>
+          <Button
+            variant="secondary"
+            onClick={() => setShowSettings(true)}
+            className="!px-3"
+          >
+            <Settings size={18} />
+          </Button>
+        </div>
+      </header>
+
+      <main className="flex-1 p-4 overflow-auto">
+        <div className="max-w-7xl mx-auto">
+          <Card className="p-8 text-center">
+            <CheckSquare size={64} className="mx-auto mb-4 text-purple-600" />
+            <h2 className="text-2xl font-bold text-slate-800 mb-2">Design Confirmation View</h2>
+            <p className="text-slate-600 mb-4">
+              This view is ready to be customized with design confirmation functionality.
+            </p>
+            <p className="text-sm text-slate-500">
+              Connect this view to your Grist data to review and confirm design submissions.
+            </p>
+          </Card>
+        </div>
+      </main>
+
+      {showSettings && (
+        <SettingsModal
+          onClose={() => setShowSettings(false)}
+          user={user}
+          onLogout={onLogout}
+        />
+      )}
+    </div>
+  );
+};
+
+// Custom Table Viewer Component (Extracted from main App)
+const CustomTableViewer = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
   // State for Document/Table Selection
   const [docId, setDocId] = useState('');
   const [tableId, setTableId] = useState('');
@@ -121,32 +301,6 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
-
-  const handleLogout = () => {
-    logout({ logoutParams: { returnTo: window.location.origin } });
-  };
-
-  // Helper to construct URL
-  const getUrl = (path) => {
-    let base = GRIST_SERVER_URL.trim();
-    // Remove trailing slash
-    if (base.endsWith('/')) base = base.slice(0, -1);
-    return `${base}${path}`;
-  };
-
-  const getHeaders = async () => {
-    try {
-      const token = await getAccessTokenSilently();
-      return {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      };
-    } catch (e) {
-      console.error("Failed to get access token", e);
-      throw new Error("Failed to authenticate with Auth0");
-    }
-  };
 
   // --- Discovery Functions ---
 
@@ -255,22 +409,22 @@ export default function App() {
     }
   };
 
-  // Auto-discover docs when authenticated
+  // Auto-discover docs when component mounts
   useEffect(() => {
-    if (isAuthenticated && availableDocs.length === 0) {
+    if (availableDocs.length === 0) {
       discoverDocs();
     }
-  }, [isAuthenticated]);
+  }, []);
 
   // Auto-discover tables when docId changes
   useEffect(() => {
-    if (docId && isAuthenticated) {
+    if (docId) {
       discoverTables(docId);
     } else {
       setAvailableTables([]);
       setTableId('');
     }
-  }, [docId, isAuthenticated]);
+  }, [docId]);
 
   // --- Data Fetching ---
 
@@ -325,59 +479,24 @@ export default function App() {
 
   // Auto-fetch data when table selection changes
   useEffect(() => {
-    if (tableId && docId && isAuthenticated) {
+    if (tableId && docId) {
       fetchData();
     }
-  }, [tableId, docId, isAuthenticated]);
+  }, [tableId, docId]);
 
-  // --- VIEWS ---
-
-  if (isLoading) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <Loader2 size={40} className="animate-spin text-green-600" />
-      </div>
-    );
-  }
-
-  // Authentication View
-  if (!isAuthenticated) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-        <div className="max-w-md w-full">
-          <div className="text-center mb-8">
-            <div className="w-16 h-16 bg-green-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg text-white">
-              <Database size={32} />
-            </div>
-            <h1 className="text-2xl font-bold text-slate-800">Grist Connector</h1>
-            <p className="text-slate-500">Connect to your data securely</p>
-          </div>
-
-          <Card className="p-6 text-center">
-            <p className="mb-6 text-slate-600">Please log in to access your Grist data.</p>
-            <Button
-              className="w-full"
-              onClick={() => loginWithRedirect()}
-            >
-              Log In
-            </Button>
-          </Card>
-        </div>
-      </div>
-    );
-  }
-
-  // Main Data View
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
       {/* Header */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-10 px-4 py-3">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row gap-3 sm:justify-between sm:items-center">
           <div className="flex items-center gap-2">
+            <Button variant="ghost" onClick={onBack} className="!px-2">
+              <ArrowLeft size={20} />
+            </Button>
             <div className="w-8 h-8 bg-green-600 rounded-lg flex items-center justify-center text-white">
-              <Database size={18} />
+              <Table size={18} />
             </div>
-            <h1 className="font-bold text-slate-800">Grist Connector</h1>
+            <h1 className="font-bold text-slate-800">Custom Table Viewer</h1>
           </div>
 
           {/* Document and Table Selectors */}
@@ -487,9 +606,125 @@ export default function App() {
         <SettingsModal
           onClose={() => setShowSettings(false)}
           user={user}
-          onLogout={handleLogout}
+          onLogout={onLogout}
         />
       )}
     </div>
+  );
+};
+
+// Main App Component
+export default function App() {
+  const { loginWithRedirect, logout, user, isAuthenticated, isLoading, getAccessTokenSilently } = useAuth0();
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    logout({ logoutParams: { returnTo: window.location.origin } });
+  };
+
+  // Helper to construct URL
+  const getUrl = (path) => {
+    let base = GRIST_SERVER_URL.trim();
+    // Remove trailing slash
+    if (base.endsWith('/')) base = base.slice(0, -1);
+    return `${base}${path}`;
+  };
+
+  const getHeaders = async () => {
+    try {
+      const token = await getAccessTokenSilently();
+      return {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      };
+    } catch (e) {
+      console.error("Failed to get access token", e);
+      throw new Error("Failed to authenticate with Auth0");
+    }
+  };
+
+  const handleNavigate = (view) => {
+    navigate(`/${view}`);
+  };
+
+  const handleBackToHome = () => {
+    navigate('/');
+  };
+
+  // --- VIEWS ---
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <Loader2 size={40} className="animate-spin text-green-600" />
+      </div>
+    );
+  }
+
+  // Authentication View
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="max-w-md w-full">
+          <div className="text-center mb-8">
+            <div className="w-16 h-16 bg-green-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg text-white">
+              <Database size={32} />
+            </div>
+            <h1 className="text-2xl font-bold text-slate-800">Grist Connector</h1>
+            <p className="text-slate-500">Connect to your data securely</p>
+          </div>
+
+          <Card className="p-6 text-center">
+            <p className="mb-6 text-slate-600">Please log in to access your Grist data.</p>
+            <Button
+              className="w-full"
+              onClick={() => loginWithRedirect()}
+            >
+              Log In
+            </Button>
+          </Card>
+        </div>
+      </div>
+    );
+  }
+
+  // Main Application - Render based on URL routes
+  return (
+    <Routes>
+      <Route path="/" element={<HomePage onNavigate={handleNavigate} />} />
+      <Route
+        path="/telecaller"
+        element={
+          <TelecallerView
+            onBack={handleBackToHome}
+            user={user}
+            onLogout={handleLogout}
+          />
+        }
+      />
+      <Route
+        path="/design"
+        element={
+          <DesignConfirmationView
+            onBack={handleBackToHome}
+            user={user}
+            onLogout={handleLogout}
+          />
+        }
+      />
+      <Route
+        path="/table"
+        element={
+          <CustomTableViewer
+            onBack={handleBackToHome}
+            user={user}
+            onLogout={handleLogout}
+            getHeaders={getHeaders}
+            getUrl={getUrl}
+          />
+        }
+      />
+    </Routes>
   );
 }

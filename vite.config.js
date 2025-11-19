@@ -35,6 +35,29 @@ export default defineConfig({
             type: 'image/png',
             purpose: 'any maskable'
           }
+        ],
+        shortcuts: [
+          {
+            name: 'Telecaller View',
+            short_name: 'Telecaller',
+            description: 'Manage telecaller operations and calls',
+            url: '/telecaller',
+            icons: [{ src: 'pwa-192x192.png', sizes: '192x192' }]
+          },
+          {
+            name: 'Design Confirmation',
+            short_name: 'Design',
+            description: 'Review and confirm design submissions',
+            url: '/design',
+            icons: [{ src: 'pwa-192x192.png', sizes: '192x192' }]
+          },
+          {
+            name: 'Custom Table Viewer',
+            short_name: 'Tables',
+            description: 'View and explore Grist data tables',
+            url: '/table',
+            icons: [{ src: 'pwa-192x192.png', sizes: '192x192' }]
+          }
         ]
       }
     })
