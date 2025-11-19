@@ -6,9 +6,10 @@ import App from './App.jsx'
 
 const domain = import.meta.env.VITE_AUTH0_DOMAIN;
 const clientId = import.meta.env.VITE_AUTH0_CLIENT_ID;
+const gristServerUrl = import.meta.env.VITE_GRIST_SERVER_URL;
 
-if (!domain || !clientId) {
-  console.error("Auth0 Domain and Client ID are required in .env");
+if (!domain || !clientId || !gristServerUrl) {
+  console.error("Auth0 Domain, Client ID, and Grist Server URL are required in .env");
 }
 
 createRoot(document.getElementById('root')).render(

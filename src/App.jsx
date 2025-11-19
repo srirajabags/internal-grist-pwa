@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, LogOut, Database, Server, Key, Loader2, AlertCircle, Save, RefreshCw, Globe, Search, Table, FileText, HelpCircle, X, User } from 'lucide-react';
+import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User } from 'lucide-react';
 import { useAuth0 } from '@auth0/auth0-react';
+
+// Get server URL from environment
+const GRIST_SERVER_URL = import.meta.env.VITE_GRIST_SERVER_URL;
 
 // Simple UI Components
 const Card = ({ children, className = "" }) => (
@@ -9,25 +12,9 @@ const Card = ({ children, className = "" }) => (
   </div>
 );
 
-const Input = ({ label, value, onChange, type = "text", placeholder, helpText, disabled = false, onBlur }) => (
-  <div className="mb-4">
-    <label className="block text-sm font-medium text-slate-700 mb-1">{label}</label>
-    <input
-      type={type}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      onBlur={onBlur}
-      placeholder={placeholder}
-      disabled={disabled}
-      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 transition-all outline-none disabled:bg-slate-100 disabled:text-slate-500"
-    />
-    {helpText && <p className="text-xs text-slate-500 mt-1">{helpText}</p>}
-  </div>
-);
-
-const Select = ({ label, value, onChange, options, placeholder, disabled = false, loading = false }) => (
-  <div className="mb-4">
-    <label className="block text-sm font-medium text-slate-700 mb-1">{label}</label>
+const Select = ({ label, value, onChange, options, placeholder, disabled = false, loading = false, className = "" }) => (
+  <div className={className}>
+    {label && <label className="block text-sm font-medium text-slate-700 mb-1">{label}</label>}
     <div className="relative">
       <select
         value={value}
@@ -70,53 +57,46 @@ const Button = ({ onClick, children, variant = "primary", disabled = false, clas
   );
 };
 
-const Toggle = ({ label, checked, onChange, helpText }) => (
-  <div className="mb-4 flex items-start gap-3">
-    <div className="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in mt-1">
-      <input
-        type="checkbox"
-        name="toggle"
-        id="toggle"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer transition-all duration-300"
-        style={{
-          right: checked ? '0' : 'auto',
-          left: checked ? 'auto' : '0',
-          borderColor: checked ? '#16a34a' : '#cbd5e1'
-        }}
-      />
-      <label
-        htmlFor="toggle"
-        className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer transition-colors duration-300 ${checked ? 'bg-green-600' : 'bg-slate-300'}`}
-      ></label>
-    </div>
-    <div className="flex-1">
-      <label className="block text-sm font-medium text-slate-700">{label}</label>
-      {helpText && <p className="text-xs text-slate-500 mt-0.5">{helpText}</p>}
-    </div>
-  </div>
-);
+// Settings Modal Component
+const SettingsModal = ({ onClose, user, onLogout }) => (
+  <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={onClose}>
+    <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xl font-bold text-slate-800">Settings</h2>
+        <button onClick={onClose} className="text-slate-400 hover:text-slate-700">
+          <X size={20} />
+        </button>
+      </div>
 
-const HelpSection = ({ onClose }) => (
-  <div className="mb-6 bg-blue-50 border border-blue-100 rounded-xl p-4 text-sm text-blue-900 relative">
-    <button onClick={onClose} className="absolute top-2 right-2 text-blue-400 hover:text-blue-700">
-      <X size={16} />
-    </button>
-    <h3 className="font-bold flex items-center gap-2 mb-2">
-      <HelpCircle size={16} />
-      Fixing Connection Issues
-    </h3>
-    <div className="space-y-3">
-      <div>
-        <p className="font-semibold">Option 1: Use Your Proxy</p>
-        <p className="opacity-80">Enable the <span className="font-bold">"Use CORS Proxy"</span> toggle below. This routes traffic through your custom proxy at <span className="font-mono text-xs">cors-anywhere-production-2644.up.railway.app</span>.</p>
+      {/* User Info */}
+      <div className="flex items-center gap-3 pb-4 border-b border-slate-100 mb-4">
+        {user?.picture ? (
+          <img src={user.picture} alt={user.name} className="w-12 h-12 rounded-full" />
+        ) : (
+          <div className="w-12 h-12 bg-slate-200 rounded-full flex items-center justify-center text-slate-500">
+            <User size={24} />
+          </div>
+        )}
+        <div className="overflow-hidden flex-1">
+          <p className="font-medium text-slate-900 truncate">{user?.name}</p>
+          <p className="text-sm text-slate-500 truncate">{user?.email}</p>
+        </div>
       </div>
-      <div>
-        <p className="font-semibold">Option 2: Configure Server (Recommended)</p>
-        <p className="opacity-80">Add this environment variable to your self-hosted Grist server:</p>
-        <code className="block mt-1 bg-blue-100 px-2 py-1 rounded text-xs font-mono">GRIST_CORS_ALLOW_ORIGIN=*</code>
+
+      {/* Server Info */}
+      <div className="mb-4 p-3 bg-slate-50 rounded-lg">
+        <p className="text-xs font-medium text-slate-600 mb-1">Grist Server</p>
+        <p className="text-sm text-slate-800 font-mono break-all">{GRIST_SERVER_URL}</p>
       </div>
+
+      <Button
+        variant="secondary"
+        className="w-full"
+        onClick={onLogout}
+        icon={LogOut}
+      >
+        Logout
+      </Button>
     </div>
   </div>
 );
@@ -125,89 +105,43 @@ const HelpSection = ({ onClose }) => (
 export default function App() {
   const { loginWithRedirect, logout, user, isAuthenticated, isLoading, getAccessTokenSilently } = useAuth0();
 
-  // State for Configuration
-  const [serverUrl, setServerUrl] = useState(() => localStorage.getItem('grist_server_url') || 'https://docs.getgrist.com');
-  const [docId, setDocId] = useState(() => localStorage.getItem('grist_doc_id') || '');
-  const [tableId, setTableId] = useState(() => localStorage.getItem('grist_table_id') || 'Customers');
-  const [useProxy, setUseProxy] = useState(() => localStorage.getItem('grist_use_proxy') === 'true');
-  const [manualMode, setManualMode] = useState(false);
-  const [showHelp, setShowHelp] = useState(false);
+  // State for Document/Table Selection
+  const [docId, setDocId] = useState('');
+  const [tableId, setTableId] = useState('');
 
   // Discovery State
   const [availableDocs, setAvailableDocs] = useState([]);
   const [availableTables, setAvailableTables] = useState([]);
   const [loadingDocs, setLoadingDocs] = useState(false);
   const [loadingTables, setLoadingTables] = useState(false);
-  const [discoveryError, setDiscoveryError] = useState(null);
 
   // State for Application Logic
-  const [view, setView] = useState('auth'); // 'auth', 'config', 'data'
   const [records, setRecords] = useState([]);
   const [columns, setColumns] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-
-  // Update view based on auth status
-  useEffect(() => {
-    if (isAuthenticated) {
-      if (view === 'auth') {
-        setView('data');
-      }
-    } else {
-      setView('auth');
-    }
-  }, [isAuthenticated]);
-
-  // Save config to local storage when changed
-  const saveConfig = () => {
-    localStorage.setItem('grist_server_url', serverUrl);
-    localStorage.setItem('grist_doc_id', docId);
-    localStorage.setItem('grist_table_id', tableId);
-    localStorage.setItem('grist_use_proxy', useProxy);
-  };
+  const [showSettings, setShowSettings] = useState(false);
 
   const handleLogout = () => {
     logout({ logoutParams: { returnTo: window.location.origin } });
   };
 
-  // Helper to construct URL with Proxy if needed
+  // Helper to construct URL
   const getUrl = (path) => {
-    let base = serverUrl.trim();
+    let base = GRIST_SERVER_URL.trim();
     // Remove trailing slash
     if (base.endsWith('/')) base = base.slice(0, -1);
-
-    // AUTO-CLEAN: If user pasted a full Grist URL (e.g. .../o/docs/...), extract origin.
-    try {
-      if (base.includes('/o/') || base.includes('/doc/')) {
-        const urlObj = new URL(base);
-        base = urlObj.origin;
-      }
-    } catch (e) { }
-
-    let targetUrl = `${base}${path}`;
-
-    if (useProxy) {
-      // Using your self-hosted cors-anywhere proxy
-      return `https://cors-anywhere-production-2644.up.railway.app/${targetUrl}`;
-    }
-    return targetUrl;
+    return `${base}${path}`;
   };
 
   const getHeaders = async () => {
     try {
       const token = await getAccessTokenSilently();
-      const headers = {
+      return {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       };
-
-      // Cors-anywhere often requires this header to prevent abuse/misuse
-      if (useProxy) {
-        headers['X-Requested-With'] = 'XMLHttpRequest';
-      }
-
-      return headers;
     } catch (e) {
       console.error("Failed to get access token", e);
       throw new Error("Failed to authenticate with Auth0");
@@ -217,15 +151,14 @@ export default function App() {
   // --- Discovery Functions ---
 
   const discoverDocs = async () => {
-    if (!serverUrl) return;
     setLoadingDocs(true);
-    setDiscoveryError(null);
+    setError(null);
 
     try {
       const headers = await getHeaders();
       const orgCandidates = new Set();
 
-      // 1. Explicitly add 'docs' (common self-hosted default) and 'current'
+      // 1. Explicitly add 'docs' (common self-hosted default)
       orgCandidates.add('docs');
 
       // 2. Try to fetch other organizations (Best effort)
@@ -242,7 +175,7 @@ export default function App() {
       let allDocs = [];
       let successCount = 0;
 
-      // 3. Fetch Workspaces for ALL candidates (docs, current, and discovered)
+      // 3. Fetch Workspaces for ALL candidates
       for (const orgId of orgCandidates) {
         try {
           const wsRes = await fetch(getUrl(`/api/orgs/${orgId}/workspaces`), { headers });
@@ -262,27 +195,30 @@ export default function App() {
             });
           }
         } catch (err) {
-          // It's expected that some candidates might fail
           console.log(`Skipping org '${orgId}':`, err);
         }
       }
 
       if (allDocs.length === 0) {
         if (successCount === 0) {
-          throw new Error("Could not connect to any organization (including 'docs'). Check URL/Proxy.");
+          throw new Error("Could not connect to any organization. Check server URL and CORS configuration.");
         } else {
-          setDiscoveryError("Connected, but no documents found.");
+          setError("Connected, but no documents found.");
         }
       }
 
       setAvailableDocs(allDocs);
+
+      // Auto-select first doc if none selected
+      if (allDocs.length > 0 && !docId) {
+        setDocId(allDocs[0].value);
+      }
     } catch (err) {
       console.error("Discovery Error:", err);
       if (err.name === 'TypeError' && err.message.includes('Failed to fetch')) {
-        setDiscoveryError("Network blocked (CORS). Enable 'Use CORS Proxy' below or check Help.");
-        setShowHelp(true);
+        setError("Network blocked (CORS). Please configure GRIST_CORS_ALLOW_ORIGIN on your Grist server.");
       } else {
-        setDiscoveryError(`Discovery failed: ${err.message}. Try Manual Mode.`);
+        setError(`Discovery failed: ${err.message}`);
       }
     } finally {
       setLoadingDocs(false);
@@ -302,36 +238,45 @@ export default function App() {
       if (data.tables) {
         const tableOptions = data.tables.map(t => ({
           value: t.id,
-          label: t.id // Tables mostly just have IDs in the metadata listing usually
+          label: t.id
         }));
         setAvailableTables(tableOptions);
 
-        // Auto-select first table if current selection is invalid
+        // Auto-select first table if none selected or current is invalid
         if (tableOptions.length > 0 && !tableOptions.find(t => t.value === tableId)) {
           setTableId(tableOptions[0].value);
         }
       }
     } catch (err) {
       console.error("Table Discovery Error:", err);
+      setError(`Failed to load tables: ${err.message}`);
     } finally {
       setLoadingTables(false);
     }
   };
 
-  // Effect to trigger table discovery when docId changes (if in auto mode)
+  // Auto-discover docs when authenticated
   useEffect(() => {
-    if (view === 'config' && !manualMode && docId && isAuthenticated) {
-      discoverTables(docId);
+    if (isAuthenticated && availableDocs.length === 0) {
+      discoverDocs();
     }
-  }, [docId, manualMode, view, isAuthenticated]);
+  }, [isAuthenticated]);
 
+  // Auto-discover tables when docId changes
+  useEffect(() => {
+    if (docId && isAuthenticated) {
+      discoverTables(docId);
+    } else {
+      setAvailableTables([]);
+      setTableId('');
+    }
+  }, [docId, isAuthenticated]);
 
   // --- Data Fetching ---
 
   const fetchData = async () => {
     if (!docId || !tableId) {
-      setError("Missing configuration details.");
-      setView('config');
+      setError("Please select a document and table.");
       return;
     }
 
@@ -351,7 +296,6 @@ export default function App() {
         const errText = await response.text().catch(() => '');
         if (response.status === 401) throw new Error("Unauthorized (401). Check your Auth0 login.");
         if (response.status === 404) throw new Error("Not Found (404). Check Document/Table ID.");
-        if (response.status === 0) throw new Error("CORS Error: Server blocked the request.");
         throw new Error(`Server Error (${response.status}): ${errText.slice(0, 100) || response.statusText}`);
       }
 
@@ -362,17 +306,15 @@ export default function App() {
         const cols = Object.keys(firstRecordFields);
         setColumns(cols);
         setRecords(data.records);
-        setView('data');
       } else {
         setRecords([]);
-        setView('data');
+        setColumns([]);
       }
 
     } catch (err) {
       console.error(err);
       if (err.name === 'TypeError' && err.message.includes('Failed to fetch')) {
-        setError("Network Error: The server blocked the request (CORS). Try enabling 'Use CORS Proxy'.");
-        setShowHelp(true);
+        setError("Network Error: The server blocked the request (CORS). Please configure GRIST_CORS_ALLOW_ORIGIN on your Grist server.");
       } else {
         setError(err.message);
       }
@@ -381,12 +323,12 @@ export default function App() {
     }
   };
 
-  // Initial load 
+  // Auto-fetch data when table selection changes
   useEffect(() => {
-    if (view === 'data' && docId && isAuthenticated) {
+    if (tableId && docId && isAuthenticated) {
       fetchData();
     }
-  }, [view, isAuthenticated]);
+  }, [tableId, docId, isAuthenticated]);
 
   // --- VIEWS ---
 
@@ -398,7 +340,7 @@ export default function App() {
     );
   }
 
-  // 1. Authentication View
+  // Authentication View
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
@@ -425,199 +367,53 @@ export default function App() {
     );
   }
 
-  // 2. Configuration View
-  if (view === 'config') {
-    return (
-      <div className="min-h-screen bg-slate-50 p-4">
-        <div className="max-w-md mx-auto pt-10">
-          <div className="flex items-center justify-between gap-2 mb-6">
-            <div className="flex items-center gap-2">
-              <Button variant="secondary" onClick={() => setView(records.length > 0 ? 'data' : 'auth')} className="!px-3">
-                ←
-              </Button>
-              <h1 className="text-xl font-bold text-slate-800">Configuration</h1>
-            </div>
-            <Button variant="ghost" className="!px-3 text-blue-600" onClick={() => setShowHelp(!showHelp)}>
-              <HelpCircle size={20} />
-            </Button>
-          </div>
-
-          {showHelp && <HelpSection onClose={() => setShowHelp(false)} />}
-
-          <Card className="p-6 space-y-4">
-            {/* User Info */}
-            <div className="flex items-center gap-3 pb-4 border-b border-slate-100">
-              {user?.picture ? (
-                <img src={user.picture} alt={user.name} className="w-10 h-10 rounded-full" />
-              ) : (
-                <div className="w-10 h-10 bg-slate-200 rounded-full flex items-center justify-center text-slate-500">
-                  <User size={20} />
-                </div>
-              )}
-              <div className="overflow-hidden">
-                <p className="font-medium text-slate-900 truncate">{user?.name}</p>
-                <p className="text-xs text-slate-500 truncate">{user?.email}</p>
-              </div>
-            </div>
-
-            {/* Server Config Section */}
-            <div className="pb-4 border-b border-slate-100">
-              <Input
-                label="Server URL"
-                value={serverUrl}
-                onChange={setServerUrl}
-                placeholder="https://docs.getgrist.com"
-                helpText="The base URL of your Grist instance"
-                onBlur={() => {
-                  // Auto-fix common paste errors
-                  try {
-                    if (serverUrl.includes('/o/') || serverUrl.includes('/doc/')) {
-                      const u = new URL(serverUrl);
-                      setServerUrl(u.origin);
-                    }
-                  } catch (e) { }
-                }}
-              />
-
-              <div className="flex justify-between items-center mb-2">
-                <label className="block text-sm font-medium text-slate-700">Connection Mode</label>
-                <button
-                  onClick={() => setManualMode(!manualMode)}
-                  className="text-xs text-green-600 font-medium hover:underline"
-                >
-                  {manualMode ? "Switch to Auto-Discovery" : "Switch to Manual Entry"}
-                </button>
-              </div>
-
-              {!manualMode && (
-                <Button
-                  variant="outline"
-                  className="w-full mb-2"
-                  onClick={discoverDocs}
-                  disabled={loadingDocs}
-                  icon={Search}
-                >
-                  {loadingDocs ? "Scanning for Documents..." : "Find My Documents"}
-                </Button>
-              )}
-
-              {discoveryError && !manualMode && (
-                <div className="text-xs text-red-600 bg-red-50 p-2 rounded border border-red-100 mb-4 font-medium break-words">
-                  {discoveryError}
-                </div>
-              )}
-            </div>
-
-            {/* Doc & Table Selection */}
-            <div className="grid grid-cols-1 gap-4">
-              {manualMode ? (
-                <>
-                  <Input
-                    label="Document ID"
-                    value={docId}
-                    onChange={setDocId}
-                    placeholder="e.g., s5577s9d0s..."
-                  />
-                  <Input
-                    label="Table ID"
-                    value={tableId}
-                    onChange={setTableId}
-                    placeholder="Customers"
-                  />
-                </>
-              ) : (
-                <>
-                  <Select
-                    label="Document"
-                    value={docId}
-                    onChange={setDocId}
-                    options={availableDocs}
-                    placeholder={availableDocs.length ? "Select a Document" : "No documents loaded"}
-                    disabled={availableDocs.length === 0}
-                  />
-                  <Select
-                    label="Table"
-                    value={tableId}
-                    onChange={setTableId}
-                    options={availableTables}
-                    placeholder={docId ? "Select a Table" : "Select Document First"}
-                    disabled={!docId}
-                    loading={loadingTables}
-                  />
-                </>
-              )}
-            </div>
-
-            <div className="pt-2 border-t border-slate-100">
-              <Toggle
-                label="Use CORS Proxy"
-                checked={useProxy}
-                onChange={setUseProxy}
-                helpText="Enable if you see 'Failed to fetch' or Network errors."
-              />
-            </div>
-
-            <div className="pt-2 flex gap-3">
-              <Button
-                variant="secondary"
-                className="flex-1"
-                onClick={handleLogout}
-                icon={LogOut}
-              >
-                Logout
-              </Button>
-              <Button
-                className="flex-1"
-                onClick={() => {
-                  saveConfig();
-                  fetchData();
-                }}
-                icon={Save}
-              >
-                Save & Fetch
-              </Button>
-            </div>
-          </Card>
-
-          {error && (
-            <div className="mt-4 p-4 bg-red-50 text-red-700 rounded-lg border border-red-100 text-sm flex gap-2 items-start">
-              <AlertCircle size={16} className="mt-0.5 shrink-0" />
-              <div className="break-words">
-                <p className="font-medium">Connection Error</p>
-                <p>{error}</p>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  // 3. Data View (Main)
+  // Main Data View
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
       {/* Header */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-10 px-4 py-3">
-        <div className="max-w-5xl mx-auto flex justify-between items-center">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row gap-3 sm:justify-between sm:items-center">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 bg-green-600 rounded-lg flex items-center justify-center text-white">
               <Database size={18} />
             </div>
-            <h1 className="font-bold text-slate-800 hidden sm:block">{tableId}</h1>
+            <h1 className="font-bold text-slate-800">Grist Connector</h1>
+          </div>
+
+          {/* Document and Table Selectors */}
+          <div className="flex gap-2 flex-1 max-w-2xl">
+            <Select
+              value={docId}
+              onChange={setDocId}
+              options={availableDocs}
+              placeholder="Select Document"
+              disabled={availableDocs.length === 0}
+              loading={loadingDocs}
+              className="flex-1"
+            />
+            <Select
+              value={tableId}
+              onChange={setTableId}
+              options={availableTables}
+              placeholder="Select Table"
+              disabled={!docId || availableTables.length === 0}
+              loading={loadingTables}
+              className="flex-1"
+            />
           </div>
 
           <div className="flex gap-2">
             <Button
               variant="secondary"
               onClick={fetchData}
-              disabled={loading}
+              disabled={loading || !docId || !tableId}
               className="!px-3"
             >
               <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
             </Button>
             <Button
               variant="secondary"
-              onClick={() => setView('config')}
+              onClick={() => setShowSettings(true)}
               className="!px-3"
             >
               <Settings size={18} />
@@ -628,12 +424,15 @@ export default function App() {
 
       {/* Content */}
       <main className="flex-1 p-4 overflow-auto">
-        <div className="max-w-5xl mx-auto">
+        <div className="max-w-7xl mx-auto">
 
           {error && (
-            <div className="mb-4 p-4 bg-red-50 text-red-700 rounded-lg border border-red-100 flex gap-2 items-center">
-              <AlertCircle size={18} />
-              <span>{error}</span>
+            <div className="mb-4 p-4 bg-red-50 text-red-700 rounded-lg border border-red-100 flex gap-2 items-start">
+              <AlertCircle size={18} className="mt-0.5 shrink-0" />
+              <div>
+                <p className="font-medium">Error</p>
+                <p className="text-sm">{error}</p>
+              </div>
             </div>
           )}
 
@@ -646,10 +445,13 @@ export default function App() {
             <>
               {records.length === 0 ? (
                 <div className="text-center py-20 text-slate-500 bg-white rounded-xl border border-dashed border-slate-300">
-                  <p>No records found in this table.</p>
-                  <Button variant="outline" className="mt-4 mx-auto" onClick={() => setView('config')}>
-                    Check Configuration
-                  </Button>
+                  <Database size={48} className="mx-auto mb-4 text-slate-300" />
+                  <p className="text-lg font-medium mb-2">No Data</p>
+                  <p className="text-sm">
+                    {!docId || !tableId
+                      ? "Select a document and table to view data"
+                      : "No records found in this table"}
+                  </p>
                 </div>
               ) : (
                 <Card className="overflow-x-auto">
@@ -679,6 +481,15 @@ export default function App() {
           )}
         </div>
       </main>
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <SettingsModal
+          onClose={() => setShowSettings(false)}
+          user={user}
+          onLogout={handleLogout}
+        />
+      )}
     </div>
   );
 }
