@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
-import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code } from 'lucide-react';
+import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock } from 'lucide-react';
 import { useAuth0 } from '@auth0/auth0-react';
 
 // Get server URL from environment
@@ -1210,6 +1210,95 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  // Query History & Saved Queries
+  const [queryHistory, setQueryHistory] = useState([]);
+  const [savedQueries, setSavedQueries] = useState([]);
+  const [showHistoryPanel, setShowHistoryPanel] = useState(false);
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [saveQueryName, setSaveQueryName] = useState('');
+
+  // Load history and saved queries from localStorage on mount
+  useEffect(() => {
+    try {
+      const storedHistory = localStorage.getItem('sql_query_history');
+      if (storedHistory) {
+        setQueryHistory(JSON.parse(storedHistory));
+      }
+
+      const storedSaved = localStorage.getItem('sql_saved_queries');
+      if (storedSaved) {
+        setSavedQueries(JSON.parse(storedSaved));
+      }
+    } catch (e) {
+      console.error('Error loading query history:', e);
+    }
+  }, []);
+
+  // Save query to history (max 50)
+  const addToHistory = (query, docId) => {
+    const historyItem = {
+      id: Date.now(),
+      query,
+      docId,
+      timestamp: new Date().toISOString(),
+    };
+
+    setQueryHistory(prev => {
+      const newHistory = [historyItem, ...prev.filter(h => h.query !== query || h.docId !== docId)];
+      const trimmed = newHistory.slice(0, 50); // Keep only last 50
+      localStorage.setItem('sql_query_history', JSON.stringify(trimmed));
+      return trimmed;
+    });
+  };
+
+  // Save query with custom name
+  const saveQueryWithName = () => {
+    if (!saveQueryName.trim() || !sqlQuery.trim()) return;
+
+    const savedItem = {
+      id: Date.now(),
+      name: saveQueryName.trim(),
+      query: sqlQuery,
+      docId: selectedDocId,
+      timestamp: new Date().toISOString(),
+      pinned: false,
+    };
+
+    setSavedQueries(prev => {
+      const newSaved = [...prev, savedItem];
+      localStorage.setItem('sql_saved_queries', JSON.stringify(newSaved));
+      return newSaved;
+    });
+
+    setSaveQueryName('');
+    setShowSaveDialog(false);
+  };
+
+  // Toggle pin status
+  const togglePin = (id) => {
+    setSavedQueries(prev => {
+      const updated = prev.map(q => q.id === id ? { ...q, pinned: !q.pinned } : q);
+      localStorage.setItem('sql_saved_queries', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  // Delete saved query
+  const deleteSavedQuery = (id) => {
+    setSavedQueries(prev => {
+      const updated = prev.filter(q => q.id !== id);
+      localStorage.setItem('sql_saved_queries', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  // Load query from history or saved
+  const loadQuery = (query, docId) => {
+    setSqlQuery(query);
+    if (docId) setSelectedDocId(docId);
+    setShowHistoryPanel(false);
+  };
+
   // Fetch available documents
   const fetchDocs = async () => {
     setLoadingDocs(true);
@@ -1318,6 +1407,9 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
 
       const data = await response.json();
       setResults(data);
+
+      // Add to history on successful execution
+      addToHistory(sqlQuery, selectedDocId);
     } catch (err) {
       console.error('SQL Query Error:', err);
       setError(err.message);
@@ -1361,13 +1453,32 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
               <h1 className="font-bold text-slate-800">Analyse with SQL</h1>
             </div>
           </div>
-          <Button
-            variant="secondary"
-            onClick={() => setShowSettings(true)}
-            className="!px-3"
-          >
-            <Settings size={18} />
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => setShowHistoryPanel(!showHistoryPanel)}
+              className="!px-3"
+              icon={History}
+            >
+              <span className="hidden sm:inline">History</span>
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setShowSaveDialog(true)}
+              className="!px-3"
+              disabled={!sqlQuery.trim()}
+              icon={Save}
+            >
+              <span className="hidden sm:inline">Save</span>
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setShowSettings(true)}
+              className="!px-3"
+            >
+              <Settings size={18} />
+            </Button>
+          </div>
         </div>
       </header>
 
@@ -1502,6 +1613,211 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
           )}
         </div>
       </main>
+
+      {/* History Panel */}
+      {showHistoryPanel && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={() => setShowHistoryPanel(false)}>
+          <div className="bg-white rounded-xl shadow-xl max-w-4xl w-full max-h-[80vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b border-slate-200">
+              <h2 className="text-xl font-bold text-slate-800">Query History & Saved Queries</h2>
+              <button onClick={() => setShowHistoryPanel(false)} className="text-slate-400 hover:text-slate-700">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-auto p-4 space-y-6">
+              {/* Pinned Queries */}
+              {savedQueries.filter(q => q.pinned).length > 0 && (
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
+                    <Pin size={16} className="text-cyan-600" />
+                    Pinned Queries
+                  </h3>
+                  <div className="space-y-2">
+                    {savedQueries.filter(q => q.pinned).map(query => (
+                      <div key={query.id} className="bg-cyan-50 border border-cyan-200 rounded-lg p-3">
+                        <div className="flex justify-between items-start gap-2 mb-2">
+                          <div className="flex-1">
+                            <h4 className="font-semibold text-slate-800">{query.name}</h4>
+                            <p className="text-xs text-slate-500">
+                              {new Date(query.timestamp).toLocaleString()}
+                            </p>
+                          </div>
+                          <div className="flex gap-1">
+                            <button
+                              onClick={() => togglePin(query.id)}
+                              className="p-1 hover:bg-cyan-200 rounded text-cyan-600"
+                              title="Unpin"
+                            >
+                              <Pin size={16} fill="currentColor" />
+                            </button>
+                            <button
+                              onClick={() => deleteSavedQuery(query.id)}
+                              className="p-1 hover:bg-red-100 rounded text-red-600"
+                              title="Delete"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        </div>
+                        <pre className="text-xs bg-white p-2 rounded border border-cyan-200 overflow-x-auto font-mono mb-2">
+                          {query.query}
+                        </pre>
+                        <button
+                          onClick={() => loadQuery(query.query, query.docId)}
+                          className="text-xs text-cyan-600 hover:text-cyan-700 font-medium"
+                        >
+                          Load Query →
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Saved Queries */}
+              {savedQueries.filter(q => !q.pinned).length > 0 && (
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
+                    <Save size={16} />
+                    Saved Queries
+                  </h3>
+                  <div className="space-y-2">
+                    {savedQueries.filter(q => !q.pinned).map(query => (
+                      <div key={query.id} className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                        <div className="flex justify-between items-start gap-2 mb-2">
+                          <div className="flex-1">
+                            <h4 className="font-semibold text-slate-800">{query.name}</h4>
+                            <p className="text-xs text-slate-500">
+                              {new Date(query.timestamp).toLocaleString()}
+                            </p>
+                          </div>
+                          <div className="flex gap-1">
+                            <button
+                              onClick={() => togglePin(query.id)}
+                              className="p-1 hover:bg-slate-200 rounded text-slate-600"
+                              title="Pin"
+                            >
+                              <Pin size={16} />
+                            </button>
+                            <button
+                              onClick={() => deleteSavedQuery(query.id)}
+                              className="p-1 hover:bg-red-100 rounded text-red-600"
+                              title="Delete"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        </div>
+                        <pre className="text-xs bg-white p-2 rounded border border-slate-200 overflow-x-auto font-mono mb-2">
+                          {query.query}
+                        </pre>
+                        <button
+                          onClick={() => loadQuery(query.query, query.docId)}
+                          className="text-xs text-cyan-600 hover:text-cyan-700 font-medium"
+                        >
+                          Load Query →
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Query History */}
+              {queryHistory.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
+                    <Clock size={16} />
+                    Recent History ({queryHistory.length}/50)
+                  </h3>
+                  <div className="space-y-2">
+                    {queryHistory.slice(0, 20).map(item => (
+                      <div key={item.id} className="bg-white border border-slate-200 rounded-lg p-3 hover:border-cyan-300 transition-colors">
+                        <div className="flex justify-between items-start gap-2 mb-2">
+                          <p className="text-xs text-slate-500">
+                            {new Date(item.timestamp).toLocaleString()}
+                          </p>
+                        </div>
+                        <pre className="text-xs bg-slate-50 p-2 rounded border border-slate-200 overflow-x-auto font-mono mb-2">
+                          {item.query}
+                        </pre>
+                        <button
+                          onClick={() => loadQuery(item.query, item.docId)}
+                          className="text-xs text-cyan-600 hover:text-cyan-700 font-medium"
+                        >
+                          Load Query →
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {queryHistory.length === 0 && savedQueries.length === 0 && (
+                <div className="text-center py-12 text-slate-500">
+                  <History size={48} className="mx-auto mb-4 text-slate-300" />
+                  <p className="text-lg font-medium mb-2">No Query History</p>
+                  <p className="text-sm">Execute queries to build your history</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Save Query Dialog */}
+      {showSaveDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={() => setShowSaveDialog(false)}>
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-slate-800">Save Query</h2>
+              <button onClick={() => setShowSaveDialog(false)} className="text-slate-400 hover:text-slate-700">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-slate-700 mb-2">Query Name</label>
+              <input
+                type="text"
+                value={saveQueryName}
+                onChange={(e) => setSaveQueryName(e.target.value)}
+                placeholder="e.g., Customer List Query"
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition-all outline-none"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') saveQueryWithName();
+                }}
+                autoFocus
+              />
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-slate-700 mb-2">Query Preview</label>
+              <pre className="text-xs bg-slate-50 p-3 rounded border border-slate-200 overflow-x-auto font-mono max-h-40">
+                {sqlQuery}
+              </pre>
+            </div>
+
+            <div className="flex gap-2">
+              <Button
+                onClick={saveQueryWithName}
+                disabled={!saveQueryName.trim()}
+                className="flex-1"
+                icon={Save}
+              >
+                Save Query
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => setShowSaveDialog(false)}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showSettings && (
         <SettingsModal
