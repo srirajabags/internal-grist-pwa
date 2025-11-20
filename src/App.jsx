@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
-import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft } from 'lucide-react';
+import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory } from 'lucide-react';
 import { useAuth0 } from '@auth0/auth0-react';
 
 // Get server URL from environment
@@ -128,6 +128,14 @@ const HomePage = ({ onNavigate }) => {
       icon: Table,
       color: 'bg-green-600',
       hoverColor: 'hover:bg-green-700'
+    },
+    {
+      id: 'factory',
+      title: 'Factory View',
+      description: 'View today\'s factory updates',
+      icon: Factory,
+      color: 'bg-orange-600',
+      hoverColor: 'hover:bg-orange-700'
     }
   ];
 
@@ -271,6 +279,562 @@ const DesignConfirmationView = ({ onBack, user, onLogout }) => {
           </Card>
         </div>
       </main>
+
+      {showSettings && (
+        <SettingsModal
+          onClose={() => setShowSettings(false)}
+          user={user}
+          onLogout={onLogout}
+        />
+      )}
+    </div>
+  );
+};
+
+// Image Preview Modal
+const ImagePreviewModal = ({ src, onClose, loading }) => (
+  <div className="fixed inset-0 bg-black bg-opacity-90 flex items-center justify-center z-50 p-4" onClick={onClose}>
+    <button
+      onClick={onClose}
+      className="absolute top-4 right-4 text-white hover:text-slate-300 p-2"
+    >
+      <X size={32} />
+    </button>
+
+    <div className="max-w-4xl max-h-[90vh] w-full flex items-center justify-center" onClick={e => e.stopPropagation()}>
+      {loading ? (
+        <div className="text-white flex flex-col items-center">
+          <Loader2 size={48} className="animate-spin mb-4" />
+          <p>Loading image...</p>
+        </div>
+      ) : src ? (
+        <img
+          src={src}
+          alt="Preview"
+          className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl"
+        />
+      ) : (
+        <div className="text-white text-center">
+          <AlertCircle size={48} className="mx-auto mb-4 text-red-400" />
+          <p>Image not available</p>
+        </div>
+      )}
+    </div>
+  </div>
+);
+
+// Factory View Component
+const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
+  const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+
+  // Preview State
+  const [previewImage, setPreviewImage] = useState(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+
+  // Filter State
+  const [selectedPlate, setSelectedPlate] = useState('');
+  const [selectedDate, setSelectedDate] = useState('');
+  const [availablePlates, setAvailablePlates] = useState([]);
+  const [availableDates, setAvailableDates] = useState([]);
+
+  // Data Maps
+  const [customerMap, setCustomerMap] = useState({});
+
+  const DOC_ID = '8vRFY3UUf4spJroktByH4u';
+  const TABLE_ID = 'Sub_Orders';
+  const ORDERS_TABLE_ID = 'Orders';
+  const CUSTOMERS_TABLE_ID = 'Customers';
+
+  // Helper to extract ID from Grist fields (handles ['L', id] and ['R', 'Table', id] formats)
+  const extractId = (val) => {
+    if (!val) return null;
+
+    // Handle single Reference ['R', 'Table', ID]
+    if (Array.isArray(val) && val[0] === 'R' && val.length >= 3) {
+      return val[2];
+    }
+
+    if (Array.isArray(val)) {
+      const clean = val.filter(v => v !== 'L');
+      const first = clean[0];
+
+      // Handle list of References [['R', 'Table', ID], ...]
+      if (Array.isArray(first) && first[0] === 'R' && first.length >= 3) {
+        return first[2];
+      }
+
+      // Handle list of IDs [ID, ...] or objects [{id: ID}, ...]
+      return (first && typeof first === 'object') ? first.id : first;
+    }
+
+    return typeof val === 'object' ? val.id : val;
+  };
+
+  // Helper to format date for display and comparison
+  const formatDate = (dateVal) => {
+    if (!dateVal) return null;
+    let date;
+    if (typeof dateVal === 'number') {
+      date = new Date(dateVal * 1000);
+    } else {
+      date = new Date(dateVal);
+    }
+    return date.toLocaleDateString('en-CA'); // YYYY-MM-DD
+  };
+
+  const [orderMap, setOrderMap] = useState({});
+
+  const fetchData = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const headers = await getHeaders();
+
+      // 1. Fetch Sub_Orders
+      // Use limit=0 to fetch all records (or a sufficiently high limit if 0 isn't supported, but 0 is standard for 'no limit' in some APIs, 
+      // Grist might require a high number or pagination. Let's try without limit first, but if we suspect truncation, we should check.
+      // Actually, Grist API default limit is often 100. We MUST use a limit.
+      const url = getUrl(`/api/docs/${DOC_ID}/tables/${TABLE_ID}/records?limit=0`);
+      const response = await fetch(url, { headers });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch data: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      const allRecords = data.records || [];
+
+      // 2. Extract unique values for filters and lookups
+      const plates = new Set();
+      const dates = new Set();
+      const customerIds = new Set();
+      const orderRefIds = new Set();
+
+      allRecords.forEach(r => {
+        if (r.fields['Plate']) plates.add(r.fields['Plate']);
+        const d = formatDate(r.fields['Factory_Updated_Date']);
+        if (d) dates.add(d);
+
+        const custId = extractId(r.fields['Customer']);
+        if (custId) customerIds.add(custId);
+
+        const orderId = extractId(r.fields['Order']);
+        if (orderId) orderRefIds.add(orderId);
+      });
+
+      setAvailablePlates(Array.from(plates).sort());
+      setAvailableDates(Array.from(dates).sort().reverse()); // Newest first
+
+      // Set default date to today if available, otherwise first available
+      const todayStr = new Date().toLocaleDateString('en-CA');
+      if (dates.has(todayStr)) {
+        setSelectedDate(todayStr);
+      } else if (dates.size > 0) {
+        setSelectedDate(Array.from(dates).sort().reverse()[0]);
+      }
+
+      // 3. Fetch Customers
+      // Fetch all customers to ensure we have a complete map. 
+      // Using a very high limit (100000) because limit=0 might be interpreted as default (100) or have issues.
+      if (customerIds.size > 0) {
+        const custUrl = getUrl(`/api/docs/${DOC_ID}/tables/${CUSTOMERS_TABLE_ID}/records?limit=100000`);
+        const custRes = await fetch(custUrl, { headers });
+
+        if (custRes.ok) {
+          const custData = await custRes.json();
+          const custMap = {};
+          let minId = Infinity;
+          let maxId = -Infinity;
+
+          custData.records.forEach(c => {
+            custMap[c.id] = c.fields['Shop_Name'] || `Customer ${c.id}`;
+            if (c.id < minId) minId = c.id;
+            if (c.id > maxId) maxId = c.id;
+          });
+          setCustomerMap(custMap);
+        } else {
+          console.error("Failed to fetch customers:", custRes.status, custRes.statusText);
+        }
+      }
+
+      // 4. Fetch Orders to resolve Order_ID
+      if (orderRefIds.size > 0) {
+        const ordersUrl = getUrl(`/api/docs/${DOC_ID}/tables/${ORDERS_TABLE_ID}/records?limit=100000`);
+        const ordersRes = await fetch(ordersUrl, { headers });
+
+        if (ordersRes.ok) {
+          const ordersData = await ordersRes.json();
+          const oMap = {};
+          ordersData.records.forEach(o => {
+            // Map Row ID -> Order_ID column value
+            oMap[o.id] = o.fields['Order_ID'];
+          });
+          setOrderMap(oMap);
+        } else {
+          console.error("Failed to fetch orders:", ordersRes.status, ordersRes.statusText);
+        }
+      }
+
+      setRecords(allRecords);
+    } catch (err) {
+      console.error("Factory View Error:", err);
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  // Filter records based on selection
+  const filteredRecords = records.filter(record => {
+    const recordDate = formatDate(record.fields['Factory_Updated_Date']);
+    const recordPlate = record.fields['Plate'];
+
+    const dateMatch = !selectedDate || recordDate === selectedDate;
+    const plateMatch = !selectedPlate || recordPlate === selectedPlate;
+
+    return dateMatch && plateMatch;
+  });
+
+  const handleViewOrderForm = async (orderRefId) => {
+    if (!orderRefId) {
+      alert("No Order Reference ID found");
+      return;
+    }
+
+    setLoadingPreview(true);
+    setPreviewImage(null); // Open modal immediately in loading state
+
+    try {
+      const headers = await getHeaders();
+
+      // 1. Fetch the Order record from 'Orders' table
+      // We use the filter query param to find the record by ID (which is what the ref is)
+      // Grist API: /records?filter={"id": [REF_ID]}
+      const filter = JSON.stringify({ id: [orderRefId] });
+      const queryUrl = getUrl(`/api/docs/${DOC_ID}/tables/${ORDERS_TABLE_ID}/records?filter=${encodeURIComponent(filter)}`);
+
+      const orderRes = await fetch(queryUrl, { headers });
+      if (!orderRes.ok) throw new Error("Failed to fetch order details");
+
+      const orderData = await orderRes.json();
+      if (!orderData.records || orderData.records.length === 0) {
+        throw new Error("Order record not found");
+      }
+
+      const orderRecord = orderData.records[0];
+      const rawAttachments = orderRecord.fields['Order_Form'];
+
+      if (!rawAttachments || !Array.isArray(rawAttachments)) {
+        throw new Error("No Order Form attachment found");
+      }
+
+      // Filter out 'L' marker which Grist sometimes includes in list values
+      const attachments = rawAttachments.filter(item => item !== 'L');
+
+      if (attachments.length === 0) {
+        throw new Error("No Order Form attachment found");
+      }
+
+      // 2. Fetch the image blob
+      // Use the first attachment
+      const attachmentId = attachments[0];
+      // Handle case where attachment might be an object or just ID (Grist API varies slightly by version/column type)
+      const attId = typeof attachmentId === 'object' ? attachmentId.id : attachmentId;
+
+      const imgUrl = getUrl(`/api/docs/${DOC_ID}/attachments/${attId}/download`);
+      const imgRes = await fetch(imgUrl, { headers });
+
+      if (!imgRes.ok) throw new Error("Failed to download image");
+
+      const blob = await imgRes.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      setPreviewImage(objectUrl);
+
+    } catch (err) {
+      console.error("Preview Error:", err);
+      alert(`Error loading preview: ${err.message}`);
+      setLoadingPreview(false); // Close modal on error (or we could show error state in modal)
+      setPreviewImage(null); // Ensure modal closes or shows error
+    } finally {
+      // If we have an image, we keep loadingPreview true until the modal renders?
+      // No, we set loadingPreview false to show the image.
+      // But if we errored, we might want to close it.
+      // Let's handle state carefully:
+      // If success: previewImage = url, loadingPreview = false
+      // If error: previewImage = null, loadingPreview = false (modal closes)
+      // Wait, if previewImage is null, modal doesn't show?
+      // We need a way to show the modal while loading.
+      // Let's use a separate state 'showPreviewModal' or just rely on 'loadingPreview || previewImage'
+    }
+  };
+
+  // Wrapper to manage modal state
+  const openPreview = (orderRefId) => {
+    setLoadingPreview(true); // This triggers modal open
+    handleViewOrderForm(orderRefId).then(() => {
+      setLoadingPreview(false);
+    });
+  };
+
+  const closePreview = () => {
+    if (previewImage) {
+      URL.revokeObjectURL(previewImage);
+    }
+    setPreviewImage(null);
+    setLoadingPreview(false);
+  };
+
+  const handleViewScreenshot = async (subOrderId) => {
+    if (!subOrderId) {
+      alert("No Sub-Order ID found");
+      return;
+    }
+
+    setLoadingPreview(true);
+    setPreviewImage(null);
+
+    try {
+      const headers = await getHeaders();
+      const CONVERSATIONS_TABLE_ID = 'Customer_Conversations';
+
+      // 1. Fetch conversations linked to this sub-order
+      const filter = JSON.stringify({ Sub_Order_in_Context: [subOrderId] });
+      const queryUrl = getUrl(`/api/docs/${DOC_ID}/tables/${CONVERSATIONS_TABLE_ID}/records?filter=${encodeURIComponent(filter)}`);
+
+      const res = await fetch(queryUrl, { headers });
+      if (!res.ok) throw new Error("Failed to fetch conversation details");
+
+      const data = await res.json();
+      if (!data.records || data.records.length === 0) {
+        throw new Error("No conversation records found for this order");
+      }
+
+      // 2. Find the record with "FINALISED DESIGN" in Outcomes
+      const targetRecord = data.records.find(r => {
+        const outcomes = r.fields['Outcomes'];
+        // Outcomes might be a string or a list (if choice list)
+        if (Array.isArray(outcomes)) {
+          return outcomes.includes("FINALISED DESIGN");
+        }
+        return outcomes === "FINALISED DESIGN";
+      });
+
+      if (!targetRecord) {
+        throw new Error("No 'FINALISED DESIGN' record found");
+      }
+
+      const rawAttachments = targetRecord.fields['Screenshots'];
+
+      if (!rawAttachments || !Array.isArray(rawAttachments)) {
+        throw new Error("No Screenshot attachment found");
+      }
+
+      // Filter out 'L' marker
+      const attachments = rawAttachments.filter(item => item !== 'L');
+
+      if (attachments.length === 0) {
+        throw new Error("No Screenshot attachment found");
+      }
+
+      // 3. Fetch the image blob
+      const attachmentId = attachments[0];
+      const attId = typeof attachmentId === 'object' ? attachmentId.id : attachmentId;
+
+      const imgUrl = getUrl(`/api/docs/${DOC_ID}/attachments/${attId}/download`);
+      const imgRes = await fetch(imgUrl, { headers });
+
+      if (!imgRes.ok) throw new Error("Failed to download screenshot");
+
+      const blob = await imgRes.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      setPreviewImage(objectUrl);
+
+    } catch (err) {
+      console.error("Screenshot Preview Error:", err);
+      alert(`Error loading screenshot: ${err.message}`);
+      setLoadingPreview(false);
+      setPreviewImage(null);
+    }
+  };
+
+  // Wrapper to manage modal state
+  const openScreenshotPreview = (subOrderId) => {
+    setLoadingPreview(true);
+    handleViewScreenshot(subOrderId).then(() => {
+      setLoadingPreview(false);
+    });
+  };
+
+  const handleOpenLink = (url) => {
+    if (url) {
+      window.open(url, '_blank');
+    } else {
+      alert("Link not available");
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col">
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-10 px-4 py-3">
+        <div className="max-w-7xl mx-auto flex flex-col gap-3">
+          <div className="flex justify-between items-center">
+            <div className="flex items-center gap-3">
+              <Button variant="ghost" onClick={onBack} className="!px-2">
+                <ArrowLeft size={20} />
+              </Button>
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 bg-orange-600 rounded-lg flex items-center justify-center text-white">
+                  <Factory size={18} />
+                </div>
+                <h1 className="font-bold text-slate-800">Factory View</h1>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                onClick={fetchData}
+                disabled={loading}
+                className="!px-3"
+              >
+                <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => setShowSettings(true)}
+                className="!px-3"
+              >
+                <Settings size={18} />
+              </Button>
+            </div>
+          </div>
+
+          {/* Filters */}
+          <div className="flex gap-3">
+            <Select
+              value={selectedDate}
+              onChange={setSelectedDate}
+              options={availableDates.map(d => ({ value: d, label: d === new Date().toLocaleDateString('en-CA') ? `${d} (Today)` : d }))}
+              placeholder="All Dates"
+              className="flex-1"
+            />
+            <Select
+              value={selectedPlate}
+              onChange={setSelectedPlate}
+              options={availablePlates.map(p => ({ value: p, label: p }))}
+              placeholder="All Plates"
+              className="flex-1"
+            />
+          </div>
+        </div>
+      </header>
+
+      <main className="flex-1 p-4 overflow-auto">
+        <div className="max-w-7xl mx-auto">
+          {error && (
+            <div className="mb-4 p-4 bg-red-50 text-red-700 rounded-lg border border-red-100 flex gap-2 items-start">
+              <AlertCircle size={18} className="mt-0.5 shrink-0" />
+              <div>
+                <p className="font-medium">Error</p>
+                <p className="text-sm">{error}</p>
+              </div>
+            </div>
+          )}
+
+          {loading ? (
+            <div className="flex flex-col items-center justify-center h-64 text-slate-400">
+              <Loader2 size={40} className="animate-spin mb-4 text-orange-600" />
+              <p>Loading factory updates...</p>
+            </div>
+          ) : (
+            <>
+              {filteredRecords.length === 0 ? (
+                <div className="text-center py-20 text-slate-500 bg-white rounded-xl border border-dashed border-slate-300">
+                  <Factory size={48} className="mx-auto mb-4 text-slate-300" />
+                  <p className="text-lg font-medium mb-2">No Records Found</p>
+                  <p className="text-sm">Try adjusting your filters.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {filteredRecords.map((record) => (
+                    <Card key={record.id} className="p-4 flex flex-col gap-4 hover:shadow-md transition-shadow">
+                      <div>
+                        <div className="mb-3 pb-3 border-b border-slate-100 flex justify-between items-start gap-2">
+                          <h3 className="font-bold text-xl text-slate-800 leading-tight">
+                            {customerMap[String(extractId(record.fields['Customer']))] || 'Unknown Customer'}
+                          </h3>
+                          <span className="bg-blue-100 text-blue-800 text-xs font-bold px-2.5 py-1 rounded-full shrink-0">
+                            #{orderMap[extractId(record.fields['Order'])] || extractId(record.fields['Order'])}
+                          </span>
+                        </div>
+
+                        <div className="space-y-2 text-sm text-slate-600">
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Updated:</span>
+                            <span className="font-medium">{formatDate(record.fields['Factory_Updated_Date'])}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Material:</span>
+                            <span className="font-medium">{record.fields['Material']}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Model:</span>
+                            <span className="font-medium">{record.fields['Model']}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Plate:</span>
+                            <span className="font-medium">{record.fields['Plate']}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Print:</span>
+                            <span className="font-medium">{record.fields['Print']}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Design Version:</span>
+                            <span className="font-medium">{record.fields['Design_Version']}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-auto flex flex-col gap-2 pt-2">
+                        <Button
+                          variant="outline"
+                          className="w-full text-sm"
+                          onClick={() => openPreview(record.fields['Order'])}
+                        >
+                          View Order Form
+                        </Button>
+                        <Button
+                          variant="primary"
+                          className="w-full text-sm bg-orange-600 hover:bg-orange-700"
+                          onClick={() => openScreenshotPreview(record.id)}
+                        >
+                          View Finalisation Screenshot
+                        </Button>
+                      </div>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </main>
+
+      {/* Image Preview Modal */}
+      {(loadingPreview || previewImage) && (
+        <ImagePreviewModal
+          src={previewImage}
+          loading={loadingPreview && !previewImage}
+          onClose={closePreview}
+        />
+      )}
 
       {showSettings && (
         <SettingsModal
@@ -717,6 +1281,18 @@ export default function App() {
         path="/table"
         element={
           <CustomTableViewer
+            onBack={handleBackToHome}
+            user={user}
+            onLogout={handleLogout}
+            getHeaders={getHeaders}
+            getUrl={getUrl}
+          />
+        }
+      />
+      <Route
+        path="/factory"
+        element={
+          <FactoryView
             onBack={handleBackToHome}
             user={user}
             onLogout={handleLogout}
