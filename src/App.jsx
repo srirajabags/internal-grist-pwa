@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
-import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory } from 'lucide-react';
+import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code } from 'lucide-react';
 import { useAuth0 } from '@auth0/auth0-react';
 
 // Get server URL from environment
@@ -106,6 +106,14 @@ const SettingsModal = ({ onClose, user, onLogout }) => (
 const HomePage = ({ onNavigate }) => {
   const pageOptions = [
     {
+      id: 'factory',
+      title: 'Factory View',
+      description: 'View today\'s factory updates',
+      icon: Factory,
+      color: 'bg-orange-600',
+      hoverColor: 'hover:bg-orange-700'
+    },
+    {
       id: 'telecaller',
       title: 'Telecaller View',
       description: 'Manage telecaller operations and calls',
@@ -130,12 +138,12 @@ const HomePage = ({ onNavigate }) => {
       hoverColor: 'hover:bg-green-700'
     },
     {
-      id: 'factory',
-      title: 'Factory View',
-      description: 'View today\'s factory updates',
-      icon: Factory,
-      color: 'bg-orange-600',
-      hoverColor: 'hover:bg-orange-700'
+      id: 'sql',
+      title: 'Analyse with SQL',
+      description: 'Execute custom SQL queries on Grist data',
+      icon: Code,
+      color: 'bg-cyan-600',
+      hoverColor: 'hover:bg-cyan-700'
     }
   ];
 
@@ -156,7 +164,7 @@ const HomePage = ({ onNavigate }) => {
       </header>
 
       <main className="flex-1 p-4 md:p-8">
-        <div className="max-w-6xl mx-auto">
+        <div className="max-w-7xl mx-auto">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {pageOptions.map((option) => {
               const Icon = option.icon;
@@ -1191,7 +1199,323 @@ const CustomTableViewer = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
   );
 };
 
+// SQL Analysis View Component
+const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
+  const [showSettings, setShowSettings] = useState(false);
+  const [docs, setDocs] = useState([]);
+  const [selectedDocId, setSelectedDocId] = useState('');
+  const [loadingDocs, setLoadingDocs] = useState(true);
+  const [sqlQuery, setSqlQuery] = useState('');
+  const [results, setResults] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Fetch available documents
+  const fetchDocs = async () => {
+    setLoadingDocs(true);
+    setError(null);
+
+    try {
+      const headers = await getHeaders();
+      const orgCandidates = new Set();
+
+      // 1. Explicitly add 'docs' (common self-hosted default)
+      orgCandidates.add('docs');
+
+      // 2. Try to fetch other organizations (Best effort)
+      try {
+        const orgsRes = await fetch(getUrl('/api/orgs'), { headers });
+        if (orgsRes.ok) {
+          const orgs = await orgsRes.json();
+          orgs.forEach(o => orgCandidates.add(o.id || o.subdomain));
+        }
+      } catch (e) {
+        console.warn("Could not list orgs, relying on defaults", e);
+      }
+
+      let allDocs = [];
+      let successCount = 0;
+
+      // 3. Fetch Workspaces for ALL candidates
+      for (const orgId of orgCandidates) {
+        try {
+          const wsRes = await fetch(getUrl(`/api/orgs/${orgId}/workspaces`), { headers });
+
+          if (wsRes.ok) {
+            const workspaces = await wsRes.json();
+            successCount++;
+            workspaces.forEach(ws => {
+              if (ws.docs && Array.isArray(ws.docs)) {
+                ws.docs.forEach(doc => {
+                  allDocs.push({
+                    id: doc.id,
+                    name: `${doc.name} (${orgId})`
+                  });
+                });
+              }
+            });
+          }
+        } catch (err) {
+          console.log(`Skipping org '${orgId}':`, err);
+        }
+      }
+
+      if (allDocs.length === 0) {
+        if (successCount === 0) {
+          throw new Error("Could not connect to any organization. Check server URL and CORS configuration.");
+        } else {
+          setError("Connected, but no documents found.");
+        }
+      }
+
+      setDocs(allDocs);
+
+      // Auto-select first doc if none selected
+      if (allDocs.length > 0 && !selectedDocId) {
+        setSelectedDocId(allDocs[0].id);
+      }
+    } catch (err) {
+      console.error('Error fetching documents:', err);
+      if (err.name === 'TypeError' && err.message.includes('Failed to fetch')) {
+        setError("Network blocked (CORS). Please configure GRIST_CORS_ALLOW_ORIGIN on your Grist server.");
+      } else {
+        setError(`Discovery failed: ${err.message}`);
+      }
+    } finally {
+      setLoadingDocs(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDocs();
+  }, []);
+
+  // Execute SQL query
+  const executeQuery = async () => {
+    if (!selectedDocId) {
+      setError('Please select a document first');
+      return;
+    }
+
+    if (!sqlQuery.trim()) {
+      setError('Please enter a SQL query');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    setResults(null);
+
+    try {
+      const headers = await getHeaders();
+      const url = getUrl(`/api/docs/${selectedDocId}/sql?q=${encodeURIComponent(sqlQuery)}`);
+      const response = await fetch(url, { headers });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Query failed: ${response.statusText}${errorText ? ` - ${errorText}` : ''}`);
+      }
+
+      const data = await response.json();
+      setResults(data);
+    } catch (err) {
+      console.error('SQL Query Error:', err);
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Format SQL query (basic formatting)
+  const formatSQL = () => {
+    if (!sqlQuery.trim()) return;
+
+    // Basic SQL formatting
+    const formatted = sqlQuery
+      .replace(/\s+/g, ' ') // Normalize whitespace
+      .replace(/\b(SELECT|FROM|WHERE|JOIN|LEFT|RIGHT|INNER|OUTER|ON|GROUP BY|ORDER BY|HAVING|LIMIT|OFFSET|AND|OR|NOT|IN|EXISTS|CASE|WHEN|THEN|ELSE|END|AS|DISTINCT|COUNT|SUM|AVG|MAX|MIN)\b/gi, (match) => match.toUpperCase())
+      .replace(/,/g, ',\n  ') // Add newlines after commas
+      .replace(/\bFROM\b/gi, '\nFROM')
+      .replace(/\bWHERE\b/gi, '\nWHERE')
+      .replace(/\bJOIN\b/gi, '\nJOIN')
+      .replace(/\bGROUP BY\b/gi, '\nGROUP BY')
+      .replace(/\bORDER BY\b/gi, '\nORDER BY')
+      .replace(/\bLIMIT\b/gi, '\nLIMIT')
+      .trim();
+
+    setSqlQuery(formatted);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col">
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-10 px-4 py-3">
+        <div className="max-w-7xl mx-auto flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" onClick={onBack} className="!px-2">
+              <ArrowLeft size={20} />
+            </Button>
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-cyan-600 rounded-lg flex items-center justify-center text-white">
+                <Code size={18} />
+              </div>
+              <h1 className="font-bold text-slate-800">Analyse with SQL</h1>
+            </div>
+          </div>
+          <Button
+            variant="secondary"
+            onClick={() => setShowSettings(true)}
+            className="!px-3"
+          >
+            <Settings size={18} />
+          </Button>
+        </div>
+      </header>
+
+      <main className="flex-1 p-4 overflow-auto">
+        <div className="max-w-7xl mx-auto space-y-4">
+          {/* Document Selector */}
+          <Card className="p-4">
+            <Select
+              label="Select Document"
+              value={selectedDocId}
+              onChange={setSelectedDocId}
+              options={docs.map(doc => ({ value: doc.id, label: doc.name || doc.id }))}
+              placeholder="Choose a document..."
+              loading={loadingDocs}
+              disabled={loadingDocs}
+            />
+          </Card>
+
+          {/* SQL Query Input */}
+          <Card className="p-4">
+            <div className="space-y-2">
+              <div className="flex justify-between items-center">
+                <label className="block text-sm font-medium text-slate-700">SQL Query</label>
+                <Button
+                  variant="ghost"
+                  onClick={formatSQL}
+                  className="!px-2 !py-1 text-xs"
+                  disabled={!sqlQuery.trim()}
+                >
+                  Format SQL
+                </Button>
+              </div>
+              <textarea
+                value={sqlQuery}
+                onChange={(e) => setSqlQuery(e.target.value)}
+                placeholder="Enter your SQL query here (SQLite3 syntax)&#10;Example: SELECT * FROM Customers LIMIT 10"
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition-all outline-none font-mono text-sm resize-y"
+                rows={8}
+                style={{ minHeight: '120px' }}
+              />
+              <div className="flex gap-2">
+                <Button
+                  onClick={executeQuery}
+                  disabled={loading || !selectedDocId || !sqlQuery.trim()}
+                  className="flex-1"
+                  icon={loading ? Loader2 : Code}
+                >
+                  {loading ? 'Executing...' : 'Execute Query'}
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setSqlQuery('');
+                    setResults(null);
+                    setError(null);
+                  }}
+                  disabled={loading}
+                >
+                  Clear
+                </Button>
+              </div>
+            </div>
+          </Card>
+
+          {/* Error Display */}
+          {error && (
+            <div className="p-4 bg-red-50 text-red-700 rounded-lg border border-red-100 flex gap-2 items-start">
+              <AlertCircle size={18} className="mt-0.5 shrink-0" />
+              <div>
+                <p className="font-medium">Error</p>
+                <p className="text-sm">{error}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Results Display */}
+          {results && results.records && results.records.length > 0 && (
+            <Card className="p-4">
+              <div className="mb-3 flex justify-between items-center">
+                <h3 className="font-bold text-slate-800">Query Results</h3>
+                <span className="text-sm text-slate-500">
+                  {results.records.length} row{results.records.length !== 1 ? 's' : ''}
+                </span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200">
+                      {Object.keys(results.records[0].fields || {}).map((key) => (
+                        <th
+                          key={key}
+                          className="px-4 py-2 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider"
+                        >
+                          {key}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {results.records.map((record, idx) => (
+                      <tr
+                        key={idx}
+                        className="border-b border-slate-100 hover:bg-slate-50 transition-colors"
+                      >
+                        {Object.values(record.fields || {}).map((value, cellIdx) => (
+                          <td
+                            key={cellIdx}
+                            className="px-4 py-2 text-sm text-slate-700"
+                          >
+                            {value === null || value === undefined
+                              ? <span className="text-slate-400 italic">null</span>
+                              : typeof value === 'object'
+                                ? JSON.stringify(value)
+                                : String(value)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
+
+          {/* No Results Message */}
+          {results && results.records && results.records.length === 0 && (
+            <div className="text-center py-12 text-slate-500 bg-white rounded-xl border border-dashed border-slate-300">
+              <Database size={48} className="mx-auto mb-4 text-slate-300" />
+              <p className="text-lg font-medium mb-2">No Results</p>
+              <p className="text-sm">The query executed successfully but returned no rows.</p>
+            </div>
+          )}
+        </div>
+      </main>
+
+      {showSettings && (
+        <SettingsModal
+          onClose={() => setShowSettings(false)}
+          user={user}
+          onLogout={onLogout}
+        />
+      )}
+    </div>
+  );
+};
+
 // Main App Component
+
 export default function App() {
   const { loginWithRedirect, logout, user, isAuthenticated, isLoading, getAccessTokenSilently } = useAuth0();
   const navigate = useNavigate();
@@ -1307,6 +1631,18 @@ export default function App() {
         path="/factory"
         element={
           <FactoryView
+            onBack={handleBackToHome}
+            user={user}
+            onLogout={handleLogout}
+            getHeaders={getHeaders}
+            getUrl={getUrl}
+          />
+        }
+      />
+      <Route
+        path="/sql"
+        element={
+          <SQLAnalysisView
             onBack={handleBackToHome}
             user={user}
             onLogout={handleLogout}

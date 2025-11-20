@@ -38,6 +38,13 @@ export default defineConfig({
         ],
         shortcuts: [
           {
+            name: 'Factory View',
+            short_name: 'Factory',
+            description: 'View today\'s factory updates',
+            url: '/factory',
+            icons: [{ src: 'pwa-192x192.png', sizes: '192x192' }]
+          },
+          {
             name: 'Telecaller View',
             short_name: 'Telecaller',
             description: 'Manage telecaller operations and calls',
@@ -56,6 +63,13 @@ export default defineConfig({
             short_name: 'Tables',
             description: 'View and explore Grist data tables',
             url: '/table',
+            icons: [{ src: 'pwa-192x192.png', sizes: '192x192' }]
+          },
+          {
+            name: 'Analyse with SQL',
+            short_name: 'SQL',
+            description: 'Execute custom SQL queries on Grist data',
+            url: '/sql',
             icons: [{ src: 'pwa-192x192.png', sizes: '192x192' }]
           }
         ]
