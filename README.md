@@ -1,4 +1,4 @@
-# Internal Grist PWA
+# SRB Grist PWA
 
 A Progressive Web App (PWA) for internal team use, powered by Grist.
 

@@ -106,6 +106,14 @@ const SettingsModal = ({ onClose, user, onLogout }) => (
 const HomePage = ({ onNavigate }) => {
   const pageOptions = [
     {
+      id: 'sql',
+      title: 'Analyse with SQL',
+      description: 'Execute custom SQL queries on Grist data',
+      icon: Code,
+      color: 'bg-cyan-600',
+      hoverColor: 'hover:bg-cyan-700'
+    },
+    {
       id: 'factory',
       title: 'Factory View',
       description: 'View today\'s factory updates',
@@ -137,14 +145,6 @@ const HomePage = ({ onNavigate }) => {
       color: 'bg-green-600',
       hoverColor: 'hover:bg-green-700'
     },
-    {
-      id: 'sql',
-      title: 'Analyse with SQL',
-      description: 'Execute custom SQL queries on Grist data',
-      icon: Code,
-      color: 'bg-cyan-600',
-      hoverColor: 'hover:bg-cyan-700'
-    }
   ];
 
   return (
@@ -156,7 +156,7 @@ const HomePage = ({ onNavigate }) => {
               <Database size={24} />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-slate-800">Grist Connector</h1>
+              <h1 className="text-2xl font-bold text-slate-800">SRB Grist PWA</h1>
               <p className="text-sm text-slate-500">Select a view to get started</p>
             </div>
           </div>
@@ -1889,7 +1889,7 @@ export default function App() {
             <div className="w-16 h-16 bg-green-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg text-white">
               <Database size={32} />
             </div>
-            <h1 className="text-2xl font-bold text-slate-800">Grist Connector</h1>
+            <h1 className="text-2xl font-bold text-slate-800">SRB Grist PWA</h1>
             <p className="text-slate-500">Connect to your data securely</p>
           </div>
 

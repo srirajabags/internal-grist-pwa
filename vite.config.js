@@ -10,9 +10,9 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'masked-icon.svg'],
       manifest: {
-        name: 'Grist PWA',
-        short_name: 'Grist',
-        description: 'Internal Grist PWA for team use',
+        name: 'SRB Grist PWA',
+        short_name: 'SRB Grist PWA',
+        description: 'SRB Grist PWA for team use',
         theme_color: '#ffffff',
         background_color: '#ffffff',
         display: 'standalone',
