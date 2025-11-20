@@ -410,6 +410,9 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
           so.Print, 
           so.Customer, 
           so."Order",
+          so.Design_Version,
+          so.Bag_Width,
+          so.Bag_Height,
           c.Shop_Name,
           o.Order_ID,
           o.Order_Form,
@@ -713,6 +716,12 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
                           <div className="flex justify-between">
                             <span className="text-slate-500">Design Version:</span>
                             <span className="font-medium">{record.fields['Design_Version']}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Size:</span>
+                            <span className="font-medium">
+                              {record.fields['Bag_Width']} X {record.fields['Bag_Height']}
+                            </span>
                           </div>
                         </div>
                       </div>
