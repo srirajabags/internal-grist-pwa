@@ -337,8 +337,10 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
   // Filter State
   const [selectedPlate, setSelectedPlate] = useState('');
   const [selectedDate, setSelectedDate] = useState('');
+  const [selectedPrint, setSelectedPrint] = useState('');
   const [availablePlates, setAvailablePlates] = useState([]);
   const [availableDates, setAvailableDates] = useState([]);
+  const [availablePrints, setAvailablePrints] = useState([]);
 
   // Data Maps
   const [customerMap, setCustomerMap] = useState({});
@@ -410,11 +412,13 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
       // 2. Extract unique values for filters and lookups
       const plates = new Set();
       const dates = new Set();
+      const prints = new Set();
       const customerIds = new Set();
       const orderRefIds = new Set();
 
       allRecords.forEach(r => {
         if (r.fields['Plate']) plates.add(r.fields['Plate']);
+        if (r.fields['Print']) prints.add(r.fields['Print']);
         const d = formatDate(r.fields['Factory_Updated_Date']);
         if (d) dates.add(d);
 
@@ -426,6 +430,7 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
       });
 
       setAvailablePlates(Array.from(plates).sort());
+      setAvailablePrints(Array.from(prints).sort());
       setAvailableDates(Array.from(dates).sort().reverse()); // Newest first
 
       // Set default date to today if available, otherwise first available
@@ -495,11 +500,13 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
   const filteredRecords = records.filter(record => {
     const recordDate = formatDate(record.fields['Factory_Updated_Date']);
     const recordPlate = record.fields['Plate'];
+    const recordPrint = record.fields['Print'];
 
     const dateMatch = !selectedDate || recordDate === selectedDate;
     const plateMatch = !selectedPlate || recordPlate === selectedPlate;
+    const printMatch = !selectedPrint || recordPrint === selectedPrint;
 
-    return dateMatch && plateMatch;
+    return dateMatch && plateMatch && printMatch;
   });
 
   const handleViewOrderForm = async (orderRefId) => {
@@ -729,6 +736,13 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
               onChange={setSelectedPlate}
               options={availablePlates.map(p => ({ value: p, label: p }))}
               placeholder="All Plates"
+              className="flex-1"
+            />
+            <Select
+              value={selectedPrint}
+              onChange={setSelectedPrint}
+              options={availablePrints.map(p => ({ value: p, label: p }))}
+              placeholder="All Prints"
               className="flex-1"
             />
           </div>
