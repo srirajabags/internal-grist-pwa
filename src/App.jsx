@@ -320,6 +320,7 @@ const ImagePreviewModal = ({ src, onClose, loading }) => (
           src={src}
           alt="Preview"
           className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl"
+          onError={(e) => console.error("Image load error in modal:", e)}
         />
       ) : (
         <div className="text-white text-center">
@@ -344,19 +345,15 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
 
   // Filter State
   const [selectedPlate, setSelectedPlate] = useState('');
-  const [selectedDate, setSelectedDate] = useState('');
+  // Default to today's date in YYYY-MM-DD format
+  const [selectedDate, setSelectedDate] = useState(new Date().toLocaleDateString('en-CA'));
   const [selectedPrint, setSelectedPrint] = useState('');
   const [availablePlates, setAvailablePlates] = useState([]);
-  const [availableDates, setAvailableDates] = useState([]);
   const [availablePrints, setAvailablePrints] = useState([]);
-
-  // Data Maps
-  const [customerMap, setCustomerMap] = useState({});
 
   const DOC_ID = '8vRFY3UUf4spJroktByH4u';
   const TABLE_ID = 'Sub_Orders';
   const ORDERS_TABLE_ID = 'Orders';
-  const CUSTOMERS_TABLE_ID = 'Customers';
 
   // Helper to extract ID from Grist fields (handles ['L', id] and ['R', 'Table', id] formats)
   const extractId = (val) => {
@@ -395,20 +392,48 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
     return date.toLocaleDateString('en-CA'); // YYYY-MM-DD
   };
 
-  const [orderMap, setOrderMap] = useState({});
-
   const fetchData = async () => {
     setLoading(true);
     setError(null);
     try {
       const headers = await getHeaders();
 
-      // 1. Fetch Sub_Orders
-      // Use limit=0 to fetch all records (or a sufficiently high limit if 0 isn't supported, but 0 is standard for 'no limit' in some APIs, 
-      // Grist might require a high number or pagination. Let's try without limit first, but if we suspect truncation, we should check.
-      // Actually, Grist API default limit is often 100. We MUST use a limit.
-      const url = getUrl(`/api/docs/${DOC_ID}/tables/${TABLE_ID}/records?limit=0`);
-      const response = await fetch(url, { headers });
+      // Construct SQL Query to join tables and fetch all necessary data
+      // We select specific columns to match the previous logic and new requirements
+      const sqlQuery = `
+        SELECT 
+          so.id, 
+          so.Factory_Updated_Date, 
+          so.Material, 
+          so.Model, 
+          so.Plate, 
+          so.Print, 
+          so.Customer, 
+          so."Order",
+          c.Shop_Name,
+          o.Order_ID,
+          o.Order_Form,
+          cc.Screenshots
+        FROM Sub_Orders so
+        LEFT JOIN Customers c ON so.Customer = c.id
+        LEFT JOIN Orders o ON so."Order" = o.id
+        LEFT JOIN Customer_Conversations cc 
+          ON (cc.Outcomes LIKE '%FINALISED DESIGN%') AND so.id = cc.Sub_Order_in_Context
+        WHERE so.Factory_Updated_Date = ?
+      `;
+
+      const url = getUrl(`/api/docs/${DOC_ID}/sql`);
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          sql: sqlQuery,
+          args: [`${(new Date(selectedDate)).getTime() / 1000}`]
+        })
+      });
 
       if (!response.ok) {
         throw new Error(`Failed to fetch data: ${response.statusText}`);
@@ -417,79 +442,17 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
       const data = await response.json();
       const allRecords = data.records || [];
 
-      // 2. Extract unique values for filters and lookups
+      // Extract unique values for filters
       const plates = new Set();
-      const dates = new Set();
       const prints = new Set();
-      const customerIds = new Set();
-      const orderRefIds = new Set();
 
       allRecords.forEach(r => {
         if (r.fields['Plate']) plates.add(r.fields['Plate']);
         if (r.fields['Print']) prints.add(r.fields['Print']);
-        const d = formatDate(r.fields['Factory_Updated_Date']);
-        if (d) dates.add(d);
-
-        const custId = extractId(r.fields['Customer']);
-        if (custId) customerIds.add(custId);
-
-        const orderId = extractId(r.fields['Order']);
-        if (orderId) orderRefIds.add(orderId);
       });
 
       setAvailablePlates(Array.from(plates).sort());
       setAvailablePrints(Array.from(prints).sort());
-      setAvailableDates(Array.from(dates).sort().reverse()); // Newest first
-
-      // Set default date to today if available, otherwise first available
-      const todayStr = new Date().toLocaleDateString('en-CA');
-      if (dates.has(todayStr)) {
-        setSelectedDate(todayStr);
-      } else if (dates.size > 0) {
-        setSelectedDate(Array.from(dates).sort().reverse()[0]);
-      }
-
-      // 3. Fetch Customers using optimized SQL query
-      // Use SQL endpoint to fetch only id and Shop_Name columns for better performance
-      if (customerIds.size > 0) {
-        const sqlQuery = 'select id, Shop_Name from Customers';
-        const custUrl = getUrl(`/api/docs/${DOC_ID}/sql?q=${encodeURIComponent(sqlQuery)}`);
-        const custRes = await fetch(custUrl, { headers });
-
-        if (custRes.ok) {
-          const custData = await custRes.json();
-          const custMap = {};
-
-          // SQL endpoint returns data in a different format: {records: [{id: ..., fields: {Shop_Name: ...}}]}
-          if (custData.records) {
-            custData.records.forEach(cR => {
-              const c = cR.fields;
-              custMap[c.id] = c.Shop_Name || `Customer ${c.id}`;
-            });
-          }
-          setCustomerMap(custMap);
-        } else {
-          console.error("Failed to fetch customers:", custRes.status, custRes.statusText);
-        }
-      }
-
-      // 4. Fetch Orders to resolve Order_ID
-      if (orderRefIds.size > 0) {
-        const ordersUrl = getUrl(`/api/docs/${DOC_ID}/tables/${ORDERS_TABLE_ID}/records?limit=100000`);
-        const ordersRes = await fetch(ordersUrl, { headers });
-
-        if (ordersRes.ok) {
-          const ordersData = await ordersRes.json();
-          const oMap = {};
-          ordersData.records.forEach(o => {
-            // Map Row ID -> Order_ID column value
-            oMap[o.id] = o.fields['Order_ID'];
-          });
-          setOrderMap(oMap);
-        } else {
-          console.error("Failed to fetch orders:", ordersRes.status, ordersRes.statusText);
-        }
-      }
 
       setRecords(allRecords);
     } catch (err) {
@@ -502,100 +465,103 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [selectedDate]);
 
   // Filter records based on selection
   const filteredRecords = records.filter(record => {
-    const recordDate = formatDate(record.fields['Factory_Updated_Date']);
     const recordPlate = record.fields['Plate'];
     const recordPrint = record.fields['Print'];
 
-    const dateMatch = !selectedDate || recordDate === selectedDate;
     const plateMatch = !selectedPlate || recordPlate === selectedPlate;
     const printMatch = !selectedPrint || recordPrint === selectedPrint;
 
-    return dateMatch && plateMatch && printMatch;
+    return plateMatch && printMatch;
   });
 
-  const handleViewOrderForm = async (orderRefId) => {
-    if (!orderRefId) {
-      alert("No Order Reference ID found");
+  // Helper to parse attachment ID from stringified array (e.g. "[2996]")
+  const parseAttachmentId = (val) => {
+    if (!val) return null;
+    try {
+      // Handle if it's already an array or number
+      if (typeof val === 'number') return val;
+      if (Array.isArray(val)) return val[0];
+
+      // Handle stringified array or number
+      // If it's a simple number string "123", JSON.parse handles it
+      const parsed = JSON.parse(val);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed[0];
+      }
+      if (typeof parsed === 'number') {
+        return parsed;
+      }
+      return null;
+    } catch (e) {
+      console.warn("Failed to parse attachment ID", val, e);
+      return null;
+    }
+  };
+
+  const fetchAndDisplayImage = async (attachmentValue, typeLabel) => {
+    console.log(`Fetching ${typeLabel} with value:`, attachmentValue);
+    const attId = parseAttachmentId(attachmentValue);
+    console.log(`Parsed ID for ${typeLabel}:`, attId);
+
+    if (!attId) {
+      alert(`No ${typeLabel} attachment found`);
       return;
     }
 
     setLoadingPreview(true);
-    setPreviewImage(null); // Open modal immediately in loading state
+    setPreviewImage(null);
 
     try {
       const headers = await getHeaders();
-
-      // 1. Fetch the Order record from 'Orders' table
-      // We use the filter query param to find the record by ID (which is what the ref is)
-      // Grist API: /records?filter={"id": [REF_ID]}
-      const filter = JSON.stringify({ id: [orderRefId] });
-      const queryUrl = getUrl(`/api/docs/${DOC_ID}/tables/${ORDERS_TABLE_ID}/records?filter=${encodeURIComponent(filter)}`);
-
-      const orderRes = await fetch(queryUrl, { headers });
-      if (!orderRes.ok) throw new Error("Failed to fetch order details");
-
-      const orderData = await orderRes.json();
-      if (!orderData.records || orderData.records.length === 0) {
-        throw new Error("Order record not found");
-      }
-
-      const orderRecord = orderData.records[0];
-      const rawAttachments = orderRecord.fields['Order_Form'];
-
-      if (!rawAttachments || !Array.isArray(rawAttachments)) {
-        throw new Error("No Order Form attachment found");
-      }
-
-      // Filter out 'L' marker which Grist sometimes includes in list values
-      const attachments = rawAttachments.filter(item => item !== 'L');
-
-      if (attachments.length === 0) {
-        throw new Error("No Order Form attachment found");
-      }
-
-      // 2. Fetch the image blob
-      // Use the first attachment
-      const attachmentId = attachments[0];
-      // Handle case where attachment might be an object or just ID (Grist API varies slightly by version/column type)
-      const attId = typeof attachmentId === 'object' ? attachmentId.id : attachmentId;
-
       const imgUrl = getUrl(`/api/docs/${DOC_ID}/attachments/${attId}/download`);
-      const imgRes = await fetch(imgUrl, { headers });
+      console.log(`Fetching ${typeLabel} from:`, imgUrl);
 
-      if (!imgRes.ok) throw new Error("Failed to download image");
+      const imgRes = await fetch(imgUrl, { headers });
+      console.log(`${typeLabel} fetch status:`, imgRes.status);
+
+      const contentType = imgRes.headers.get('content-type');
+      console.log(`${typeLabel} Content-Type:`, contentType);
+
+      if (!imgRes.ok) {
+        throw new Error(`Failed to download image: ${imgRes.status} ${imgRes.statusText}`);
+      }
+
+      // Check if response is JSON (error) despite 200 OK
+      if (contentType && contentType.includes('application/json')) {
+        const json = await imgRes.json();
+        console.error("Received JSON instead of image:", json);
+        throw new Error(`Server returned JSON: ${JSON.stringify(json)}`);
+      }
 
       const blob = await imgRes.blob();
+      console.log(`${typeLabel} Blob size:`, blob.size, "type:", blob.type);
+
+      if (blob.size === 0) {
+        throw new Error("Received empty image");
+      }
+
       const objectUrl = URL.createObjectURL(blob);
       setPreviewImage(objectUrl);
 
     } catch (err) {
-      console.error("Preview Error:", err);
-      alert(`Error loading preview: ${err.message}`);
-      setLoadingPreview(false); // Close modal on error (or we could show error state in modal)
-      setPreviewImage(null); // Ensure modal closes or shows error
+      console.error(`${typeLabel} Preview Error:`, err);
+      alert(`Error loading ${typeLabel}: ${err.message}`);
+      setPreviewImage(null);
     } finally {
-      // If we have an image, we keep loadingPreview true until the modal renders?
-      // No, we set loadingPreview false to show the image.
-      // But if we errored, we might want to close it.
-      // Let's handle state carefully:
-      // If success: previewImage = url, loadingPreview = false
-      // If error: previewImage = null, loadingPreview = false (modal closes)
-      // Wait, if previewImage is null, modal doesn't show?
-      // We need a way to show the modal while loading.
-      // Let's use a separate state 'showPreviewModal' or just rely on 'loadingPreview || previewImage'
+      setLoadingPreview(false);
     }
   };
 
-  // Wrapper to manage modal state
-  const openPreview = (orderRefId) => {
-    setLoadingPreview(true); // This triggers modal open
-    handleViewOrderForm(orderRefId).then(() => {
-      setLoadingPreview(false);
-    });
+  const openPreview = (attachmentValue) => {
+    fetchAndDisplayImage(attachmentValue, "Order Form");
+  };
+
+  const openScreenshotPreview = (attachmentValue) => {
+    fetchAndDisplayImage(attachmentValue, "Screenshot");
   };
 
   const closePreview = () => {
@@ -604,87 +570,6 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
     }
     setPreviewImage(null);
     setLoadingPreview(false);
-  };
-
-  const handleViewScreenshot = async (subOrderId) => {
-    if (!subOrderId) {
-      alert("No Sub-Order ID found");
-      return;
-    }
-
-    setLoadingPreview(true);
-    setPreviewImage(null);
-
-    try {
-      const headers = await getHeaders();
-      const CONVERSATIONS_TABLE_ID = 'Customer_Conversations';
-
-      // 1. Fetch conversations linked to this sub-order
-      const filter = JSON.stringify({ Sub_Order_in_Context: [subOrderId] });
-      const queryUrl = getUrl(`/api/docs/${DOC_ID}/tables/${CONVERSATIONS_TABLE_ID}/records?filter=${encodeURIComponent(filter)}`);
-
-      const res = await fetch(queryUrl, { headers });
-      if (!res.ok) throw new Error("Failed to fetch conversation details");
-
-      const data = await res.json();
-      if (!data.records || data.records.length === 0) {
-        throw new Error("No conversation records found for this order");
-      }
-
-      // 2. Find the record with "FINALISED DESIGN" in Outcomes
-      const targetRecord = data.records.find(r => {
-        const outcomes = r.fields['Outcomes'];
-        // Outcomes might be a string or a list (if choice list)
-        if (Array.isArray(outcomes)) {
-          return outcomes.includes("FINALISED DESIGN");
-        }
-        return outcomes === "FINALISED DESIGN";
-      });
-
-      if (!targetRecord) {
-        throw new Error("No 'FINALISED DESIGN' record found");
-      }
-
-      const rawAttachments = targetRecord.fields['Screenshots'];
-
-      if (!rawAttachments || !Array.isArray(rawAttachments)) {
-        throw new Error("No Screenshot attachment found");
-      }
-
-      // Filter out 'L' marker
-      const attachments = rawAttachments.filter(item => item !== 'L');
-
-      if (attachments.length === 0) {
-        throw new Error("No Screenshot attachment found");
-      }
-
-      // 3. Fetch the image blob
-      const attachmentId = attachments[0];
-      const attId = typeof attachmentId === 'object' ? attachmentId.id : attachmentId;
-
-      const imgUrl = getUrl(`/api/docs/${DOC_ID}/attachments/${attId}/download`);
-      const imgRes = await fetch(imgUrl, { headers });
-
-      if (!imgRes.ok) throw new Error("Failed to download screenshot");
-
-      const blob = await imgRes.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      setPreviewImage(objectUrl);
-
-    } catch (err) {
-      console.error("Screenshot Preview Error:", err);
-      alert(`Error loading screenshot: ${err.message}`);
-      setLoadingPreview(false);
-      setPreviewImage(null);
-    }
-  };
-
-  // Wrapper to manage modal state
-  const openScreenshotPreview = (subOrderId) => {
-    setLoadingPreview(true);
-    handleViewScreenshot(subOrderId).then(() => {
-      setLoadingPreview(false);
-    });
   };
 
   const handleOpenLink = (url) => {
@@ -714,7 +599,7 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
             <div className="flex gap-2">
               <Button
                 variant="secondary"
-                onClick={fetchData}
+                onClick={() => fetchData()}
                 disabled={loading}
                 className="!px-3"
               >
@@ -732,27 +617,35 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
 
           {/* Filters */}
           <div className="flex gap-3">
-            <Select
-              value={selectedDate}
-              onChange={setSelectedDate}
-              options={availableDates.map(d => ({ value: d, label: d === new Date().toLocaleDateString('en-CA') ? `${d} (Today)` : d }))}
-              placeholder="All Dates"
-              className="flex-1"
-            />
-            <Select
-              value={selectedPlate}
-              onChange={setSelectedPlate}
-              options={availablePlates.map(p => ({ value: p, label: p }))}
-              placeholder="All Plates"
-              className="flex-1"
-            />
-            <Select
-              value={selectedPrint}
-              onChange={setSelectedPrint}
-              options={availablePrints.map(p => ({ value: p, label: p }))}
-              placeholder="All Prints"
-              className="flex-1"
-            />
+            <div className="flex-1 relative">
+              <label className="block text-xs font-medium text-slate-500 mb-1 ml-1">Date</label>
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 transition-all outline-none bg-white"
+              />
+            </div>
+            <div className="flex-1">
+              <label className="block text-xs font-medium text-slate-500 mb-1 ml-1">Plate</label>
+              <Select
+                value={selectedPlate}
+                onChange={setSelectedPlate}
+                options={availablePlates.map(p => ({ value: p, label: p }))}
+                placeholder="All Plates"
+                className="w-full"
+              />
+            </div>
+            <div className="flex-1">
+              <label className="block text-xs font-medium text-slate-500 mb-1 ml-1">Print</label>
+              <Select
+                value={selectedPrint}
+                onChange={setSelectedPrint}
+                options={availablePrints.map(p => ({ value: p, label: p }))}
+                placeholder="All Prints"
+                className="w-full"
+              />
+            </div>
           </div>
         </div>
       </header>
@@ -789,10 +682,10 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
                       <div>
                         <div className="mb-3 pb-3 border-b border-slate-100 flex justify-between items-start gap-2">
                           <h3 className="font-bold text-xl text-slate-800 leading-tight">
-                            {customerMap[String(extractId(record.fields['Customer']))] || 'Unknown Customer'}
+                            {record.fields.Shop_Name || 'Unknown Customer'}
                           </h3>
                           <span className="bg-blue-100 text-blue-800 text-xs font-bold px-2.5 py-1 rounded-full shrink-0">
-                            #{orderMap[extractId(record.fields['Order'])] || extractId(record.fields['Order'])}
+                            #{record.fields.Order_ID || record.fields.Order}
                           </span>
                         </div>
 
@@ -828,14 +721,14 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
                         <Button
                           variant="outline"
                           className="w-full text-sm"
-                          onClick={() => openPreview(record.fields['Order'])}
+                          onClick={() => openPreview(record.fields['Order_Form'])}
                         >
                           View Order Form
                         </Button>
                         <Button
                           variant="primary"
                           className="w-full text-sm bg-orange-600 hover:bg-orange-700"
-                          onClick={() => openScreenshotPreview(record.id)}
+                          onClick={() => openScreenshotPreview(record.fields['Screenshots'])}
                         >
                           View Finalisation Screenshot
                         </Button>
