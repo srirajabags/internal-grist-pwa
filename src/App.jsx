@@ -441,24 +441,24 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
         setSelectedDate(Array.from(dates).sort().reverse()[0]);
       }
 
-      // 3. Fetch Customers
-      // Fetch all customers to ensure we have a complete map. 
-      // Using a very high limit (100000) because limit=0 might be interpreted as default (100) or have issues.
+      // 3. Fetch Customers using optimized SQL query
+      // Use SQL endpoint to fetch only id and Shop_Name columns for better performance
       if (customerIds.size > 0) {
-        const custUrl = getUrl(`/api/docs/${DOC_ID}/tables/${CUSTOMERS_TABLE_ID}/records?limit=100000`);
+        const sqlQuery = 'select id, Shop_Name from Customers';
+        const custUrl = getUrl(`/api/docs/${DOC_ID}/sql?q=${encodeURIComponent(sqlQuery)}`);
         const custRes = await fetch(custUrl, { headers });
 
         if (custRes.ok) {
           const custData = await custRes.json();
           const custMap = {};
-          let minId = Infinity;
-          let maxId = -Infinity;
 
-          custData.records.forEach(c => {
-            custMap[c.id] = c.fields['Shop_Name'] || `Customer ${c.id}`;
-            if (c.id < minId) minId = c.id;
-            if (c.id > maxId) maxId = c.id;
-          });
+          // SQL endpoint returns data in a different format: {records: [{id: ..., fields: {Shop_Name: ...}}]}
+          if (custData.records) {
+            custData.records.forEach(cR => {
+              const c = cR.fields;
+              custMap[c.id] = c.Shop_Name || `Customer ${c.id}`;
+            });
+          }
           setCustomerMap(custMap);
         } else {
           console.error("Failed to fetch customers:", custRes.status, custRes.statusText);

@@ -4,6 +4,7 @@
 // ────────────────────────────── CONFIG ──────────────────────────────
 const GRIST_BASE_URL = process.env.GRIST_URL ?? "https://your-grist.railway.app";
 const AUTH0_DOMAIN = process.env.AUTH0_DOMAIN ?? "your-tenant.us.auth0.com";
+const SQL_KEY = process.env.SQL_KEY; // Dedicated API key for SQL endpoints
 
 // Map Auth0 User Emails (or 'sub' IDs) to Grist API Keys
 // Map Auth0 User Emails (or 'sub' IDs) to Grist API Keys
@@ -176,8 +177,14 @@ export default {
         headers.delete("host");
         headers.delete("origin");
         headers.delete("user-agent");
-        // REPLACE the Auth0 token with the Grist API Key
-        headers.set("Authorization", `Bearer ${gristKey}`);
+
+        // Determine which API key to use
+        // Use SQL_KEY for SQL endpoints if available, otherwise use user's regular key
+        const isSqlEndpoint = url.pathname.includes('/sql');
+        const apiKeyToUse = (isSqlEndpoint && SQL_KEY) ? SQL_KEY : gristKey;
+
+        // REPLACE the Auth0 token with the appropriate Grist API Key
+        headers.set("Authorization", `Bearer ${apiKeyToUse}`);
 
         try {
             const upstream = await fetch(targetUrl.toString(), {
