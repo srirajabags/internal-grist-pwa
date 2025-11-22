@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
-import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock } from 'lucide-react';
+import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2 } from 'lucide-react';
+import SqlVisualization from './components/SqlVisualization';
 import { useAuth0 } from '@auth0/auth0-react';
 
 // Get server URL from environment
@@ -1112,6 +1113,10 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  // Visualization State
+  const [viewMode, setViewMode] = useState('table'); // 'table' | 'chart'
+  const [vizConfig, setVizConfig] = useState({});
+
   // Query History & Saved Queries
   const [queryHistory, setQueryHistory] = useState([]);
   const [savedQueries, setSavedQueries] = useState([]);
@@ -1142,6 +1147,7 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
       id: Date.now(),
       query,
       docId,
+      vizConfig,
       timestamp: new Date().toISOString(),
     };
 
@@ -1162,6 +1168,7 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
       name: saveQueryName.trim(),
       query: sqlQuery,
       docId: selectedDocId,
+      vizConfig,
       timestamp: new Date().toISOString(),
       pinned: false,
     };
@@ -1195,9 +1202,16 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
   };
 
   // Load query from history or saved
-  const loadQuery = (query, docId) => {
+  const loadQuery = (query, docId, savedVizConfig = {}) => {
     setSqlQuery(query);
     if (docId) setSelectedDocId(docId);
+    if (savedVizConfig && Object.keys(savedVizConfig).length > 0) {
+      setVizConfig(savedVizConfig);
+      setViewMode('chart');
+    } else {
+      setVizConfig({});
+      setViewMode('table');
+    }
     setShowHistoryPanel(false);
   };
 
@@ -1465,43 +1479,76 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
                   {results.records.length} row{results.records.length !== 1 ? 's' : ''}
                 </span>
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50 border-b border-slate-200">
-                      {Object.keys(results.records[0].fields || {}).map((key) => (
-                        <th
-                          key={key}
-                          className="px-4 py-2 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider"
-                        >
-                          {key}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {results.records.map((record, idx) => (
-                      <tr
-                        key={idx}
-                        className="border-b border-slate-100 hover:bg-slate-50 transition-colors"
-                      >
-                        {Object.values(record.fields || {}).map((value, cellIdx) => (
-                          <td
-                            key={cellIdx}
-                            className="px-4 py-2 text-sm text-slate-700"
+
+              {/* View Toggles */}
+              <div className="flex gap-2 mb-4 border-b border-slate-100 pb-4">
+                <button
+                  onClick={() => setViewMode('table')}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${viewMode === 'table'
+                      ? 'bg-cyan-50 text-cyan-700'
+                      : 'text-slate-600 hover:bg-slate-50'
+                    }`}
+                >
+                  <Table size={16} />
+                  Table View
+                </button>
+                <button
+                  onClick={() => setViewMode('chart')}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${viewMode === 'chart'
+                      ? 'bg-cyan-50 text-cyan-700'
+                      : 'text-slate-600 hover:bg-slate-50'
+                    }`}
+                >
+                  <BarChart2 size={16} />
+                  Chart View
+                </button>
+              </div>
+
+              {viewMode === 'table' ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200">
+                        {Object.keys(results.records[0].fields || {}).map((key) => (
+                          <th
+                            key={key}
+                            className="px-4 py-2 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider"
                           >
-                            {value === null || value === undefined
-                              ? <span className="text-slate-400 italic">null</span>
-                              : typeof value === 'object'
-                                ? JSON.stringify(value)
-                                : String(value)}
-                          </td>
+                            {key}
+                          </th>
                         ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {results.records.map((record, idx) => (
+                        <tr
+                          key={idx}
+                          className="border-b border-slate-100 hover:bg-slate-50 transition-colors"
+                        >
+                          {Object.values(record.fields || {}).map((value, cellIdx) => (
+                            <td
+                              key={cellIdx}
+                              className="px-4 py-2 text-sm text-slate-700"
+                            >
+                              {value === null || value === undefined
+                                ? <span className="text-slate-400 italic">null</span>
+                                : typeof value === 'object'
+                                  ? JSON.stringify(value)
+                                  : String(value)}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <SqlVisualization
+                  data={results.records}
+                  config={vizConfig}
+                  onConfigChange={setVizConfig}
+                />
+              )}
             </Card>
           )}
 
@@ -1566,7 +1613,7 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
                           {query.query}
                         </pre>
                         <button
-                          onClick={() => loadQuery(query.query, query.docId)}
+                          onClick={() => loadQuery(query.query, query.docId, query.vizConfig)}
                           className="text-xs text-cyan-600 hover:text-cyan-700 font-medium"
                         >
                           Load Query →
@@ -1615,8 +1662,8 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
                           {query.query}
                         </pre>
                         <button
-                          onClick={() => loadQuery(query.query, query.docId)}
-                          className="text-xs text-cyan-600 hover:text-cyan-700 font-medium"
+                          onClick={() => loadQuery(query.query, query.docId, query.vizConfig)}
+                          className="text-xs text-slate-600 hover:text-slate-800 font-medium"
                         >
                           Load Query →
                         </button>
