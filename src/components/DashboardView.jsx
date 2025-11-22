@@ -161,8 +161,66 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl }) => {
 
         console.log('Starting image generation for:', elementId);
 
+        // Create a temporary style element with !important rules
+        const styleId = 'temp-capture-styles';
+        let styleElement = document.getElementById(styleId);
+
+        if (!styleElement) {
+            styleElement = document.createElement('style');
+            styleElement.id = styleId;
+            document.head.appendChild(styleElement);
+        }
+
+        // Store original inline styles
+        const elementsWithStyles = [];
+
         try {
-            // Use dom-to-image-more which handles modern CSS better
+            // Add CSS rules to force all descendants to be visible
+            styleElement.textContent = `
+                #${elementId},
+                #${elementId} * {
+                    overflow: visible !important;
+                    overflow-x: visible !important;
+                    overflow-y: visible !important;
+                    max-height: none !important;
+                }
+                #${elementId} .flex-1,
+                #${elementId} .h-full {
+                    height: auto !important;
+                    flex: none !important;
+                }
+                #${elementId} .overflow-auto,
+                #${elementId} .overflow-hidden,
+                #${elementId} .overflow-scroll {
+                    overflow: visible !important;
+                }
+            `;
+
+            // Also force inline styles for maximum override
+            const allElements = [element, ...element.querySelectorAll('*')];
+            allElements.forEach(el => {
+                const originalStyle = el.getAttribute('style') || '';
+                elementsWithStyles.push({ el, originalStyle });
+
+                const newStyle = originalStyle +
+                    '; overflow: visible !important' +
+                    '; overflow-x: visible !important' +
+                    '; overflow-y: visible !important' +
+                    '; max-height: none !important';
+
+                el.setAttribute('style', newStyle);
+            });
+
+            // Force browser reflow
+            element.offsetHeight;
+
+            // Wait for styles to apply and layout to settle
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            // Log the element height to verify expansion
+            console.log('Element height before capture:', element.scrollHeight, 'px');
+
+            // Use dom-to-image-more (html2canvas doesn't support Tailwind v4's okch colors)
             const blob = await domtoimage.toBlob(element, {
                 quality: 0.95,
                 bgcolor: '#f8fafc',
@@ -212,6 +270,20 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl }) => {
             console.error('Error generating image:', err);
             console.error('Error stack:', err.stack);
             alert(`Failed to generate image: ${err.message}`);
+        } finally {
+            // Remove the temporary styles
+            if (styleElement) {
+                styleElement.textContent = '';
+            }
+
+            // Restore original inline styles
+            elementsWithStyles.forEach(({ el, originalStyle }) => {
+                if (originalStyle) {
+                    el.setAttribute('style', originalStyle);
+                } else {
+                    el.removeAttribute('style');
+                }
+            });
         }
     };
 
