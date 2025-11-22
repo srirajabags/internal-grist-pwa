@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Responsive, WidthProvider } from 'react-grid-layout';
-import { ArrowLeft, Settings, Plus, Save, X, Trash2, Edit2, Eye, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Settings, Plus, Save, X, Trash2, Edit2, Eye, RefreshCw, Share2 } from 'lucide-react';
 import SqlVisualization from './SqlVisualization';
+import domtoimage from 'dom-to-image-more';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 
@@ -150,6 +151,70 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl }) => {
         saveDashboard({ ...dashboard, widgets: updatedWidgets });
     };
 
+    const handleShare = async (elementId, fileName) => {
+        const element = document.getElementById(elementId);
+        if (!element) {
+            console.error('Element not found:', elementId);
+            alert('Element not found for sharing');
+            return;
+        }
+
+        console.log('Starting image generation for:', elementId);
+
+        try {
+            // Use dom-to-image-more which handles modern CSS better
+            const blob = await domtoimage.toBlob(element, {
+                quality: 0.95,
+                bgcolor: '#f8fafc',
+                style: {
+                    transform: 'scale(1)',
+                    transformOrigin: 'top left'
+                }
+            });
+
+            console.log('Image generated successfully, blob size:', blob.size, 'bytes');
+
+            // Try Web Share API first (for mobile)
+            if (navigator.share) {
+                try {
+                    const file = new File([blob], `${fileName}.png`, { type: 'image/png' });
+
+                    // Check if we can share files
+                    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                        await navigator.share({
+                            files: [file],
+                            title: fileName,
+                        });
+                        console.log('Shared successfully via Web Share API');
+                        return;
+                    } else {
+                        console.log('Web Share API does not support files, falling back to download');
+                    }
+                } catch (err) {
+                    if (err.name !== 'AbortError') {
+                        console.log('Sharing failed, falling back to download:', err);
+                    } else {
+                        console.log('User cancelled share');
+                        return;
+                    }
+                }
+            }
+
+            // Fallback to download
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.download = `${fileName}.png`;
+            link.href = url;
+            link.click();
+            URL.revokeObjectURL(url);
+            console.log('Download initiated');
+        } catch (err) {
+            console.error('Error generating image:', err);
+            console.error('Error stack:', err.stack);
+            alert(`Failed to generate image: ${err.message}`);
+        }
+    };
+
     if (!dashboard) return <div className="p-8 text-center">Loading Dashboard...</div>;
 
     return (
@@ -164,6 +229,13 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl }) => {
                         <h1 className="font-bold text-slate-800 text-lg">{dashboard.name}</h1>
                     </div>
                     <div className="flex gap-2">
+                        <button
+                            onClick={() => handleShare('dashboard-content', dashboard.name)}
+                            className="p-2 hover:bg-slate-100 rounded-lg text-slate-600 transition-colors"
+                            title="Share Dashboard"
+                        >
+                            <Share2 size={20} />
+                        </button>
                         <button
                             onClick={refreshDashboard}
                             className="p-2 hover:bg-slate-100 rounded-lg text-slate-600 transition-colors"
@@ -193,7 +265,7 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl }) => {
                 </div>
             </header>
 
-            <main className="flex-1 p-4 overflow-x-hidden">
+            <main className="flex-1 p-4 overflow-x-hidden" id="dashboard-content">
                 <div className="max-w-7xl mx-auto">
                     <ResponsiveGridLayout
                         className="layout"
@@ -208,13 +280,27 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl }) => {
                         resizeHandles={['se']}
                     >
                         {dashboard.widgets.map(widget => (
-                            <div key={widget.i} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-visible flex flex-col relative group">
+                            <div key={widget.i} id={`widget-${widget.i}`} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-visible flex flex-col relative group">
                                 {/* Widget Header */}
                                 <div className="flex justify-between items-center border-b border-slate-100">
                                     <div className={`flex-1 px-3 py-2 min-w-0 ${isEditing ? 'cursor-move drag-handle bg-slate-50' : ''}`}>
                                         <h3 className="font-semibold text-slate-700 text-sm truncate select-none">{widget.name}</h3>
                                     </div>
                                     <div className={`flex items-center gap-1 px-2 py-1 ${isEditing ? 'bg-slate-50' : ''}`}>
+                                        {/* Share Button for Widget */}
+                                        <button
+                                            onMouseDown={(e) => e.stopPropagation()}
+                                            onTouchStart={(e) => e.stopPropagation()}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleShare(`widget-${widget.i}`, widget.name);
+                                            }}
+                                            className="p-1.5 rounded hover:bg-slate-200 text-slate-400"
+                                            title="Share Widget"
+                                        >
+                                            <Share2 size={16} />
+                                        </button>
+
                                         {/* Gear Icon for Chart Settings */}
                                         <button
                                             onMouseDown={(e) => e.stopPropagation()}
