@@ -71,6 +71,13 @@ export default defineConfig({
             description: 'Execute custom SQL queries on Grist data',
             url: '/sql',
             icons: [{ src: 'pwa-192x192.png', sizes: '192x192' }]
+          },
+          {
+            name: 'Data Dashboards',
+            short_name: 'Dashboards',
+            description: 'View and manage your data dashboards',
+            url: '/dashboards',
+            icons: [{ src: 'pwa-192x192.png', sizes: '192x192' }]
           }
         ]
       }

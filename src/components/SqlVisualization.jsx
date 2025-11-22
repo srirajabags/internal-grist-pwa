@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import ReactECharts from 'echarts-for-react';
 import { BarChart, LineChart, PieChart, ScatterChart, Settings, Layers, Split } from 'lucide-react';
 
-const SqlVisualization = ({ data, config, onConfigChange }) => {
+const SqlVisualization = ({ data, config, onConfigChange, showControls = true }) => {
     // Extract columns from the first record
     const columns = useMemo(() => {
         if (!data || data.length === 0) return [];
@@ -50,8 +50,10 @@ const SqlVisualization = ({ data, config, onConfigChange }) => {
                 left: '3%',
                 right: '4%',
                 bottom: '15%', // Increased for legend
-                containLabel: true
+                containLabel: true,
+                top: '10%'
             },
+            maintainAspectRatio: false,
         };
 
         // Handle Split Series Logic
@@ -179,120 +181,122 @@ const SqlVisualization = ({ data, config, onConfigChange }) => {
 
     if (!data || data.length === 0) {
         return (
-            <div className="flex items-center justify-center h-64 text-slate-400 border border-dashed border-slate-300 rounded-xl">
+            <div className="flex items-center justify-center h-full text-slate-400 border border-dashed border-slate-300 rounded-xl">
                 No data available for visualization
             </div>
         );
     }
 
     return (
-        <div className="space-y-4">
+        <div className="flex flex-col h-full space-y-2">
             {/* Configuration Panel */}
-            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                <div className="flex flex-wrap gap-4 items-end">
-                    {/* Chart Type Selector */}
-                    <div className="flex-1 min-w-[200px]">
-                        <label className="block text-xs font-medium text-slate-500 mb-1 ml-1">Chart Type</label>
-                        <div className="flex bg-white rounded-lg border border-slate-200 p-1">
-                            {[
-                                { id: 'bar', icon: BarChart, label: 'Bar' },
-                                { id: 'line', icon: LineChart, label: 'Line' },
-                                { id: 'pie', icon: PieChart, label: 'Pie' },
-                                { id: 'scatter', icon: ScatterChart, label: 'Scatter' },
-                            ].map((type) => {
-                                const Icon = type.icon;
-                                const isActive = currentConfig.type === type.id;
-                                return (
-                                    <button
-                                        key={type.id}
-                                        onClick={() => handleTypeChange(type.id)}
-                                        className={`flex-1 flex items-center justify-center gap-2 py-1.5 rounded-md text-sm font-medium transition-all ${isActive
+            {showControls && (
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 shrink-0">
+                    <div className="flex flex-wrap gap-4 items-end">
+                        {/* Chart Type Selector */}
+                        <div className="flex-1 min-w-[200px]">
+                            <label className="block text-xs font-medium text-slate-500 mb-1 ml-1">Chart Type</label>
+                            <div className="flex bg-white rounded-lg border border-slate-200 p-1">
+                                {[
+                                    { id: 'bar', icon: BarChart, label: 'Bar' },
+                                    { id: 'line', icon: LineChart, label: 'Line' },
+                                    { id: 'pie', icon: PieChart, label: 'Pie' },
+                                    { id: 'scatter', icon: ScatterChart, label: 'Scatter' },
+                                ].map((type) => {
+                                    const Icon = type.icon;
+                                    const isActive = currentConfig.type === type.id;
+                                    return (
+                                        <button
+                                            key={type.id}
+                                            onClick={() => handleTypeChange(type.id)}
+                                            className={`flex-1 flex items-center justify-center gap-2 py-1.5 rounded-md text-sm font-medium transition-all ${isActive
                                                 ? 'bg-white text-cyan-600 shadow-sm ring-1 ring-slate-200'
                                                 : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
-                                            }`}
-                                        title={type.label}
-                                    >
-                                        <Icon size={16} />
-                                        <span className="hidden sm:inline">{type.label}</span>
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    </div>
-
-                    {/* Axis Selectors */}
-                    <div className="flex-1 min-w-[150px]">
-                        <label className="block text-xs font-medium text-slate-500 mb-1 ml-1">
-                            {currentConfig.type === 'pie' ? 'Label Column' : 'X Axis (Category)'}
-                        </label>
-                        <select
-                            value={currentConfig.xAxis}
-                            onChange={(e) => handleAxisChange('xAxis', e.target.value)}
-                            className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 outline-none bg-white text-sm"
-                        >
-                            {columns.map(col => (
-                                <option key={col} value={col}>{col}</option>
-                            ))}
-                        </select>
-                    </div>
-
-                    <div className="flex-1 min-w-[150px]">
-                        <label className="block text-xs font-medium text-slate-500 mb-1 ml-1">
-                            {currentConfig.type === 'pie' ? 'Value Column' : 'Y Axis (Value)'}
-                        </label>
-                        <select
-                            value={currentConfig.yAxis}
-                            onChange={(e) => handleAxisChange('yAxis', e.target.value)}
-                            className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 outline-none bg-white text-sm"
-                        >
-                            {columns.map(col => (
-                                <option key={col} value={col}>{col}</option>
-                            ))}
-                        </select>
-                    </div>
-
-                    {/* Split Series & Stack (Only for non-Pie charts) */}
-                    {currentConfig.type !== 'pie' && (
-                        <div className="flex-1 min-w-[150px] flex flex-col gap-2">
-                            <div>
-                                <label className="block text-xs font-medium text-slate-500 mb-1 ml-1">
-                                    Split Series By (Optional)
-                                </label>
-                                <select
-                                    value={currentConfig.splitSeries}
-                                    onChange={(e) => handleConfigChange('splitSeries', e.target.value)}
-                                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 outline-none bg-white text-sm"
-                                >
-                                    <option value="">None</option>
-                                    {columns.map(col => (
-                                        <option key={col} value={col}>{col}</option>
-                                    ))}
-                                </select>
+                                                }`}
+                                            title={type.label}
+                                        >
+                                            <Icon size={16} />
+                                            <span className="hidden sm:inline">{type.label}</span>
+                                        </button>
+                                    );
+                                })}
                             </div>
                         </div>
-                    )}
 
-                    {/* Stack Checkbox */}
-                    {currentConfig.type !== 'pie' && currentConfig.splitSeries && (
-                        <div className="flex items-center pb-2">
-                            <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-700 font-medium select-none">
-                                <input
-                                    type="checkbox"
-                                    checked={currentConfig.stack}
-                                    onChange={(e) => handleConfigChange('stack', e.target.checked)}
-                                    className="w-4 h-4 text-cyan-600 rounded border-slate-300 focus:ring-cyan-500"
-                                />
-                                Stack Series
+                        {/* Axis Selectors */}
+                        <div className="flex-1 min-w-[150px]">
+                            <label className="block text-xs font-medium text-slate-500 mb-1 ml-1">
+                                {currentConfig.type === 'pie' ? 'Label Column' : 'X Axis (Category)'}
                             </label>
+                            <select
+                                value={currentConfig.xAxis}
+                                onChange={(e) => handleAxisChange('xAxis', e.target.value)}
+                                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 outline-none bg-white text-sm"
+                            >
+                                {columns.map(col => (
+                                    <option key={col} value={col}>{col}</option>
+                                ))}
+                            </select>
                         </div>
-                    )}
 
+                        <div className="flex-1 min-w-[150px]">
+                            <label className="block text-xs font-medium text-slate-500 mb-1 ml-1">
+                                {currentConfig.type === 'pie' ? 'Value Column' : 'Y Axis (Value)'}
+                            </label>
+                            <select
+                                value={currentConfig.yAxis}
+                                onChange={(e) => handleAxisChange('yAxis', e.target.value)}
+                                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 outline-none bg-white text-sm"
+                            >
+                                {columns.map(col => (
+                                    <option key={col} value={col}>{col}</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        {/* Split Series & Stack (Only for non-Pie charts) */}
+                        {currentConfig.type !== 'pie' && (
+                            <div className="flex-1 min-w-[150px] flex flex-col gap-2">
+                                <div>
+                                    <label className="block text-xs font-medium text-slate-500 mb-1 ml-1">
+                                        Split Series By (Optional)
+                                    </label>
+                                    <select
+                                        value={currentConfig.splitSeries}
+                                        onChange={(e) => handleConfigChange('splitSeries', e.target.value)}
+                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 outline-none bg-white text-sm"
+                                    >
+                                        <option value="">None</option>
+                                        {columns.map(col => (
+                                            <option key={col} value={col}>{col}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Stack Checkbox */}
+                        {currentConfig.type !== 'pie' && currentConfig.splitSeries && (
+                            <div className="flex items-center pb-2">
+                                <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-700 font-medium select-none">
+                                    <input
+                                        type="checkbox"
+                                        checked={currentConfig.stack}
+                                        onChange={(e) => handleConfigChange('stack', e.target.checked)}
+                                        className="w-4 h-4 text-cyan-600 rounded border-slate-300 focus:ring-cyan-500"
+                                    />
+                                    Stack Series
+                                </label>
+                            </div>
+                        )}
+
+                    </div>
                 </div>
-            </div>
+            )}
 
             {/* Chart Area */}
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm min-h-[400px]">
-                <ReactECharts option={chartOption} style={{ height: '400px', width: '100%' }} />
+            <div className={`bg-white p-4 rounded-xl border border-slate-200 shadow-sm ${showControls ? 'min-h-[400px]' : 'h-full'}`}>
+                <ReactECharts option={chartOption} style={{ height: '100%', width: '100%', minHeight: showControls ? '400px' : '0' }} />
             </div>
         </div>
     );

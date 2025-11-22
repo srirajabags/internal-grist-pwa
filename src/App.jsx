@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
-import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2 } from 'lucide-react';
+import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard } from 'lucide-react';
 import SqlVisualization from './components/SqlVisualization';
+import DashboardList from './components/DashboardList';
+import DashboardView from './components/DashboardView';
 import { useAuth0 } from '@auth0/auth0-react';
 
 // Get server URL from environment
@@ -107,12 +109,12 @@ const SettingsModal = ({ onClose, user, onLogout }) => (
 const HomePage = ({ onNavigate }) => {
   const pageOptions = [
     {
-      id: 'sql',
-      title: 'Analyse with SQL',
-      description: 'Execute custom SQL queries on Grist data',
-      icon: Code,
-      color: 'bg-cyan-600',
-      hoverColor: 'hover:bg-cyan-700'
+      id: 'dashboards',
+      title: 'Data Dashboards',
+      description: 'View and manage your data dashboards',
+      icon: LayoutDashboard,
+      color: 'bg-indigo-600',
+      hoverColor: 'hover:bg-indigo-700'
     },
     {
       id: 'factory',
@@ -188,6 +190,13 @@ const HomePage = ({ onNavigate }) => {
       </main>
     </div>
   );
+};
+
+// Wrapper to extract params for DashboardView
+import { useParams } from 'react-router-dom';
+const DashboardWrapper = (props) => {
+  const { id } = useParams();
+  return <DashboardView {...props} dashboardId={id} />;
 };
 
 // Telecaller View Component (Placeholder)
@@ -1485,8 +1494,8 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
                 <button
                   onClick={() => setViewMode('table')}
                   className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${viewMode === 'table'
-                      ? 'bg-cyan-50 text-cyan-700'
-                      : 'text-slate-600 hover:bg-slate-50'
+                    ? 'bg-cyan-50 text-cyan-700'
+                    : 'text-slate-600 hover:bg-slate-50'
                     }`}
                 >
                   <Table size={16} />
@@ -1495,8 +1504,8 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
                 <button
                   onClick={() => setViewMode('chart')}
                   className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${viewMode === 'chart'
-                      ? 'bg-cyan-50 text-cyan-700'
-                      : 'text-slate-600 hover:bg-slate-50'
+                    ? 'bg-cyan-50 text-cyan-700'
+                    : 'text-slate-600 hover:bg-slate-50'
                     }`}
                 >
                   <BarChart2 size={16} />
@@ -1811,14 +1820,6 @@ export default function App() {
     }
   };
 
-  const handleNavigate = (view) => {
-    navigate(`/${view}`);
-  };
-
-  const handleBackToHome = () => {
-    navigate('/');
-  };
-
   // --- VIEWS ---
 
   if (isLoading) {
@@ -1859,12 +1860,12 @@ export default function App() {
   // Main Application - Render based on URL routes
   return (
     <Routes>
-      <Route path="/" element={<HomePage onNavigate={handleNavigate} />} />
+      <Route path="/" element={<HomePage onNavigate={(path) => navigate(`/${path}`)} />} />
       <Route
         path="/telecaller"
         element={
           <TelecallerView
-            onBack={handleBackToHome}
+            onBack={() => navigate('/')}
             user={user}
             onLogout={handleLogout}
           />
@@ -1874,7 +1875,7 @@ export default function App() {
         path="/design"
         element={
           <DesignConfirmationView
-            onBack={handleBackToHome}
+            onBack={() => navigate('/')}
             user={user}
             onLogout={handleLogout}
           />
@@ -1884,7 +1885,7 @@ export default function App() {
         path="/table"
         element={
           <CustomTableViewer
-            onBack={handleBackToHome}
+            onBack={() => navigate('/')}
             user={user}
             onLogout={handleLogout}
             getHeaders={getHeaders}
@@ -1896,7 +1897,7 @@ export default function App() {
         path="/factory"
         element={
           <FactoryView
-            onBack={handleBackToHome}
+            onBack={() => navigate('/')}
             user={user}
             onLogout={handleLogout}
             getHeaders={getHeaders}
@@ -1904,18 +1905,9 @@ export default function App() {
           />
         }
       />
-      <Route
-        path="/sql"
-        element={
-          <SQLAnalysisView
-            onBack={handleBackToHome}
-            user={user}
-            onLogout={handleLogout}
-            getHeaders={getHeaders}
-            getUrl={getUrl}
-          />
-        }
-      />
+      <Route path="/sql" element={<SQLAnalysisView onBack={() => navigate('/dashboards')} user={user} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
+      <Route path="/dashboards" element={<DashboardList onNavigate={(id) => navigate(`/dashboards/${id}`)} onBack={() => navigate('/')} />} />
+      <Route path="/dashboards/:id" element={<DashboardWrapper onBack={() => navigate('/dashboards')} getHeaders={getHeaders} getUrl={getUrl} />} />
     </Routes>
   );
 }
