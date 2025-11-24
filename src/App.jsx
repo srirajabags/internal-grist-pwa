@@ -199,60 +199,7 @@ const DashboardWrapper = (props) => {
   return <DashboardView {...props} dashboardId={id} />;
 };
 
-// Telecaller View Component (Placeholder)
-const TelecallerView = ({ onBack, user, onLogout }) => {
-  const [showSettings, setShowSettings] = useState(false);
-
-  return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-10 px-4 py-3">
-        <div className="max-w-7xl mx-auto flex justify-between items-center">
-          <div className="flex items-center gap-3">
-            <Button variant="ghost" onClick={onBack} className="!px-2">
-              <ArrowLeft size={20} />
-            </Button>
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white">
-                <Phone size={18} />
-              </div>
-              <h1 className="font-bold text-slate-800">Telecaller View</h1>
-            </div>
-          </div>
-          <Button
-            variant="secondary"
-            onClick={() => setShowSettings(true)}
-            className="!px-3"
-          >
-            <Settings size={18} />
-          </Button>
-        </div>
-      </header>
-
-      <main className="flex-1 p-4 overflow-auto">
-        <div className="max-w-7xl mx-auto">
-          <Card className="p-8 text-center">
-            <Phone size={64} className="mx-auto mb-4 text-blue-600" />
-            <h2 className="text-2xl font-bold text-slate-800 mb-2">Telecaller View</h2>
-            <p className="text-slate-600 mb-4">
-              This view is ready to be customized with telecaller-specific functionality.
-            </p>
-            <p className="text-sm text-slate-500">
-              Connect this view to your Grist data to manage calls, contacts, and telecaller operations.
-            </p>
-          </Card>
-        </div>
-      </main>
-
-      {showSettings && (
-        <SettingsModal
-          onClose={() => setShowSettings(false)}
-          user={user}
-          onLogout={onLogout}
-        />
-      )}
-    </div>
-  );
-};
+import TelecallerView from './pages/TelecallerView';
 
 // Design Confirmation View Component (Placeholder)
 const DesignConfirmationView = ({ onBack, user, onLogout }) => {
@@ -1868,6 +1815,8 @@ export default function App() {
             onBack={() => navigate('/')}
             user={user}
             onLogout={handleLogout}
+            getHeaders={getHeaders}
+            getUrl={getUrl}
           />
         }
       />
