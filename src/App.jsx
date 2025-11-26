@@ -200,6 +200,7 @@ const DashboardWrapper = (props) => {
 };
 
 import TelecallerView from './pages/TelecallerView';
+import TelecallerCustomerView from './pages/TelecallerCustomerView';
 
 // Design Confirmation View Component (Placeholder)
 const DesignConfirmationView = ({ onBack, user, onLogout }) => {
@@ -1740,6 +1741,8 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
 export default function App() {
   const { loginWithRedirect, logout, user, isAuthenticated, isLoading, getAccessTokenSilently } = useAuth0();
   const navigate = useNavigate();
+  const [teamId, setTeamId] = useState(null);
+  const [loadingTeamId, setLoadingTeamId] = useState(false);
 
   const handleLogout = () => {
     logout({ logoutParams: { returnTo: window.location.origin } });
@@ -1766,6 +1769,55 @@ export default function App() {
       throw new Error("Failed to authenticate with Auth0");
     }
   };
+
+  // Fetch Team ID for the logged-in user
+  const fetchTeamId = async () => {
+    console.log('fetchTeamId called, user email:', user?.email, 'current teamId:', teamId);
+    if (!user?.email || teamId) return; // Skip if already fetched
+
+    setLoadingTeamId(true);
+    try {
+      const headers = await getHeaders();
+      const DOC_ID = '8vRFY3UUf4spJroktByH4u';
+      const url = getUrl(`/api/docs/${DOC_ID}/sql`);
+
+      console.log('Fetching Team ID for email:', user.email);
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({
+          sql: 'SELECT id FROM Team WHERE Email = ?',
+          args: [user.email]
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log('Team ID fetch response:', data);
+        if (data.records && data.records.length > 0) {
+          const id = data.records[0].fields.id;
+          setTeamId(id);
+          console.log('Team ID fetched and set:', id);
+        } else {
+          console.warn('No Team record found for user:', user.email);
+        }
+      } else {
+        const errorText = await response.text();
+        console.error('Team ID fetch failed:', response.status, errorText);
+      }
+    } catch (e) {
+      console.error('Error fetching Team ID:', e);
+    } finally {
+      setLoadingTeamId(false);
+    }
+  };
+
+  // Fetch Team ID when user authenticates
+  useEffect(() => {
+    if (isAuthenticated && user?.email && !teamId && !loadingTeamId) {
+      fetchTeamId();
+    }
+  }, [isAuthenticated, user]);
 
   // --- VIEWS ---
 
@@ -1814,6 +1866,7 @@ export default function App() {
           <TelecallerView
             onBack={() => navigate('/')}
             user={user}
+            teamId={teamId}
             onLogout={handleLogout}
             getHeaders={getHeaders}
             getUrl={getUrl}
@@ -1857,6 +1910,8 @@ export default function App() {
       <Route path="/sql" element={<SQLAnalysisView onBack={() => navigate('/dashboards')} user={user} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
       <Route path="/dashboards" element={<DashboardList onNavigate={(id) => navigate(`/dashboards/${id}`)} onBack={() => navigate('/')} />} />
       <Route path="/dashboards/:id" element={<DashboardWrapper onBack={() => navigate('/dashboards')} getHeaders={getHeaders} getUrl={getUrl} />} />
+      <Route path="/telecaller" element={<TelecallerView onBack={() => navigate('/')} user={user} teamId={teamId} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
+      <Route path="/telecaller/customer/:customerId" element={<TelecallerCustomerView onBack={() => navigate('/telecaller')} user={user} getHeaders={getHeaders} getUrl={getUrl} />} />
     </Routes>
   );
 }

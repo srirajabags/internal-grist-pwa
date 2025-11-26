@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Settings, Phone, Loader2, AlertCircle, RefreshCw, IndianRupee, X, User, LogOut } from 'lucide-react';
+import TelecallerCustomerView from './TelecallerCustomerView';
 
 const Button = ({ onClick, children, variant = "primary", disabled = false, className = "", icon: Icon }) => {
     const baseStyle = "flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
@@ -208,13 +210,38 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose }) => {
     );
 };
 
-const TelecallerView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
-    const [salaryData, setSalaryData] = useState(null);
-    const [areaGroupNames, setAreaGroupNames] = useState({});
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState(null);
-    const [showSettings, setShowSettings] = useState(false);
+const viewCache = {
+    salaryData: null,
+    areaGroupNames: {},
+    todoList: [],
+    availableAreaGroups: [],
+    availableSalesStatuses: [],
+    userEmail: null,
+    timestamp: 0
+};
+
+
+
+const TelecallerView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) => {
+    // Initialize state from cache
+    const [salaryData, setSalaryData] = useState(viewCache.salaryData);
+    const [areaGroupNames, setAreaGroupNames] = useState(viewCache.areaGroupNames);
+    const [availableSalesStatuses, setAvailableSalesStatuses] = useState(viewCache.availableSalesStatuses);
+    const [availableAreaGroups, setAvailableAreaGroups] = useState(viewCache.availableAreaGroups);
+    const [todoList, setTodoList] = useState(viewCache.todoList);
+
+    // UI State
+    const [loadingSalary, setLoadingSalary] = useState(!viewCache.salaryData);
+    const [loadingTodos, setLoadingTodos] = useState(viewCache.todoList.length === 0);
+    const [selectedAreaGroup, setSelectedAreaGroup] = useState('');
+    const [selectedSalesStatus, setSelectedSalesStatus] = useState('');
     const [showSalaryModal, setShowSalaryModal] = useState(false);
+    const [showSettings, setShowSettings] = useState(false);
+    const [selectedCustomerId, setSelectedCustomerId] = useState(null);
+    const [error, setError] = useState(null);
+
+    const navigate = useNavigate();
+
 
     // Hardcoded for now, same as FactoryView
     const DOC_ID = '8vRFY3UUf4spJroktByH4u';
@@ -225,7 +252,7 @@ const TelecallerView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
             return;
         }
 
-        setLoading(true);
+        setLoadingSalary(true);
         setError(null);
         try {
             const headers = await getHeaders();
@@ -270,6 +297,7 @@ const TelecallerView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
             if (data.records && data.records.length > 0) {
                 const salaryRecord = data.records[0].fields;
                 setSalaryData(salaryRecord);
+                viewCache.salaryData = salaryRecord;
 
                 // Fetch Area Group Names
                 try {
@@ -299,7 +327,12 @@ const TelecallerView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
                             groupsData.records.forEach(record => {
                                 namesMap[record.fields.id] = record.fields.Area_Group;
                             });
-                            setAreaGroupNames(namesMap);
+
+                            setAreaGroupNames(prev => {
+                                const newMap = { ...prev, ...namesMap };
+                                viewCache.areaGroupNames = newMap;
+                                return newMap;
+                            });
                         }
                     }
                 } catch (e) {
@@ -309,63 +342,182 @@ const TelecallerView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
             } else {
                 console.warn("No records found for salary");
                 setSalaryData(null);
-                setAreaGroupNames({});
+                viewCache.salaryData = null;
+                // Don't clear area group names here as they might be used by todos
             }
 
         } catch (err) {
             console.error("Salary Fetch Error:", err);
             setError(err.message);
         } finally {
-            setLoading(false);
+            setLoadingSalary(false);
+        }
+    };
+
+    const fetchTodos = async () => {
+        console.log('fetchTodos called, teamId:', teamId);
+        if (!teamId) {
+            console.warn('Cannot fetch todos: teamId is required');
+            setLoadingTodos(false);
+            return;
+        }
+
+        setLoadingTodos(true);
+        try {
+            const headers = await getHeaders();
+            const url = getUrl(`/api/docs/${DOC_ID}/sql`);
+
+            // Fetch Todo List
+            const todoQuery = `
+                SELECT c.id, Shop_Name, Sales_Status, Days_Since_Last_Order, c.Area_Group, c.Customer_ID, Mobile_Number
+                FROM Customers c 
+                JOIN Area_Groups ag ON ag.id = c.Area_Group 
+                WHERE Responsible_Sales_Team = 'TELECALLER' 
+                AND (ag.Telecaller LIKE '%[${teamId}]%' OR ag.Telecaller LIKE '%[${teamId},%' OR ag.Telecaller LIKE '%,${teamId}]%' OR ag.Telecaller LIKE '%,${teamId},%')
+                LIMIT 50
+            `;
+
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { ...headers, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sql: todoQuery, args: [] })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                console.log('Todos fetch response:', data);
+                const records = data.records.map(r => r.fields);
+                setTodoList(records);
+                viewCache.todoList = records;
+
+                // Extract unique filters
+                const groups = new Set();
+                const statuses = new Set();
+                const groupIds = new Set();
+
+                records.forEach(r => {
+                    if (r.Sales_Status) statuses.add(r.Sales_Status);
+                    if (r.Area_Group) groupIds.add(r.Area_Group);
+                });
+
+                const sortedStatuses = Array.from(statuses).sort();
+                setAvailableSalesStatuses(sortedStatuses);
+                viewCache.availableSalesStatuses = sortedStatuses;
+
+                // Fetch Area Group Names for Todos if not already fetched
+                if (groupIds.size > 0) {
+                    const idsToFetch = Array.from(groupIds).filter(id => !areaGroupNames[id]);
+                    if (idsToFetch.length > 0) {
+                        const placeholders = idsToFetch.map(() => '?').join(',');
+                        const groupsQuery = `SELECT id, Area_Group FROM Area_Groups WHERE id IN (${placeholders})`;
+                        const groupsResponse = await fetch(url, {
+                            method: 'POST',
+                            headers: { ...headers, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ sql: groupsQuery, args: idsToFetch })
+                        });
+
+                        if (groupsResponse.ok) {
+                            const groupsData = await groupsResponse.json();
+                            setAreaGroupNames(prev => {
+                                const newMap = { ...prev };
+                                groupsData.records.forEach(record => {
+                                    newMap[record.fields.id] = record.fields.Area_Group;
+                                });
+                                viewCache.areaGroupNames = newMap;
+                                return newMap;
+                            });
+                        }
+                    }
+                }
+
+                // Update available area groups for filter based on fetched names
+                const groupIdsArray = Array.from(groupIds);
+                setAvailableAreaGroups(groupIdsArray);
+                viewCache.availableAreaGroups = groupIdsArray;
+            } else {
+                const errorText = await response.text();
+                console.error('Todos fetch failed:', response.status, errorText);
+            }
+
+        } catch (e) {
+            console.error("Error fetching todos:", e);
+        } finally {
+            setLoadingTodos(false);
         }
     };
 
     useEffect(() => {
-        fetchSalary();
-    }, [user]);
+        console.log('TelecallerView useEffect triggered, user:', user?.email, 'teamId:', teamId);
+
+        if (user?.email && user.email !== viewCache.userEmail) {
+            // User changed, clear cache and fetch fresh
+            viewCache.salaryData = null;
+            viewCache.todoList = [];
+            viewCache.areaGroupNames = {};
+            viewCache.availableAreaGroups = [];
+            viewCache.availableSalesStatuses = [];
+            viewCache.userEmail = user.email;
+
+            fetchSalary();
+        } else if (user?.email) {
+            // User same, check if we need to fetch salary
+            if (!viewCache.salaryData) fetchSalary();
+        }
+
+        // Always try to fetch todos when teamId is available and we don't have cached data
+        console.log('Checking if should fetch todos - teamId:', teamId, 'cache length:', viewCache.todoList.length);
+        if (teamId && viewCache.todoList.length === 0) {
+            fetchTodos();
+        }
+    }, [user, teamId]);
 
     // Format current month for display
     const currentMonth = new Date().toLocaleString('default', { month: 'short', year: '2-digit' });
+
+    // Filtered Todos
+    const filteredTodos = todoList.filter(todo => {
+        const groupMatch = !selectedAreaGroup || String(todo.Area_Group) === selectedAreaGroup;
+        const statusMatch = !selectedSalesStatus || todo.Sales_Status === selectedSalesStatus;
+        return groupMatch && statusMatch;
+    });
 
     return (
         <div className="min-h-screen bg-slate-50 flex flex-col">
             {/* Header */}
             <header className="bg-white border-b border-slate-200 sticky top-0 z-20 px-4 py-3">
-                <div className="max-w-7xl mx-auto flex justify-between items-center">
-                    <div className="flex items-center gap-3">
-                        <Button variant="ghost" onClick={onBack} className="!px-2">
-                            <ArrowLeft size={20} />
-                        </Button>
-                        <div className="flex items-center gap-2">
-                            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white">
-                                <Phone size={18} />
+                <div className="max-w-7xl mx-auto flex flex-col gap-3">
+                    <div className="flex justify-between items-center">
+                        <div className="flex items-center gap-3">
+                            <Button variant="ghost" onClick={onBack} className="!px-2">
+                                <ArrowLeft size={20} />
+                            </Button>
+                            <div className="flex items-center gap-2">
+                                <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white">
+                                    <Phone size={18} />
+                                </div>
+                                <h1 className="font-bold text-slate-800">Telecaller View</h1>
                             </div>
-                            <h1 className="font-bold text-slate-800">Telecaller View</h1>
+                        </div>
+                        <div className="flex gap-2">
+                            <Button
+                                variant="secondary"
+                                onClick={() => { fetchSalary(); fetchTodos(); }}
+                                disabled={loadingSalary || loadingTodos}
+                                className="!px-3"
+                            >
+                                <RefreshCw size={18} className={(loadingSalary || loadingTodos) ? "animate-spin" : ""} />
+                            </Button>
+                            <Button
+                                variant="secondary"
+                                onClick={() => setShowSettings(true)}
+                                className="!px-3"
+                            >
+                                <Settings size={18} />
+                            </Button>
                         </div>
                     </div>
-                    <div className="flex gap-2">
-                        <Button
-                            variant="secondary"
-                            onClick={fetchSalary}
-                            disabled={loading}
-                            className="!px-3"
-                        >
-                            <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
-                        </Button>
-                        <Button
-                            variant="secondary"
-                            onClick={() => setShowSettings(true)}
-                            className="!px-3"
-                        >
-                            <Settings size={18} />
-                        </Button>
-                    </div>
-                </div>
-            </header>
 
-            {/* Sticky Salary Section */}
-            <div className="sticky top-[65px] z-10 bg-slate-50 pt-4 px-4 pb-2 shadow-sm border-b border-slate-200/50 backdrop-blur-sm bg-opacity-90">
-                <div className="max-w-7xl mx-auto">
+                    {/* Salary Section (Moved here) */}
                     <Card className="bg-gradient-to-r from-blue-600 to-blue-700 text-white border-none cursor-pointer hover:shadow-lg transition-shadow"
                         onClick={() => {
                             console.log("Salary Card Clicked. Data:", salaryData);
@@ -383,7 +535,7 @@ const TelecallerView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
                                         Salary <span className="bg-white/20 px-1 rounded text-[8px]">{currentMonth}</span>
                                     </p>
                                     <p className="font-bold text-lg leading-none">
-                                        {loading ? (
+                                        {loadingSalary ? (
                                             <span className="animate-pulse">...</span>
                                         ) : salaryData ? (
                                             salaryData.Total_Earnings?.toLocaleString('en-IN') || 0
@@ -432,11 +584,43 @@ const TelecallerView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
                             </div>
                         </div>
                     </Card>
+
+                    {/* Filters */}
+                    <div className="flex gap-3">
+                        <div className="flex-1">
+                            <label className="block text-xs font-medium text-slate-500 mb-1 ml-1">Area Group</label>
+                            <select
+                                value={selectedAreaGroup}
+                                onChange={(e) => setSelectedAreaGroup(e.target.value)}
+                                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 transition-all outline-none bg-white text-sm"
+                            >
+                                <option value="">All Areas</option>
+                                {availableAreaGroups.map(id => (
+                                    <option key={id} value={id}>
+                                        {areaGroupNames[id] || `Group ${id}`}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                        <div className="flex-1">
+                            <label className="block text-xs font-medium text-slate-500 mb-1 ml-1">Status</label>
+                            <select
+                                value={selectedSalesStatus}
+                                onChange={(e) => setSelectedSalesStatus(e.target.value)}
+                                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 transition-all outline-none bg-white text-sm"
+                            >
+                                <option value="">All Statuses</option>
+                                {availableSalesStatuses.map(status => (
+                                    <option key={status} value={status}>{status}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
                 </div>
-            </div>
+            </header>
 
             <main className="flex-1 p-4 overflow-auto">
-                <div className="max-w-7xl mx-auto">
+                <div className="max-w-7xl mx-auto space-y-4">
                     {error && (
                         <div className="mb-4 p-4 bg-red-50 text-red-700 rounded-lg border border-red-100 flex gap-2 items-start">
                             <AlertCircle size={18} className="mt-0.5 shrink-0" />
@@ -447,11 +631,81 @@ const TelecallerView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
                         </div>
                     )}
 
-                    <div className="text-center py-10 text-slate-500">
-                        <p>More telecaller features coming soon...</p>
-                    </div>
+                    {/* Todo List */}
+                    {loadingTodos ? (
+                        <div className="flex flex-col items-center justify-center py-10 text-slate-400">
+                            <Loader2 size={32} className="animate-spin mb-2 text-blue-600" />
+                            <p>Loading todo list...</p>
+                        </div>
+                    ) : filteredTodos.length === 0 ? (
+                        <div className="text-center py-10 text-slate-500">
+                            <p>No customers found matching filters.</p>
+                        </div>
+                    ) : (
+                        <div className="grid gap-3">
+                            {filteredTodos.map((todo, idx) => (
+                                <Card key={idx} className="p-4 hover:shadow-md transition-shadow cursor-pointer" onClick={() => setSelectedCustomerId(todo.Customer_ID)}>
+                                    <div className="mb-3">
+                                        <h3 className="font-bold text-slate-800 leading-snug mb-1.5">{todo.Shop_Name}</h3>
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide border ${todo.Sales_Status === 'New' ? 'bg-blue-50 text-blue-700 border-blue-100' :
+                                                todo.Sales_Status === 'Follow-up' ? 'bg-orange-50 text-orange-700 border-orange-100' :
+                                                    'bg-slate-50 text-slate-600 border-slate-100'
+                                                }`}>
+                                                {todo.Sales_Status || 'Unknown'}
+                                            </span>
+                                            <span className="text-xs text-slate-400">•</span>
+                                            <p className="text-xs text-slate-500">Customer ID: {todo.Customer_ID}</p>
+                                        </div>
+                                    </div>
+
+                                    <div className="flex items-center gap-2 text-xs text-slate-600 mb-4 bg-slate-50 p-2 rounded-lg">
+                                        <span className="font-medium">
+                                            {areaGroupNames[todo.Area_Group] || `Group ${todo.Area_Group}`}
+                                        </span>
+                                        <span className="text-slate-300">|</span>
+                                        <span>{todo.Days_Since_Last_Order || 0} days since last order</span>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-2" onClick={e => e.stopPropagation()}>
+                                        <a
+                                            href={`tel:${todo.Mobile_Number}`}
+                                            className="flex items-center justify-center gap-2 bg-green-50 text-green-700 py-2 rounded-lg font-medium hover:bg-green-100 transition-colors"
+                                        >
+                                            <Phone size={16} />
+                                            Call
+                                        </a>
+                                        <a
+                                            href={`https://wa.me/+91${todo.Mobile_Number}`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="flex items-center justify-center gap-2 bg-green-50 text-green-700 py-2 rounded-lg font-medium hover:bg-green-100 transition-colors"
+                                        >
+                                            <svg viewBox="0 0 24 24" className="w-4 h-4 fill-current"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.008-.57-.008-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z" /></svg>
+                                            WhatsApp
+                                        </a>
+                                    </div>
+                                </Card>
+                            ))}
+                        </div>
+                    )}
                 </div>
             </main>
+
+            {/* Customer View Modal */}
+            {selectedCustomerId && (
+                <div className="fixed inset-0 z-50 bg-white overflow-auto animate-in slide-in-from-right duration-300">
+                    <TelecallerCustomerView
+                        customerId={selectedCustomerId}
+                        customerRowId={todoList.find(t => t.Customer_ID === selectedCustomerId)?.id}
+                        shopName={todoList.find(t => t.Customer_ID === selectedCustomerId)?.Shop_Name}
+                        onBack={() => setSelectedCustomerId(null)}
+                        user={user}
+                        getHeaders={getHeaders}
+                        getUrl={getUrl}
+                    />
+                </div>
+            )}
 
             {showSalaryModal && (
                 <SalaryDetailsModal
@@ -462,16 +716,6 @@ const TelecallerView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
                 />
             )}
 
-            {/* We need to pass the SettingsModal from App.jsx or duplicate it here. 
-          Since it's not exported, I'll assume for now we might need to export it or just omit it if not strictly required by the task.
-          However, the user passed `onLogout` and `user`, so it's likely expected.
-          For this task, I will focus on the Salary part. I'll add a placeholder for Settings if needed, 
-          but ideally App.jsx handles the modal if I lift state, or I import it.
-          
-          Wait, I can't easily import SettingsModal if it's defined inside App.jsx and not exported.
-          I'll leave the settings button working but maybe just log for now, OR I can copy the SettingsModal code since it's small.
-          I'll copy it to be safe and self-contained.
-      */}
             {showSettings && (
                 <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={() => setShowSettings(false)}>
                     <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
