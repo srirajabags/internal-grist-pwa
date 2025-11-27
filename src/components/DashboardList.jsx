@@ -1,42 +1,127 @@
 import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, Plus, Trash2, ArrowRight, ArrowLeft, Code } from 'lucide-react';
+import { LayoutDashboard, Plus, Trash2, ArrowRight, ArrowLeft, Code, Users } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { fetchPwaDataSql, savePwaData, deletePwaData } from '../utils/gristDataSync';
+import ShareQueryModal from './ShareQueryModal';
 
-const DashboardList = ({ onNavigate, onBack }) => {
+const PWA_DATA_DOC_ID = '8vRFY3UUf4spJroktByH4u';
+
+const DashboardList = ({ onNavigate, onBack, teamId, getHeaders, getUrl }) => {
     const [dashboards, setDashboards] = useState([]);
     const [showCreateModal, setShowCreateModal] = useState(false);
     const [newDashboardName, setNewDashboardName] = useState('');
+    const [showShareModal, setShowShareModal] = useState(false);
+    const [dashboardToShare, setDashboardToShare] = useState(null);
     const navigate = useNavigate();
 
+    // Fetch dashboards from Grist on mount
     useEffect(() => {
-        const stored = localStorage.getItem('data_dashboards');
-        if (stored) {
-            setDashboards(JSON.parse(stored));
+        if (teamId) {
+            fetchDashboards();
         }
-    }, []);
+    }, [teamId]);
 
-    const saveDashboards = (updated) => {
-        setDashboards(updated);
-        localStorage.setItem('data_dashboards', JSON.stringify(updated));
+    const fetchDashboards = async () => {
+        try {
+            const gristRecords = await fetchPwaDataSql(PWA_DATA_DOC_ID, 'DASHBOARD', teamId, getHeaders, getUrl);
+
+            const remoteDashboards = gristRecords.map(r => {
+                try {
+                    const parsed = JSON.parse(r.fields.Data);
+                    return {
+                        ...parsed,
+                        uuid: r.fields.UUID,
+                        sharedWith: r.fields.Shared_With,
+                        createdBy: r.fields.Created_By
+                    };
+                } catch (e) {
+                    console.warn("Failed to parse Grist dashboard record", r);
+                    return null;
+                }
+            }).filter(Boolean);
+
+            setDashboards(remoteDashboards);
+        } catch (err) {
+            console.error("Error fetching dashboards:", err);
+        }
     };
 
-    const handleCreate = () => {
+    const handleCreate = async () => {
         if (!newDashboardName.trim()) return;
+        const newUuid = crypto.randomUUID();
         const newDash = {
             id: Date.now().toString(),
+            uuid: newUuid,
             name: newDashboardName,
             widgets: [],
-            createdAt: new Date().toISOString()
+            createdAt: new Date().toISOString(),
+            createdBy: teamId
         };
-        saveDashboards([...dashboards, newDash]);
+
+        // Update local state
+        setDashboards(prev => [...prev, newDash]);
+
+        // Sync to Grist
+        await savePwaData(PWA_DATA_DOC_ID, [newDash], 'DASHBOARD', getHeaders, getUrl);
+
         setNewDashboardName('');
         setShowCreateModal(false);
     };
 
-    const handleDelete = (id, e) => {
+    const handleDelete = async (dashboard, e) => {
         e.stopPropagation();
-        if (confirm('Are you sure you want to delete this dashboard?')) {
-            saveDashboards(dashboards.filter(d => d.id !== id));
+        if (!confirm('Are you sure you want to delete this dashboard?')) return;
+
+        // Update local state
+        setDashboards(prev => prev.filter(d => d.id !== dashboard.id));
+
+        // Sync delete to Grist
+        if (dashboard.uuid) {
+            await deletePwaData(PWA_DATA_DOC_ID, [dashboard.uuid], getHeaders, getUrl);
+        }
+    };
+
+    const handleShare = (dashboard, e) => {
+        e.stopPropagation();
+        setDashboardToShare(dashboard);
+        setShowShareModal(true);
+    };
+
+    const saveSharing = async (sharedWithIds) => {
+        if (!dashboardToShare) return;
+
+        // Update local state
+        setDashboards(prev => prev.map(d => {
+            if (d.id === dashboardToShare.id) {
+                return { ...d, sharedWith: sharedWithIds };
+            }
+            return d;
+        }));
+
+        try {
+            const headers = await getHeaders();
+            const url = getUrl(`/api/docs/${PWA_DATA_DOC_ID}/tables/PWA_Data/records`);
+
+            sharedWithIds.unshift("L");
+            const payload = {
+                records: [{
+                    require: {
+                        UUID: dashboardToShare.uuid
+                    },
+                    fields: {
+                        Shared_With: sharedWithIds
+                    }
+                }]
+            };
+
+            await fetch(url, {
+                method: 'PUT',
+                headers: { ...headers, 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+        } catch (e) {
+            console.error("Failed to save sharing", e);
         }
     };
 
@@ -112,16 +197,29 @@ const DashboardList = ({ onNavigate, onBack }) => {
                                         <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center">
                                             <LayoutDashboard size={24} />
                                         </div>
-                                        <button
-                                            onClick={(e) => handleDelete(dash.id, e)}
-                                            className="text-slate-400 hover:text-red-500 p-2 opacity-0 group-hover:opacity-100 transition-opacity"
-                                        >
-                                            <Trash2 size={18} />
-                                        </button>
+                                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                            {/* Share Button - only show if user is owner */}
+                                            {dash.createdBy === teamId && (
+                                                <button
+                                                    onClick={(e) => handleShare(dash, e)}
+                                                    className="text-slate-400 hover:text-indigo-500 p-2"
+                                                    title="Share Dashboard"
+                                                >
+                                                    <Users size={18} />
+                                                </button>
+                                            )}
+                                            <button
+                                                onClick={(e) => handleDelete(dash, e)}
+                                                className="text-slate-400 hover:text-red-500 p-2"
+                                                title="Delete Dashboard"
+                                            >
+                                                <Trash2 size={18} />
+                                            </button>
+                                        </div>
                                     </div>
                                     <h3 className="text-lg font-bold text-slate-800 mb-1">{dash.name}</h3>
                                     <p className="text-sm text-slate-500 mb-4">
-                                        {dash.widgets.length} widget{dash.widgets.length !== 1 ? 's' : ''}
+                                        {dash.widgets?.length || 0} widget{dash.widgets?.length !== 1 ? 's' : ''}
                                     </p>
                                     <div className="flex items-center text-indigo-600 text-sm font-medium">
                                         Open Dashboard <ArrowRight size={16} className="ml-1" />
@@ -163,6 +261,20 @@ const DashboardList = ({ onNavigate, onBack }) => {
                         </div>
                     </div>
                 </div>
+            )}
+
+            {/* Share Modal */}
+            {showShareModal && dashboardToShare && (
+                <ShareQueryModal
+                    isOpen={showShareModal}
+                    onClose={() => setShowShareModal(false)}
+                    queryName={dashboardToShare.name}
+                    currentSharedWith={dashboardToShare.sharedWith}
+                    onSave={saveSharing}
+                    getHeaders={getHeaders}
+                    getUrl={getUrl}
+                    docId={PWA_DATA_DOC_ID}
+                />
             )}
         </div>
     );

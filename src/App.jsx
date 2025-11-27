@@ -2045,7 +2045,7 @@ export default function App() {
         }
       />
       <Route path="/sql" element={<SQLAnalysisView onBack={() => navigate('/dashboards')} user={user} teamId={teamId} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
-      <Route path="/dashboards" element={<DashboardList onNavigate={(id) => navigate(`/dashboards/${id}`)} onBack={() => navigate('/')} />} />
+      <Route path="/dashboards" element={<DashboardList onNavigate={(id) => navigate(`/dashboards/${id}`)} onBack={() => navigate('/')} teamId={teamId} getHeaders={getHeaders} getUrl={getUrl} />} />
       <Route path="/dashboards/:id" element={<DashboardWrapper onBack={() => navigate('/dashboards')} getHeaders={getHeaders} getUrl={getUrl} teamId={teamId} />} />
       <Route path="/telecaller" element={<TelecallerView onBack={() => navigate('/')} user={user} teamId={teamId} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
       <Route path="/telecaller/customer/:customerId" element={<TelecallerCustomerView onBack={() => navigate('/telecaller')} user={user} getHeaders={getHeaders} getUrl={getUrl} />} />

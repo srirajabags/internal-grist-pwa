@@ -47,13 +47,41 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
     const [loadingWidgets, setLoadingWidgets] = useState({});
 
     useEffect(() => {
-        // Load Dashboard
-        const allDashboards = JSON.parse(localStorage.getItem('data_dashboards') || '[]');
-        const current = allDashboards.find(d => d.id === dashboardId);
-        if (current) {
-            setDashboard(current);
+        // Load Dashboard from Grist
+        const loadDashboard = async () => {
+            try {
+                const { fetchPwaDataSql } = await import('../utils/gristDataSync');
+                const PWA_DATA_DOC_ID = '8vRFY3UUf4spJroktByH4u';
+                const gristRecords = await fetchPwaDataSql(PWA_DATA_DOC_ID, 'DASHBOARD', teamId, getHeaders, getUrl);
+
+                const dashboards = gristRecords.map(r => {
+                    try {
+                        const parsed = JSON.parse(r.fields.Data);
+                        return {
+                            ...parsed,
+                            uuid: r.fields.UUID,
+                            sharedWith: r.fields.Shared_With,
+                            createdBy: r.fields.Created_By
+                        };
+                    } catch (e) {
+                        console.warn("Failed to parse Grist record", r);
+                        return null;
+                    }
+                }).filter(Boolean);
+
+                const current = dashboards.find(d => d.id === dashboardId);
+                if (current) {
+                    setDashboard(current);
+                }
+            } catch (err) {
+                console.error("Error loading dashboard:", err);
+            }
+        };
+
+        if (teamId && dashboardId) {
+            loadDashboard();
         }
-    }, [dashboardId]);
+    }, [dashboardId, teamId]);
 
     // Fetch saved queries from Grist when modal opens
     useEffect(() => {
@@ -126,11 +154,17 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
         });
     };
 
-    const saveDashboard = (updatedDashboard) => {
+    const saveDashboard = async (updatedDashboard) => {
         setDashboard(updatedDashboard);
-        const allDashboards = JSON.parse(localStorage.getItem('data_dashboards') || '[]');
-        const updatedAll = allDashboards.map(d => d.id === dashboardId ? updatedDashboard : d);
-        localStorage.setItem('data_dashboards', JSON.stringify(updatedAll));
+
+        // Sync to Grist PWA_Data
+        try {
+            const { savePwaData } = await import('../utils/gristDataSync');
+            const PWA_DATA_DOC_ID = '8vRFY3UUf4spJroktByH4u';
+            await savePwaData(PWA_DATA_DOC_ID, [updatedDashboard], 'DASHBOARD', getHeaders, getUrl);
+        } catch (err) {
+            console.error("Failed to sync dashboard to Grist:", err);
+        }
     };
 
     const onLayoutChange = (layout) => {
