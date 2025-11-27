@@ -162,13 +162,12 @@ export const deletePwaData = async (docId, uuids, getHeaders, getUrl) => {
         // POST /api/docs/{docId}/tables/{tableId}/records with header "X-HTTP-Method-Override: DELETE" (or just DELETE method if client supports body, but fetch does).
         // Body: [id1, id2, ...] (Array of integers)
 
-        const deleteUrl = getUrl(`/api/docs/${docId}/tables/PWA_Data/records`);
+        const deleteUrl = getUrl(`/api/docs/${docId}/tables/PWA_Data/data/delete`);
         const deleteRes = await fetch(deleteUrl, {
-            method: 'POST', // Using POST with override is safest for Grist
+            method: 'POST',
             headers: {
                 ...headers,
-                'Content-Type': 'application/json',
-                'X-HTTP-Method-Override': 'DELETE'
+                'Content-Type': 'application/json'
             },
             body: JSON.stringify(rowIds)
         });
