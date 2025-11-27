@@ -180,3 +180,56 @@ export const deletePwaData = async (docId, uuids, getHeaders, getUrl) => {
         console.error("Error deleting PWA_Data:", error);
     }
 };
+
+/**
+ * Fetch records from PWA_Data table using SQL query with teamId filter.
+ * @param {string} docId - The Grist document ID.
+ * @param {string} dataType - The type of data to fetch (e.g., 'SQL_QUERY').
+ * @param {string} teamId - The Team ID of the logged-in user.
+ * @param {function} getHeaders - Function to get auth headers.
+ * @param {function} getUrl - Function to construct full URL.
+ * @returns {Promise<Array>} - Array of record objects.
+ */
+export const fetchPwaDataSql = async (docId, dataType, teamId, getHeaders, getUrl) => {
+    if (!docId || !teamId) return [];
+
+    try {
+        const headers = await getHeaders();
+        const url = getUrl(`/api/docs/${docId}/sql`);
+
+        const tId = String(teamId);
+        const sqlQuery = `
+            SELECT UUID, Data_Type, Data, Created_By, Created_At, Shared_With 
+            FROM PWA_Data 
+            WHERE Data_Type = '${dataType}' AND (
+                Created_By = '${tId}' 
+                OR (Shared_With LIKE '%,${tId},%' 
+                OR Shared_With LIKE '%[${tId},%' 
+                OR Shared_With LIKE '%,${tId}]%' 
+                OR Shared_With LIKE '%[${tId}]%')
+            )
+        `;
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                ...headers,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                sql: sqlQuery,
+                args: []
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to fetch PWA_Data (SQL): ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        return data.records || [];
+    } catch (error) {
+        console.error("Error fetching PWA_Data (SQL):", error);
+        return [];
+    }
+};

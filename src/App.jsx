@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
-import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard } from 'lucide-react';
+import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users } from 'lucide-react';
 import SqlVisualization from './components/SqlVisualization';
 import DashboardList from './components/DashboardList';
 import DashboardView from './components/DashboardView';
@@ -1060,11 +1060,12 @@ const CustomTableViewer = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
 };
 
 // SQL Analysis View Component
-import { fetchPwaData, savePwaData, deletePwaData } from './utils/gristDataSync';
+import { fetchPwaData, savePwaData, deletePwaData, fetchPwaDataSql } from './utils/gristDataSync';
+import ShareQueryModal from './components/ShareQueryModal';
 
 const PWA_DATA_DOC_ID = '8vRFY3UUf4spJroktByH4u';
 
-const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
+const SQLAnalysisView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) => {
   const [showSettings, setShowSettings] = useState(false);
   const [docs, setDocs] = useState([]);
   const [selectedDocId, setSelectedDocId] = useState('');
@@ -1085,73 +1086,58 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [saveQueryName, setSaveQueryName] = useState('');
 
-  // Load history and saved queries from localStorage on mount
+  // Sharing State
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [queryToShare, setQueryToShare] = useState(null);
+
+  // Load history from localStorage on mount
   useEffect(() => {
     try {
       const storedHistory = localStorage.getItem('sql_query_history');
       if (storedHistory) {
         setQueryHistory(JSON.parse(storedHistory));
       }
-
-      const storedSaved = localStorage.getItem('sql_saved_queries');
-      if (storedSaved) {
-        setSavedQueries(JSON.parse(storedSaved));
-      }
     } catch (e) {
       console.error('Error loading query history:', e);
     }
   }, []);
 
-  // Sync with Grist PWA_Data on mount (using fixed Doc ID)
+  // Fetch saved queries from Grist
+  const fetchSavedQueries = async () => {
+    try {
+      // 1. Fetch from Grist using SQL (filtered by teamId)
+      const gristRecords = await fetchPwaDataSql(PWA_DATA_DOC_ID, 'SQL_QUERY', teamId, getHeaders, getUrl);
+
+      // 2. Parse Grist data
+      const remoteQueries = gristRecords.map(r => {
+        try {
+          const parsed = JSON.parse(r.fields.Data);
+          return {
+            ...parsed,
+            uuid: r.fields.UUID, // Ensure UUID from Grist is used
+            sharedWith: r.fields.Shared_With, // Store sharedWith info
+            createdBy: r.fields.Created_By // Store owner info
+          };
+        } catch (e) {
+          console.warn("Failed to parse Grist record", r);
+          return null;
+        }
+      }).filter(Boolean);
+
+      // 3. Set State (Source of Truth is Grist)
+      setSavedQueries(remoteQueries);
+
+    } catch (err) {
+      console.error("Fetch Error:", err);
+    }
+  };
+
+  // Fetch saved queries when history panel opens
   useEffect(() => {
-    const syncWithGrist = async () => {
-      try {
-        // 1. Fetch from Grist
-        const gristRecords = await fetchPwaData(PWA_DATA_DOC_ID, 'SQL_QUERY', getHeaders, getUrl);
-
-        // 2. Parse Grist data
-        const remoteQueries = gristRecords.map(r => {
-          try {
-            const parsed = JSON.parse(r.fields.Data);
-            return { ...parsed, uuid: r.fields.UUID }; // Ensure UUID from Grist is used
-          } catch (e) {
-            console.warn("Failed to parse Grist record", r);
-            return null;
-          }
-        }).filter(Boolean);
-
-        // 3. Merge with Local
-        setSavedQueries(prev => {
-          const prevMap = new Map(prev.map(q => [q.uuid || q.id, q]));
-
-          // Update/Add from Remote
-          remoteQueries.forEach(q => {
-            if (q.uuid) prevMap.set(q.uuid, q);
-          });
-
-          const merged = Array.from(prevMap.values());
-
-          // Save back to local
-          localStorage.setItem('sql_saved_queries', JSON.stringify(merged));
-
-          // 4. Sync back to Grist
-          const withUuids = merged.map(q => ({
-            ...q,
-            uuid: q.uuid || crypto.randomUUID()
-          }));
-
-          savePwaData(PWA_DATA_DOC_ID, withUuids, 'SQL_QUERY', getHeaders, getUrl);
-
-          return withUuids;
-        });
-
-      } catch (err) {
-        console.error("Sync Error:", err);
-      }
-    };
-
-    syncWithGrist();
-  }, []); // Run once on mount
+    if (showHistoryPanel) {
+      fetchSavedQueries();
+    }
+  }, [showHistoryPanel]);
 
   // Save query to history (max 50)
   const addToHistory = (query, docId) => {
@@ -1185,17 +1171,13 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
       vizConfig,
       timestamp: new Date().toISOString(),
       pinned: false,
+      createdBy: teamId,
     };
 
-    setSavedQueries(prev => {
-      const newSaved = [...prev, savedItem];
-      localStorage.setItem('sql_saved_queries', JSON.stringify(newSaved));
+    setSavedQueries(prev => [...prev, savedItem]);
 
-      // Sync to Grist
-      savePwaData(PWA_DATA_DOC_ID, [savedItem], 'SQL_QUERY', getHeaders, getUrl);
-
-      return newSaved;
-    });
+    // Sync to Grist
+    savePwaData(PWA_DATA_DOC_ID, [savedItem], 'SQL_QUERY', getHeaders, getUrl);
 
     setSaveQueryName('');
     setShowSaveDialog(false);
@@ -1205,7 +1187,6 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
   const togglePin = (id) => {
     setSavedQueries(prev => {
       const updated = prev.map(q => q.id === id ? { ...q, pinned: !q.pinned } : q);
-      localStorage.setItem('sql_saved_queries', JSON.stringify(updated));
 
       // Sync to Grist (Update the specific item)
       const item = updated.find(q => q.id === id);
@@ -1217,12 +1198,65 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
     });
   };
 
+  // Share Query Logic
+  const handleShare = (query) => {
+    setQueryToShare(query);
+    setShowShareModal(true);
+  };
+
+  const saveSharing = async (sharedWithIds) => {
+    if (!queryToShare) return;
+
+    // Update local state
+    // Update local state
+    setSavedQueries(prev => prev.map(q => {
+      if (q.id === queryToShare.id) {
+        return { ...q, sharedWith: sharedWithIds };
+      }
+      return q;
+    }));
+
+    // Construct the record to save
+    const recordToSave = {
+      ...queryToShare,
+      sharedWith: sharedWithIds
+    };
+
+    try {
+      const headers = await getHeaders();
+      const url = getUrl(`/api/docs/${PWA_DATA_DOC_ID}/tables/PWA_Data/records`);
+
+      // We need the Row ID to update. Do we have it?
+      // We have UUID. We can use 'require' to update based on UUID.
+      sharedWithIds.unshift("L")
+      const payload = {
+        records: [{
+          require: {
+            UUID: queryToShare.uuid
+          },
+          fields: {
+            Shared_With: sharedWithIds // Use Grist ReferenceList notation
+          }
+        }]
+      };
+
+      await fetch(url, {
+        method: 'PUT',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+    } catch (e) {
+      console.error("Failed to save sharing", e);
+      setError("Failed to save sharing settings");
+    }
+  };
+
   // Delete saved query
   const deleteSavedQuery = (id) => {
     setSavedQueries(prev => {
       const itemToDelete = prev.find(q => q.id === id);
       const updated = prev.filter(q => q.id !== id);
-      localStorage.setItem('sql_saved_queries', JSON.stringify(updated));
 
       // Sync Delete to Grist
       if (itemToDelete && itemToDelete.uuid) {
@@ -1626,6 +1660,14 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
                           </div>
                           <div className="flex gap-1">
                             <button
+                              onClick={() => handleShare(query)}
+                              className={`p-1 rounded ${query.createdBy === teamId ? 'hover:bg-cyan-200 text-cyan-600' : 'text-slate-300 cursor-not-allowed'}`}
+                              title={query.createdBy === teamId ? "Share" : "Only owner can share"}
+                              disabled={query.createdBy !== teamId}
+                            >
+                              <Users size={16} />
+                            </button>
+                            <button
                               onClick={() => togglePin(query.id)}
                               className="p-1 hover:bg-cyan-200 rounded text-cyan-600"
                               title="Unpin"
@@ -1674,6 +1716,14 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
                             </p>
                           </div>
                           <div className="flex gap-1">
+                            <button
+                              onClick={() => handleShare(query)}
+                              className={`p-1 rounded ${query.createdBy === teamId ? 'hover:bg-slate-200 text-slate-600' : 'text-slate-300 cursor-not-allowed'}`}
+                              title={query.createdBy === teamId ? "Share" : "Only owner can share"}
+                              disabled={query.createdBy !== teamId}
+                            >
+                              <Users size={16} />
+                            </button>
                             <button
                               onClick={() => togglePin(query.id)}
                               className="p-1 hover:bg-slate-200 rounded text-slate-600"
@@ -1746,6 +1796,18 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
           </div>
         </div>
       )}
+
+      {/* Share Modal */}
+      <ShareQueryModal
+        isOpen={showShareModal}
+        onClose={() => setShowShareModal(false)}
+        queryName={queryToShare?.name}
+        currentSharedWith={queryToShare?.sharedWith}
+        onSave={saveSharing}
+        getHeaders={getHeaders}
+        getUrl={getUrl}
+        docId={PWA_DATA_DOC_ID}
+      />
 
       {/* Save Query Dialog */}
       {showSaveDialog && (
@@ -1982,9 +2044,9 @@ export default function App() {
           />
         }
       />
-      <Route path="/sql" element={<SQLAnalysisView onBack={() => navigate('/dashboards')} user={user} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
+      <Route path="/sql" element={<SQLAnalysisView onBack={() => navigate('/dashboards')} user={user} teamId={teamId} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
       <Route path="/dashboards" element={<DashboardList onNavigate={(id) => navigate(`/dashboards/${id}`)} onBack={() => navigate('/')} />} />
-      <Route path="/dashboards/:id" element={<DashboardWrapper onBack={() => navigate('/dashboards')} getHeaders={getHeaders} getUrl={getUrl} />} />
+      <Route path="/dashboards/:id" element={<DashboardWrapper onBack={() => navigate('/dashboards')} getHeaders={getHeaders} getUrl={getUrl} teamId={teamId} />} />
       <Route path="/telecaller" element={<TelecallerView onBack={() => navigate('/')} user={user} teamId={teamId} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
       <Route path="/telecaller/customer/:customerId" element={<TelecallerCustomerView onBack={() => navigate('/telecaller')} user={user} getHeaders={getHeaders} getUrl={getUrl} />} />
     </Routes>

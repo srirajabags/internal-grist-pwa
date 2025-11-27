@@ -35,7 +35,7 @@ const customStyles = `
   }
 `;
 
-const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl }) => {
+const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
     const [dashboard, setDashboard] = useState(null);
     const [isEditing, setIsEditing] = useState(false);
     const [savedQueries, setSavedQueries] = useState([]);
@@ -53,11 +53,41 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl }) => {
         if (current) {
             setDashboard(current);
         }
-
-        // Load Saved Queries for Widget Selection
-        const queries = JSON.parse(localStorage.getItem('sql_saved_queries') || '[]');
-        setSavedQueries(queries);
     }, [dashboardId]);
+
+    // Fetch saved queries from Grist when modal opens
+    useEffect(() => {
+        if (showAddWidgetModal && teamId) {
+            fetchSavedQueries();
+        }
+    }, [showAddWidgetModal]);
+
+    const fetchSavedQueries = async () => {
+        try {
+            const { fetchPwaDataSql } = await import('../utils/gristDataSync');
+            const PWA_DATA_DOC_ID = '8vRFY3UUf4spJroktByH4u';
+            const gristRecords = await fetchPwaDataSql(PWA_DATA_DOC_ID, 'SQL_QUERY', teamId, getHeaders, getUrl);
+
+            const queries = gristRecords.map(r => {
+                try {
+                    const parsed = JSON.parse(r.fields.Data);
+                    return {
+                        ...parsed,
+                        uuid: r.fields.UUID,
+                        sharedWith: r.fields.Shared_With,
+                        createdBy: r.fields.Created_By
+                    };
+                } catch (e) {
+                    console.warn("Failed to parse Grist record", r);
+                    return null;
+                }
+            }).filter(Boolean);
+
+            setSavedQueries(queries);
+        } catch (err) {
+            console.error("Error fetching saved queries:", err);
+        }
+    };
 
     // Fetch data for widgets
     useEffect(() => {
