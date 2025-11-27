@@ -1060,6 +1060,10 @@ const CustomTableViewer = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
 };
 
 // SQL Analysis View Component
+import { fetchPwaData, savePwaData, deletePwaData } from './utils/gristDataSync';
+
+const PWA_DATA_DOC_ID = '8vRFY3UUf4spJroktByH4u';
+
 const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
   const [showSettings, setShowSettings] = useState(false);
   const [docs, setDocs] = useState([]);
@@ -1098,6 +1102,57 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
     }
   }, []);
 
+  // Sync with Grist PWA_Data on mount (using fixed Doc ID)
+  useEffect(() => {
+    const syncWithGrist = async () => {
+      try {
+        // 1. Fetch from Grist
+        const gristRecords = await fetchPwaData(PWA_DATA_DOC_ID, 'SQL_QUERY', getHeaders, getUrl);
+
+        // 2. Parse Grist data
+        const remoteQueries = gristRecords.map(r => {
+          try {
+            const parsed = JSON.parse(r.fields.Data);
+            return { ...parsed, uuid: r.fields.UUID }; // Ensure UUID from Grist is used
+          } catch (e) {
+            console.warn("Failed to parse Grist record", r);
+            return null;
+          }
+        }).filter(Boolean);
+
+        // 3. Merge with Local
+        setSavedQueries(prev => {
+          const prevMap = new Map(prev.map(q => [q.uuid || q.id, q]));
+
+          // Update/Add from Remote
+          remoteQueries.forEach(q => {
+            if (q.uuid) prevMap.set(q.uuid, q);
+          });
+
+          const merged = Array.from(prevMap.values());
+
+          // Save back to local
+          localStorage.setItem('sql_saved_queries', JSON.stringify(merged));
+
+          // 4. Sync back to Grist
+          const withUuids = merged.map(q => ({
+            ...q,
+            uuid: q.uuid || crypto.randomUUID()
+          }));
+
+          savePwaData(PWA_DATA_DOC_ID, withUuids, 'SQL_QUERY', getHeaders, getUrl);
+
+          return withUuids;
+        });
+
+      } catch (err) {
+        console.error("Sync Error:", err);
+      }
+    };
+
+    syncWithGrist();
+  }, []); // Run once on mount
+
   // Save query to history (max 50)
   const addToHistory = (query, docId) => {
     const historyItem = {
@@ -1120,8 +1175,10 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
   const saveQueryWithName = () => {
     if (!saveQueryName.trim() || !sqlQuery.trim()) return;
 
+    const newUuid = crypto.randomUUID();
     const savedItem = {
-      id: Date.now(),
+      id: Date.now(), // Keep for legacy or sorting
+      uuid: newUuid,
       name: saveQueryName.trim(),
       query: sqlQuery,
       docId: selectedDocId,
@@ -1133,6 +1190,10 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
     setSavedQueries(prev => {
       const newSaved = [...prev, savedItem];
       localStorage.setItem('sql_saved_queries', JSON.stringify(newSaved));
+
+      // Sync to Grist
+      savePwaData(PWA_DATA_DOC_ID, [savedItem], 'SQL_QUERY', getHeaders, getUrl);
+
       return newSaved;
     });
 
@@ -1145,6 +1206,13 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
     setSavedQueries(prev => {
       const updated = prev.map(q => q.id === id ? { ...q, pinned: !q.pinned } : q);
       localStorage.setItem('sql_saved_queries', JSON.stringify(updated));
+
+      // Sync to Grist (Update the specific item)
+      const item = updated.find(q => q.id === id);
+      if (item) {
+        savePwaData(PWA_DATA_DOC_ID, [item], 'SQL_QUERY', getHeaders, getUrl);
+      }
+
       return updated;
     });
   };
@@ -1152,8 +1220,15 @@ const SQLAnalysisView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
   // Delete saved query
   const deleteSavedQuery = (id) => {
     setSavedQueries(prev => {
+      const itemToDelete = prev.find(q => q.id === id);
       const updated = prev.filter(q => q.id !== id);
       localStorage.setItem('sql_saved_queries', JSON.stringify(updated));
+
+      // Sync Delete to Grist
+      if (itemToDelete && itemToDelete.uuid) {
+        deletePwaData(PWA_DATA_DOC_ID, [itemToDelete.uuid], getHeaders, getUrl);
+      }
+
       return updated;
     });
   };
