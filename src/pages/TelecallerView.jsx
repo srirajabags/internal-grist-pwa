@@ -1,34 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Settings, Phone, Loader2, AlertCircle, RefreshCw, IndianRupee, X, User, LogOut } from 'lucide-react';
+import Card from '../components/Card';
+import Button from '../components/Button';
 import TelecallerCustomerView from './TelecallerCustomerView';
-
-const Button = ({ onClick, children, variant = "primary", disabled = false, className = "", icon: Icon }) => {
-    const baseStyle = "flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
-    const variants = {
-        primary: "bg-green-600 text-white hover:bg-green-700",
-        secondary: "bg-slate-100 text-slate-700 hover:bg-slate-200",
-        outline: "border border-slate-200 text-slate-600 hover:bg-slate-50",
-        ghost: "text-slate-600 hover:bg-slate-100"
-    };
-
-    return (
-        <button
-            onClick={onClick}
-            disabled={disabled}
-            className={`${baseStyle} ${variants[variant]} ${className}`}
-        >
-            {Icon && <Icon size={18} />}
-            {children}
-        </button>
-    );
-};
-
-const Card = ({ children, className = "", ...props }) => (
-    <div className={`bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden ${className}`} {...props}>
-        {children}
-    </div>
-);
+import CustomerCard from '../components/CustomerCard';
 
 const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose }) => {
     console.log("SalaryDetailsModal rendered with data:", data);
@@ -109,7 +85,7 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose }) => {
                                             const target = repeatTargets[idx] || 0;
                                             const achieved = repeatAchieved[idx] || 0;
                                             const earning = repeatEarnings[idx] || 0;
-                                            const groupName = areaGroupNames[group] || `Group ${group}`;
+                                            const groupName = areaGroupNames[group] || `Group ${group} `;
 
                                             return (
                                                 <tr key={idx}>
@@ -263,12 +239,12 @@ const TelecallerView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) 
             const startOfMonthTimestamp = startOfMonth.getTime() / 1000;
 
             const sqlQuery = `
-        SELECT * 
-        FROM Telecaller_Salaries ts
+SELECT *
+    FROM Telecaller_Salaries ts
         JOIN Team t ON t.id = ts.Telecaller
-        WHERE Month = ? 
-        AND t.Email = ?
-      `;
+        WHERE Month = ?
+    AND t.Email = ?
+        `;
 
             const url = getUrl(`/api/docs/${DOC_ID}/sql`);
             const response = await fetch(url, {
@@ -644,48 +620,16 @@ const TelecallerView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) 
                     ) : (
                         <div className="grid gap-3">
                             {filteredTodos.map((todo, idx) => (
-                                <Card key={idx} className="p-4 hover:shadow-md transition-shadow cursor-pointer" onClick={() => setSelectedCustomerId(todo.Customer_ID)}>
-                                    <div className="mb-3">
-                                        <h3 className="font-bold text-slate-800 leading-snug mb-1.5">{todo.Shop_Name}</h3>
-                                        <div className="flex items-center gap-2 flex-wrap">
-                                            <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide border ${todo.Sales_Status === 'New' ? 'bg-blue-50 text-blue-700 border-blue-100' :
-                                                todo.Sales_Status === 'Follow-up' ? 'bg-orange-50 text-orange-700 border-orange-100' :
-                                                    'bg-slate-50 text-slate-600 border-slate-100'
-                                                }`}>
-                                                {todo.Sales_Status || 'Unknown'}
-                                            </span>
-                                            <span className="text-xs text-slate-400">•</span>
-                                            <p className="text-xs text-slate-500">Customer ID: {todo.Customer_ID}</p>
-                                        </div>
-                                    </div>
-
-                                    <div className="flex items-center gap-2 text-xs text-slate-600 mb-4 bg-slate-50 p-2 rounded-lg">
-                                        <span className="font-medium">
-                                            {areaGroupNames[todo.Area_Group] || `Group ${todo.Area_Group}`}
-                                        </span>
-                                        <span className="text-slate-300">|</span>
-                                        <span>{todo.Days_Since_Last_Order || 0} days since last order</span>
-                                    </div>
-
-                                    <div className="grid grid-cols-2 gap-2" onClick={e => e.stopPropagation()}>
-                                        <a
-                                            href={`tel:${todo.Mobile_Number}`}
-                                            className="flex items-center justify-center gap-2 bg-green-50 text-green-700 py-2 rounded-lg font-medium hover:bg-green-100 transition-colors"
-                                        >
-                                            <Phone size={16} />
-                                            Call
-                                        </a>
-                                        <a
-                                            href={`https://wa.me/+91${todo.Mobile_Number}`}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="flex items-center justify-center gap-2 bg-green-50 text-green-700 py-2 rounded-lg font-medium hover:bg-green-100 transition-colors"
-                                        >
-                                            <svg viewBox="0 0 24 24" className="w-4 h-4 fill-current"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.008-.57-.008-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z" /></svg>
-                                            WhatsApp
-                                        </a>
-                                    </div>
-                                </Card>
+                                <CustomerCard
+                                    key={idx}
+                                    shopName={todo.Shop_Name}
+                                    salesStatus={todo.Sales_Status}
+                                    customerId={todo.Customer_ID} // Telecaller view uses "Customer ID" label as per previous code
+                                    mobileNumber={todo.Mobile_Number}
+                                    daysSinceLastOrder={todo.Days_Since_Last_Order}
+                                    primaryInfo={areaGroupNames[todo.Area_Group] || `Group ${todo.Area_Group}`} // Telecaller uses Area Group
+                                    onClick={() => setSelectedCustomerId(todo.Customer_ID)}
+                                />
                             ))}
                         </div>
                     )}

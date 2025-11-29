@@ -4,17 +4,15 @@ import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X,
 import SqlVisualization from './components/SqlVisualization';
 import DashboardList from './components/DashboardList';
 import DashboardView from './components/DashboardView';
+import Card from './components/Card';
+import Button from './components/Button';
 import { useAuth0 } from '@auth0/auth0-react';
 
 // Get server URL from environment
 const GRIST_SERVER_URL = import.meta.env.VITE_GRIST_SERVER_URL;
 
 // Simple UI Components
-const Card = ({ children, className = "" }) => (
-  <div className={`bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden ${className}`}>
-    {children}
-  </div>
-);
+
 
 const Select = ({ label, value, onChange, options, placeholder, disabled = false, loading = false, className = "" }) => (
   <div className={className}>
@@ -40,26 +38,7 @@ const Select = ({ label, value, onChange, options, placeholder, disabled = false
   </div>
 );
 
-const Button = ({ onClick, children, variant = "primary", disabled = false, className = "", icon: Icon }) => {
-  const baseStyle = "flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
-  const variants = {
-    primary: "bg-green-600 text-white hover:bg-green-700",
-    secondary: "bg-slate-100 text-slate-700 hover:bg-slate-200",
-    outline: "border border-slate-200 text-slate-600 hover:bg-slate-50",
-    ghost: "text-slate-600 hover:bg-slate-100"
-  };
 
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={`${baseStyle} ${variants[variant]} ${className}`}
-    >
-      {Icon && <Icon size={18} />}
-      {children}
-    </button>
-  );
-};
 
 // Settings Modal Component
 const SettingsModal = ({ onClose, user, onLogout }) => (
@@ -133,6 +112,14 @@ const HomePage = ({ onNavigate }) => {
       hoverColor: 'hover:bg-blue-700'
     },
     {
+      id: 'salesman',
+      title: 'Salesman View',
+      description: 'Manage salesman visits and conversations',
+      icon: User,
+      color: 'bg-indigo-600',
+      hoverColor: 'hover:bg-indigo-700'
+    },
+    {
       id: 'design',
       title: 'Design Confirmation View',
       description: 'Review and confirm design submissions',
@@ -201,6 +188,8 @@ const DashboardWrapper = (props) => {
 
 import TelecallerView from './pages/TelecallerView';
 import TelecallerCustomerView from './pages/TelecallerCustomerView';
+import SalesmanView from './pages/SalesmanView';
+import SalesmanCustomerView from './pages/SalesmanCustomerView';
 
 // Design Confirmation View Component (Placeholder)
 const DesignConfirmationView = ({ onBack, user, onLogout }) => {
@@ -2049,6 +2038,8 @@ export default function App() {
       <Route path="/dashboards/:id" element={<DashboardWrapper onBack={() => navigate('/dashboards')} getHeaders={getHeaders} getUrl={getUrl} teamId={teamId} />} />
       <Route path="/telecaller" element={<TelecallerView onBack={() => navigate('/')} user={user} teamId={teamId} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
       <Route path="/telecaller/customer/:customerId" element={<TelecallerCustomerView onBack={() => navigate('/telecaller')} user={user} getHeaders={getHeaders} getUrl={getUrl} />} />
+      <Route path="/salesman" element={<SalesmanView onBack={() => navigate('/')} user={user} teamId={teamId} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
+      <Route path="/salesman/customer/:customerId" element={<SalesmanCustomerView onBack={() => navigate('/salesman')} user={user} getHeaders={getHeaders} getUrl={getUrl} />} />
     </Routes>
   );
 }

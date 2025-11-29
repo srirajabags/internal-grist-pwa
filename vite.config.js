@@ -52,6 +52,13 @@ export default defineConfig({
             icons: [{ src: 'pwa-192x192.png', sizes: '192x192' }]
           },
           {
+            name: 'Salesman View',
+            short_name: 'Salesman',
+            description: 'Manage salesman visits and conversations',
+            url: '/salesman',
+            icons: [{ src: 'pwa-192x192.png', sizes: '192x192' }]
+          },
+          {
             name: 'Design Confirmation',
             short_name: 'Design',
             description: 'Review and confirm design submissions',
