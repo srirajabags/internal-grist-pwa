@@ -1,13 +1,37 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Settings, Phone, Loader2, AlertCircle, RefreshCw, IndianRupee, X, User, LogOut } from 'lucide-react';
+import { ArrowLeft, Settings, Phone, Loader2, AlertCircle, RefreshCw, IndianRupee, X, User, LogOut, ChevronDown, Calendar } from 'lucide-react';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import TelecallerCustomerView from './TelecallerCustomerView';
 import CustomerCard from '../components/CustomerCard';
 
-const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose }) => {
+const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonthChange, selectedMonthTimestamp }) => {
     console.log("SalaryDetailsModal rendered with data:", data);
+
+    // Generate last 12 months for dropdown
+    const months = [];
+    const now = new Date();
+    for (let i = 0; i < 12; i++) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        months.push({
+            label: d.toLocaleString('default', { month: 'short', year: '2-digit' }),
+            timestamp: d.getTime() / 1000
+        });
+    }
+
+    const [showMonthDropdown, setShowMonthDropdown] = useState(false);
+    const dropdownRef = useRef(null);
+
+    useEffect(() => {
+        const handleClickOutside = (event) => {
+            if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+                setShowMonthDropdown(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
 
     if (!data) {
         return (
@@ -16,7 +40,38 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose }) => {
                     <AlertCircle size={48} className="mx-auto mb-4 text-slate-300" />
                     <h2 className="text-xl font-bold text-slate-800 mb-2">No Salary Data</h2>
                     <p className="text-slate-500 mb-6">There is no salary record available for {month || 'this month'}.</p>
-                    <Button onClick={onClose} className="w-full">Close</Button>
+                    <div className="flex gap-2">
+                        <div className="relative flex-1" ref={dropdownRef}>
+                            <button
+                                onClick={() => setShowMonthDropdown(!showMonthDropdown)}
+                                className="w-full flex items-center justify-between px-3 py-2 bg-slate-100 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-200 transition-colors"
+                            >
+                                <span className="flex items-center gap-2">
+                                    <Calendar size={16} />
+                                    {month}
+                                </span>
+                                <ChevronDown size={16} />
+                            </button>
+
+                            {showMonthDropdown && (
+                                <div className="absolute bottom-full left-0 right-0 mb-2 bg-white rounded-lg shadow-xl border border-slate-200 max-h-48 overflow-y-auto z-50">
+                                    {months.map((m) => (
+                                        <button
+                                            key={m.timestamp}
+                                            onClick={() => {
+                                                onMonthChange(m.timestamp);
+                                                setShowMonthDropdown(false);
+                                            }}
+                                            className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-50 transition-colors ${selectedMonthTimestamp === m.timestamp ? 'bg-blue-50 text-blue-600 font-medium' : 'text-slate-700'}`}
+                                        >
+                                            {m.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                        <Button onClick={onClose} className="flex-1">Close</Button>
+                    </div>
                 </div>
             </div>
         );
@@ -33,81 +88,176 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose }) => {
     };
 
     const areaGroups = safeParse(data.Area_Groups);
-    const repeatTargets = safeParse(data.Repeat_Orders_Targets);
-    const repeatAchieved = safeParse(data.Repeat_Orders);
-    const repeatEarnings = safeParse(data.Repeat_Order_Earning);
 
-    const newOrderEarnings = safeParse(data.New_Order_Earning);
-    const newOrdersAbove40k = data.New_Orders_above_40k || 0;
-    const newOrders20kTo40k = data.New_Orders_between_20_40k || 0;
-    const newOrdersBelow20k = data.New_Orders_below_20k || 0;
+    // Section 1: Regular Repeat
+    const repeatTargets = safeParse(data.Regular_Repeat_Orders_Targets); // Updated field name
+    const repeatAchieved = safeParse(data.Regular_Repeat_Orders); // Updated field name
+    const repeatEarnings = safeParse(data.Regular_Repeat_Orders_Earning); // Updated field name
 
-    // Calculate rewards per bucket (Earning / Count) - avoid division by zero
-    const getReward = (earning, count) => count > 0 ? earning / count : 0;
+    // Section 2: Non-Regular Repeat
+    const nonRegEarnings = safeParse(data.Non_Regular_Repeat_Orders_Earning); // Array of arrays
+    const nonRegAbove40k = safeParse(data.Non_Regular_Repeat_Orders_above_40k); // Array of arrays
+    const nonReg20kTo40k = safeParse(data.Non_Regular_Repeat_Orders_between_20_40k); // Array of arrays
+    const nonRegBelow20k = safeParse(data.Non_Regular_Repeat_Orders_below_20k); // Array of arrays
 
-    const rewardAbove40k = getReward(newOrderEarnings[0] || 0, newOrdersAbove40k);
-    const reward20kTo40k = getReward(newOrderEarnings[1] || 0, newOrders20kTo40k);
-    const rewardBelow20k = getReward(newOrderEarnings[2] || 0, newOrdersBelow20k);
+    // Section 3: New Orders
+    const newOrderEarnings = safeParse(data.New_Orders_Earning); // Array of arrays
+    const newOrdersAbove40k = safeParse(data.New_Orders_above_40k); // Array of arrays
+    const newOrders20kTo40k = safeParse(data.New_Orders_between_20_40k); // Array of arrays
+    const newOrdersBelow20k = safeParse(data.New_Orders_below_20k); // Array of arrays
+
+
+    // Helper Component for Group Earnings Card
+    const GroupEarningsCard = ({ groupName, earnings, countsAbove40k, counts20kTo40k, countsBelow20k, totalEarning }) => {
+        // Calculate rewards per bucket (Earning / Count) - avoid division by zero
+        // Note: earnings is [above40k, 20k-40k, below20k]
+        const getReward = (earning, count) => count > 0 ? earning / count : 0;
+
+        const rewardAbove40k = getReward(earnings[0] || 0, countsAbove40k);
+        const reward20kTo40k = getReward(earnings[1] || 0, counts20kTo40k);
+        const rewardBelow20k = getReward(earnings[2] || 0, countsBelow20k);
+
+        return (
+            <div className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+                <div className="bg-slate-50 px-3 py-2 border-b border-slate-100 flex justify-between items-center">
+                    <span className="font-semibold text-slate-700 text-sm">{groupName}</span>
+                    <span className="font-bold text-green-600 text-sm">₹{totalEarning.toLocaleString('en-IN')}</span>
+                </div>
+                <div className="p-2 grid grid-cols-3 gap-2">
+                    {/* Above 40k */}
+                    <div className="bg-green-50 rounded p-1.5 border border-green-100 flex flex-col justify-between">
+                        <div className="text-[9px] font-bold text-green-800 uppercase leading-tight mb-1">Above 40k</div>
+                        <div>
+                            <div className="flex items-baseline gap-1">
+                                <span className="text-base font-bold text-green-700 leading-none">{countsAbove40k}</span>
+                                <span className="text-[9px] text-green-600">orders</span>
+                            </div>
+                            <div className="flex justify-between items-end mt-1 pt-1 border-t border-green-200/50">
+                                <span className="text-[9px] text-green-600">₹{rewardAbove40k}</span>
+                                <span className="text-[10px] font-bold text-green-800">₹{(earnings[0] || 0).toLocaleString('en-IN')}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* 20k - 40k */}
+                    <div className="bg-blue-50 rounded p-1.5 border border-blue-100 flex flex-col justify-between">
+                        <div className="text-[9px] font-bold text-blue-800 uppercase leading-tight mb-1">20k - 40k</div>
+                        <div>
+                            <div className="flex items-baseline gap-1">
+                                <span className="text-base font-bold text-blue-700 leading-none">{counts20kTo40k}</span>
+                                <span className="text-[9px] text-blue-600">orders</span>
+                            </div>
+                            <div className="flex justify-between items-end mt-1 pt-1 border-t border-blue-200/50">
+                                <span className="text-[9px] text-blue-600">₹{reward20kTo40k}</span>
+                                <span className="text-[10px] font-bold text-blue-800">₹{(earnings[1] || 0).toLocaleString('en-IN')}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Below 20k */}
+                    <div className="bg-orange-50 rounded p-1.5 border border-orange-100 flex flex-col justify-between">
+                        <div className="text-[9px] font-bold text-orange-800 uppercase leading-tight mb-1">Below 20k</div>
+                        <div>
+                            <div className="flex items-baseline gap-1">
+                                <span className="text-base font-bold text-orange-700 leading-none">{countsBelow20k}</span>
+                                <span className="text-[9px] text-orange-600">orders</span>
+                            </div>
+                            <div className="flex justify-between items-end mt-1 pt-1 border-t border-orange-200/50">
+                                <span className="text-[9px] text-orange-600">₹{rewardBelow20k}</span>
+                                <span className="text-[10px] font-bold text-orange-800">₹{(earnings[2] || 0).toLocaleString('en-IN')}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+    };
 
     return (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={onClose}>
             <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
-                <div className="flex items-center justify-between p-4 border-b border-slate-200">
+                <div className="flex items-center justify-between p-4 border-b border-slate-200 bg-slate-50">
                     <div>
                         <h2 className="text-xl font-bold text-slate-800">Salary Details</h2>
-                        <p className="text-sm text-slate-500">For {month}</p>
+                        <div className="relative mt-1" ref={dropdownRef}>
+                            <button
+                                onClick={() => setShowMonthDropdown(!showMonthDropdown)}
+                                className="flex items-center gap-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 bg-white px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-all"
+                            >
+                                <Calendar size={14} />
+                                {month}
+                                <ChevronDown size={14} />
+                            </button>
+
+                            {showMonthDropdown && (
+                                <div className="absolute top-full left-0 mt-1 w-40 bg-white rounded-lg shadow-xl border border-slate-200 max-h-60 overflow-y-auto z-50">
+                                    {months.map((m) => (
+                                        <button
+                                            key={m.timestamp}
+                                            onClick={() => {
+                                                onMonthChange(m.timestamp);
+                                                setShowMonthDropdown(false);
+                                            }}
+                                            className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-50 transition-colors ${selectedMonthTimestamp === m.timestamp ? 'bg-blue-50 text-blue-600 font-medium' : 'text-slate-700'}`}
+                                        >
+                                            {m.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
                     </div>
-                    <button onClick={onClose} className="text-slate-400 hover:text-slate-700">
+                    <button onClick={onClose} className="text-slate-400 hover:text-slate-700 bg-white rounded-full p-1 hover:bg-slate-100 transition-colors">
                         <X size={20} />
                     </button>
                 </div>
 
-                <div className="flex-1 overflow-auto p-6 space-y-8">
-                    {/* Repeat Order Earnings */}
+                <div className="flex-1 overflow-auto p-4 space-y-6 bg-slate-50/50">
+                    {/* 1. Regular Customer Repeat Order Earnings */}
                     <section>
-                        <h3 className="text-sm font-semibold text-slate-800 mb-2 flex items-center gap-2">
-                            <RefreshCw size={16} className="text-blue-600" />
-                            Repeat Order Earnings
+                        <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2 uppercase tracking-wider">
+                            <div className="p-1 bg-blue-100 rounded text-blue-600"><RefreshCw size={14} /></div>
+                            Regular Repeat Orders
                         </h3>
-                        <div className="bg-slate-50 rounded-lg border border-slate-200 overflow-hidden">
+                        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden shadow-sm">
                             <div className="overflow-x-auto">
                                 <table className="w-full text-xs text-left whitespace-nowrap">
-                                    <thead className="bg-slate-100 text-slate-600 font-medium border-b border-slate-200">
+                                    <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-100">
                                         <tr>
-                                            <th className="px-2 py-2">Group</th>
-                                            <th className="px-2 py-2 text-right">Progress</th>
-                                            <th className="px-2 py-2 text-right">Calculation</th>
-                                            <th className="px-2 py-2 text-right">Earning</th>
+                                            <th className="px-3 py-2">Group</th>
+                                            <th className="px-3 py-2 text-right">Progress</th>
+                                            <th className="px-3 py-2 text-right">Calculation</th>
+                                            <th className="px-3 py-2 text-right">Earning</th>
                                         </tr>
                                     </thead>
-                                    <tbody className="divide-y divide-slate-200">
+                                    <tbody className="divide-y divide-slate-100">
                                         {areaGroups.map((group, idx) => {
                                             const target = repeatTargets[idx] || 0;
                                             const achieved = repeatAchieved[idx] || 0;
                                             const earning = repeatEarnings[idx] || 0;
-                                            const groupName = areaGroupNames[group] || `Group ${group} `;
+                                            const groupName = areaGroupNames[group] || `Group ${group}`;
 
                                             return (
-                                                <tr key={idx}>
-                                                    <td className="px-2 py-2 font-medium text-slate-700">{groupName}</td>
-                                                    <td className="px-2 py-2 text-right">
-                                                        <span className="font-semibold">{achieved}</span>
-                                                        <span className="text-slate-400">/</span>
-                                                        <span>{target}</span>
+                                                <tr key={idx} className="hover:bg-slate-50/50">
+                                                    <td className="px-3 py-2.5 font-medium text-slate-700">{groupName}</td>
+                                                    <td className="px-3 py-2.5 text-right">
+                                                        <span className="font-bold text-slate-800">{achieved}</span>
+                                                        <span className="text-slate-400 mx-1">/</span>
+                                                        <span className="text-slate-500">{target}</span>
                                                     </td>
-                                                    <td className="px-2 py-2 text-right text-slate-500 font-mono text-[10px]">
+                                                    <td className="px-3 py-2.5 text-right text-slate-400 font-mono text-[10px]">
                                                         ({achieved}/{target}) * 6000
                                                     </td>
-                                                    <td className="px-2 py-2 text-right font-bold text-green-600">
+                                                    <td className="px-3 py-2.5 text-right font-bold text-green-600">
                                                         ₹{earning.toLocaleString('en-IN')}
                                                     </td>
                                                 </tr>
                                             );
                                         })}
-                                        <tr className="bg-slate-50 font-bold border-t border-slate-300">
-                                            <td className="px-2 py-2" colSpan={2}>Total</td>
-                                            <td className="px-2 py-2"></td>
-                                            <td className="px-2 py-2 text-right text-green-700">
+                                        <tr className="bg-slate-50 font-bold border-t border-slate-200">
+                                            <td className="px-3 py-2" colSpan={2}>Total</td>
+                                            <td className="px-3 py-2"></td>
+                                            <td className="px-3 py-2 text-right text-green-700">
                                                 ₹{repeatEarnings.reduce((a, b) => a + b, 0).toLocaleString('en-IN')}
                                             </td>
                                         </tr>
@@ -117,65 +267,85 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose }) => {
                         </div>
                     </section>
 
-                    {/* New Order Earnings */}
+                    {/* 2. Non Regular Repeat Order Earnings */}
                     <section>
-                        <h3 className="text-sm font-semibold text-slate-800 mb-2 flex items-center gap-2">
-                            <Phone size={16} className="text-green-600" />
-                            New Order Earnings
+                        <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2 uppercase tracking-wider">
+                            <div className="p-1 bg-purple-100 rounded text-purple-600"><RefreshCw size={14} /></div>
+                            Non-Regular Repeat Orders
                         </h3>
-                        <div className="grid grid-cols-3 gap-2">
-                            {/* Above 40k */}
-                            <div className="bg-green-50 rounded-lg p-2 border border-green-100">
-                                <p className="text-[10px] font-bold text-green-800 uppercase mb-1 truncate">Above 40k</p>
-                                <div className="flex flex-col mb-1">
-                                    <span className="text-lg font-bold text-green-700 leading-none">{newOrdersAbove40k}</span>
-                                    <span className="text-[10px] text-green-600">orders</span>
-                                </div>
-                                <div className="text-[10px] text-green-800 border-t border-green-200 pt-1">
-                                    <div className="flex justify-between">
-                                        <span>₹{rewardAbove40k}</span>
-                                        <span className="font-bold">₹{(newOrderEarnings[0] || 0).toLocaleString('en-IN')}</span>
-                                    </div>
-                                </div>
-                            </div>
+                        <div className="space-y-3">
+                            {areaGroups.map((group, idx) => {
+                                const groupName = areaGroupNames[group] || `Group ${group}`;
+                                const earnings = nonRegEarnings[idx] || [0, 0, 0];
+                                const countsAbove = (nonRegAbove40k[idx] || 0); // Assuming these are arrays of numbers matching groups? Or arrays of arrays? 
+                                // Based on sample: "Non_Regular_Repeat_Orders_above_40k": "[0, 1]" -> It's a flat array matching groups?
+                                // Wait, sample says: "New_Orders_Earning": "[[0, 0, 0], [0, 0, 600]]" -> Array of Arrays.
+                                // "New_Orders_above_40k": "[0, 0]" -> Flat array?
+                                // Let's re-read sample carefully.
+                                // "New_Orders_Earning": "[[0, 0, 0], [0, 0, 600]]" (2 groups)
+                                // "New_Orders_above_40k": "[0, 0]" (2 groups) -> This implies total count for that bucket for that group?
+                                // Yes, likely: Group 1 has 0 above 40k. Group 2 has 0 above 40k.
+                                // Let's assume the structure is:
+                                // earnings[groupIndex] = [earningAbove40k, earning20-40k, earningBelow20k]
+                                // countsAbove40k[groupIndex] = count
 
-                            {/* 20k - 40k */}
-                            <div className="bg-blue-50 rounded-lg p-2 border border-blue-100">
-                                <p className="text-[10px] font-bold text-blue-800 uppercase mb-1 truncate">20k - 40k</p>
-                                <div className="flex flex-col mb-1">
-                                    <span className="text-lg font-bold text-blue-700 leading-none">{newOrders20kTo40k}</span>
-                                    <span className="text-[10px] text-blue-600">orders</span>
-                                </div>
-                                <div className="text-[10px] text-blue-800 border-t border-blue-200 pt-1">
-                                    <div className="flex justify-between">
-                                        <span>₹{reward20kTo40k}</span>
-                                        <span className="font-bold">₹{(newOrderEarnings[1] || 0).toLocaleString('en-IN')}</span>
-                                    </div>
-                                </div>
-                            </div>
+                                // Let's check "Non_Regular_Repeat_Orders_Earning": "[[0, 0, 4500], [800, 500, 2100]]"
+                                // "Non_Regular_Repeat_Orders_above_40k": "[0, 1]"
+                                // "Non_Regular_Repeat_Orders_below_20k": "[15, 7]"
 
-                            {/* Below 20k */}
-                            <div className="bg-orange-50 rounded-lg p-2 border border-orange-100">
-                                <p className="text-[10px] font-bold text-orange-800 uppercase mb-1 truncate">Below 20k</p>
-                                <div className="flex flex-col mb-1">
-                                    <span className="text-lg font-bold text-orange-700 leading-none">{newOrdersBelow20k}</span>
-                                    <span className="text-[10px] text-orange-600">orders</span>
-                                </div>
-                                <div className="text-[10px] text-orange-800 border-t border-orange-200 pt-1">
-                                    <div className="flex justify-between">
-                                        <span>₹{rewardBelow20k}</span>
-                                        <span className="font-bold">₹{(newOrderEarnings[2] || 0).toLocaleString('en-IN')}</span>
-                                    </div>
-                                </div>
+                                // So yes:
+                                // nonRegEarnings[idx] is an array of 3 numbers.
+                                // nonRegAbove40k[idx] is a number.
+
+                                return (
+                                    <GroupEarningsCard
+                                        key={idx}
+                                        groupName={groupName}
+                                        earnings={earnings}
+                                        countsAbove40k={nonRegAbove40k[idx] || 0}
+                                        counts20kTo40k={nonReg20kTo40k[idx] || 0}
+                                        countsBelow20k={nonRegBelow20k[idx] || 0}
+                                        totalEarning={earnings.reduce((a, b) => a + b, 0)}
+                                    />
+                                );
+                            })}
+                            <div className="text-right font-bold text-slate-700 text-xs mt-2">
+                                Total Non-Regular: <span className="text-green-600">₹{nonRegEarnings.flat().reduce((a, b) => a + b, 0).toLocaleString('en-IN')}</span>
                             </div>
                         </div>
-                        <div className="mt-2 text-right font-bold text-slate-700 text-xs">
-                            Total New: <span className="text-green-600">₹{newOrderEarnings.reduce((a, b) => a + b, 0).toLocaleString('en-IN')}</span>
+                    </section>
+
+                    {/* 3. New Order Earnings */}
+                    <section>
+                        <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2 uppercase tracking-wider">
+                            <div className="p-1 bg-green-100 rounded text-green-600"><Phone size={14} /></div>
+                            New Orders
+                        </h3>
+                        <div className="space-y-3">
+                            {areaGroups.map((group, idx) => {
+                                const groupName = areaGroupNames[group] || `Group ${group}`;
+                                const earnings = newOrderEarnings[idx] || [0, 0, 0];
+
+                                return (
+                                    <GroupEarningsCard
+                                        key={idx}
+                                        groupName={groupName}
+                                        earnings={earnings}
+                                        countsAbove40k={newOrdersAbove40k[idx] || 0}
+                                        counts20kTo40k={newOrders20kTo40k[idx] || 0}
+                                        countsBelow20k={newOrdersBelow20k[idx] || 0}
+                                        totalEarning={earnings.reduce((a, b) => a + b, 0)}
+                                    />
+                                );
+                            })}
+                            <div className="text-right font-bold text-slate-700 text-xs mt-2">
+                                Total New: <span className="text-green-600">₹{newOrderEarnings.flat().reduce((a, b) => a + b, 0).toLocaleString('en-IN')}</span>
+                            </div>
                         </div>
                     </section>
 
                     {/* Grand Total */}
-                    <div className="flex justify-between items-center bg-slate-800 text-white p-4 rounded-lg shadow-md">
+                    <div className="flex justify-between items-center bg-slate-800 text-white p-4 rounded-lg shadow-md mt-4">
                         <span className="text-lg font-medium">Total Monthly Earnings</span>
                         <span className="text-2xl font-bold">₹{data.Total_Earnings?.toLocaleString('en-IN')}</span>
                     </div>
@@ -216,29 +386,25 @@ const TelecallerView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) 
     const [selectedCustomerId, setSelectedCustomerId] = useState(null);
     const [error, setError] = useState(null);
 
+    // Modal State
+    const [modalSalaryData, setModalSalaryData] = useState(null);
+    const [modalMonthTimestamp, setModalMonthTimestamp] = useState(() => {
+        const now = new Date();
+        return new Date(now.getFullYear(), now.getMonth(), 1).getTime() / 1000;
+    });
+    const [loadingModalSalary, setLoadingModalSalary] = useState(false);
+
     const navigate = useNavigate();
 
 
     // Hardcoded for now, same as FactoryView
     const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 
-    const fetchSalary = async () => {
-        if (!user?.email) {
-            setError("User email not found");
-            return;
-        }
+    const fetchSalaryData = async (monthTimestamp) => {
+        if (!user?.email) throw new Error("User email not found");
 
-        setLoadingSalary(true);
-        setError(null);
-        try {
-            const headers = await getHeaders();
-
-            // Calculate start of current month in seconds
-            const now = new Date();
-            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-            const startOfMonthTimestamp = startOfMonth.getTime() / 1000;
-
-            const sqlQuery = `
+        const headers = await getHeaders();
+        const sqlQuery = `
 SELECT *
     FROM Telecaller_Salaries ts
         JOIN Team t ON t.id = ts.Telecaller
@@ -246,87 +412,105 @@ SELECT *
     AND t.Email = ?
         `;
 
-            const url = getUrl(`/api/docs/${DOC_ID}/sql`);
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    ...headers,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    sql: sqlQuery,
-                    args: [
-                        startOfMonthTimestamp,
-                        "eswarmedhari2662@gmail.com"
-                        // user.email
-                    ]
-                })
-            });
+        const url = getUrl(`/api/docs/${DOC_ID}/sql`);
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                ...headers,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                sql: sqlQuery,
+                args: [
+                    monthTimestamp,
+                    "eswarmedhari2662@gmail.com"
+                    // user.email
+                ]
+            })
+        });
 
-            if (!response.ok) {
-                throw new Error(`Failed to fetch salary: ${response.statusText}`);
-            }
+        if (!response.ok) {
+            throw new Error(`Failed to fetch salary: ${response.statusText}`);
+        }
 
-            const data = await response.json();
-            console.log("Salary Fetch Response:", data);
+        const data = await response.json();
 
-            if (data.records && data.records.length > 0) {
-                const salaryRecord = data.records[0].fields;
-                setSalaryData(salaryRecord);
-                viewCache.salaryData = salaryRecord;
+        if (data.records && data.records.length > 0) {
+            const salaryRecord = data.records[0].fields;
 
-                // Fetch Area Group Names
-                try {
-                    const areaGroupIds = typeof salaryRecord.Area_Groups === 'string'
-                        ? JSON.parse(salaryRecord.Area_Groups)
-                        : (salaryRecord.Area_Groups || []);
+            // Fetch Area Group Names if needed
+            try {
+                const areaGroupIds = typeof salaryRecord.Area_Groups === 'string'
+                    ? JSON.parse(salaryRecord.Area_Groups)
+                    : (salaryRecord.Area_Groups || []);
 
-                    if (areaGroupIds.length > 0) {
-                        const placeholders = areaGroupIds.map(() => '?').join(',');
-                        const groupsQuery = `SELECT id, Area_Group FROM Area_Groups WHERE id IN (${placeholders})`;
+                if (areaGroupIds.length > 0) {
+                    const placeholders = areaGroupIds.map(() => '?').join(',');
+                    const groupsQuery = `SELECT id, Area_Group FROM Area_Groups WHERE id IN (${placeholders})`;
 
-                        const groupsResponse = await fetch(url, {
-                            method: 'POST',
-                            headers: {
-                                ...headers,
-                                'Content-Type': 'application/json'
-                            },
-                            body: JSON.stringify({
-                                sql: groupsQuery,
-                                args: areaGroupIds
-                            })
+                    const groupsResponse = await fetch(url, {
+                        method: 'POST',
+                        headers: { ...headers, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ sql: groupsQuery, args: areaGroupIds })
+                    });
+
+                    if (groupsResponse.ok) {
+                        const groupsData = await groupsResponse.json();
+                        const namesMap = {};
+                        groupsData.records.forEach(record => {
+                            namesMap[record.fields.id] = record.fields.Area_Group;
                         });
 
-                        if (groupsResponse.ok) {
-                            const groupsData = await groupsResponse.json();
-                            const namesMap = {};
-                            groupsData.records.forEach(record => {
-                                namesMap[record.fields.id] = record.fields.Area_Group;
-                            });
-
-                            setAreaGroupNames(prev => {
-                                const newMap = { ...prev, ...namesMap };
-                                viewCache.areaGroupNames = newMap;
-                                return newMap;
-                            });
-                        }
+                        setAreaGroupNames(prev => {
+                            const newMap = { ...prev, ...namesMap };
+                            viewCache.areaGroupNames = newMap;
+                            return newMap;
+                        });
                     }
-                } catch (e) {
-                    console.error("Error fetching area groups:", e);
                 }
-
-            } else {
-                console.warn("No records found for salary");
-                setSalaryData(null);
-                viewCache.salaryData = null;
-                // Don't clear area group names here as they might be used by todos
+            } catch (e) {
+                console.error("Error fetching area groups:", e);
             }
+
+            return salaryRecord;
+        }
+
+        return null;
+    };
+
+    const fetchSalary = async () => {
+        setLoadingSalary(true);
+        setError(null);
+        try {
+            const now = new Date();
+            const startOfMonthTimestamp = new Date(now.getFullYear(), now.getMonth(), 1).getTime() / 1000;
+
+            const data = await fetchSalaryData(startOfMonthTimestamp);
+            setSalaryData(data);
+            viewCache.salaryData = data;
+
+            // Also initialize modal data with current month data
+            setModalSalaryData(data);
 
         } catch (err) {
             console.error("Salary Fetch Error:", err);
             setError(err.message);
         } finally {
             setLoadingSalary(false);
+        }
+    };
+
+    const handleModalMonthChange = async (timestamp) => {
+        setModalMonthTimestamp(timestamp);
+        setLoadingModalSalary(true);
+        try {
+            const data = await fetchSalaryData(timestamp);
+            setModalSalaryData(data);
+        } catch (err) {
+            console.error("Error fetching modal salary:", err);
+            setModalSalaryData(null);
+        } finally {
+            setLoadingModalSalary(false);
         }
     };
 
@@ -521,42 +705,57 @@ SELECT *
                                     </p>
                                 </div>
                             </div>
-
                             {/* Stats Chips */}
-                            <div className="flex flex-wrap gap-2">
-                                {/* New Orders Chip */}
-                                <div className="bg-white/10 px-2 py-1 rounded border border-white/10 flex items-center gap-1.5">
-                                    <span className="text-[10px] text-blue-100 uppercase tracking-wider">New</span>
-                                    <span className="font-bold text-sm">
-                                        {salaryData ? (JSON.parse(salaryData.New_Orders || '[]').length) : 0}
-                                    </span>
-                                </div>
-
-                                {/* Area Groups Chips */}
+                            <div className="flex flex-wrap items-center w-full mt-2">
+                                {/* Regular Customers (Baseline) - Aggregated */}
                                 {salaryData && (() => {
                                     try {
                                         const groups = typeof salaryData.Area_Groups === 'string' ? JSON.parse(salaryData.Area_Groups) : (salaryData.Area_Groups || []);
-                                        const targets = typeof salaryData.Repeat_Orders_Targets === 'string' ? JSON.parse(salaryData.Repeat_Orders_Targets) : (salaryData.Repeat_Orders_Targets || []);
-                                        const achieved = typeof salaryData.Repeat_Orders === 'string' ? JSON.parse(salaryData.Repeat_Orders) : (salaryData.Repeat_Orders || []);
+                                        const targets = typeof salaryData.Regular_Repeat_Orders_Targets === 'string' ? JSON.parse(salaryData.Regular_Repeat_Orders_Targets) : (salaryData.Regular_Repeat_Orders_Targets || []);
+                                        const achieved = typeof salaryData.Regular_Repeat_Orders === 'string' ? JSON.parse(salaryData.Regular_Repeat_Orders) : (salaryData.Regular_Repeat_Orders || []);
 
-                                        return groups.map((group, idx) => {
-                                            const name = areaGroupNames[group] || `G${group}`;
-                                            // Truncate name to first word or 3 chars if it's long, to keep it compact
-                                            const shortName = name.split(' ')[0].substring(0, 4);
+                                        if (groups.length === 0) return null;
+
+                                        const totalAchieved = achieved.reduce((a, b) => a + (Number(b) || 0), 0);
+                                        const totalTarget = targets.reduce((a, b) => a + (Number(b) || 0), 0);
+
+                                        return (
+                                            <div className="bg-blue-500/20 px-2 py-1 rounded border border-blue-400/20 flex items-center gap-1.5">
+                                                <span className="text-[10px] text-blue-100 uppercase tracking-wider font-bold">REG</span>
+                                                <span className="font-bold text-sm text-white">
+                                                    {totalAchieved}<span className="text-xs opacity-60 font-normal">/{totalTarget}</span>
+                                                </span>
+                                            </div>
+                                        );
+                                    } catch (e) { return null; }
+                                })()}
+
+                                <div className="flex items-center gap-2 ml-auto">
+                                    {/* Non-Reg Chip */}
+                                    {salaryData && (() => {
+                                        try {
+                                            const above = JSON.parse(salaryData.Non_Regular_Repeat_Orders_above_40k || '[]');
+                                            const between = JSON.parse(salaryData.Non_Regular_Repeat_Orders_between_20_40k || '[]');
+                                            const below = JSON.parse(salaryData.Non_Regular_Repeat_Orders_below_20k || '[]');
+                                            const totalNonReg = [above, between, below].flat().reduce((a, b) => a + (Number(b) || 0), 0);
 
                                             return (
-                                                <div key={idx} className="bg-white/10 px-2 py-1 rounded border border-white/10 flex items-center gap-1.5">
-                                                    <span className="text-[10px] text-blue-100 uppercase tracking-wider" title={name}>{shortName}</span>
-                                                    <span className="font-bold text-sm">
-                                                        {achieved[idx] || 0}<span className="text-xs opacity-60 font-normal">/{targets[idx] || 0}</span>
-                                                    </span>
+                                                <div className="bg-purple-500/20 px-2 py-1 rounded border border-purple-400/30 flex items-center gap-1.5">
+                                                    <span className="text-[10px] text-purple-100 uppercase tracking-wider font-bold">Non-Reg</span>
+                                                    <span className="font-bold text-sm text-white">{totalNonReg}</span>
                                                 </div>
                                             );
-                                        });
-                                    } catch (e) {
-                                        return null;
-                                    }
-                                })()}
+                                        } catch (e) { return null; }
+                                    })()}
+
+                                    {/* New Orders Chip */}
+                                    <div className="bg-green-500/20 px-2 py-1 rounded border border-green-400/30 flex items-center gap-1.5">
+                                        <span className="text-[10px] text-green-100 uppercase tracking-wider font-bold">New</span>
+                                        <span className="font-bold text-sm text-white">
+                                            {salaryData ? (JSON.parse(salaryData.New_Orders || '[]').length) : 0}
+                                        </span>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </Card>
@@ -653,10 +852,12 @@ SELECT *
 
             {showSalaryModal && (
                 <SalaryDetailsModal
-                    data={salaryData}
+                    data={modalSalaryData}
                     areaGroupNames={areaGroupNames}
-                    month={currentMonth}
+                    month={new Date(modalMonthTimestamp * 1000).toLocaleString('default', { month: 'short', year: '2-digit' })}
+                    selectedMonthTimestamp={modalMonthTimestamp}
                     onClose={() => setShowSalaryModal(false)}
+                    onMonthChange={handleModalMonthChange}
                 />
             )}
 
