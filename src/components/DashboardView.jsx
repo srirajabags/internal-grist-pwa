@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Responsive, WidthProvider } from 'react-grid-layout';
-import { ArrowLeft, Settings, Plus, Save, X, Trash2, Edit2, Eye, RefreshCw, Share2 } from 'lucide-react';
+import { ArrowLeft, Settings, Plus, Save, X, Trash2, Edit2, Eye, RefreshCw, Share2, Monitor, Smartphone } from 'lucide-react';
 import WidgetContent from './WidgetContent';
 import domtoimage from 'dom-to-image-more';
+import useDeviceType from '../hooks/useDeviceType';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 
@@ -42,8 +43,19 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
     const [showAddWidgetModal, setShowAddWidgetModal] = useState(false);
     const [editingWidgetId, setEditingWidgetId] = useState(null);
 
+    // Device detection
+    const { isMobile } = useDeviceType();
+    const [previewMode, setPreviewMode] = useState(null); // 'mobile' | 'desktop' | null
+
     // Force refresh trigger
     const [refreshTrigger, setRefreshTrigger] = useState(0);
+
+    // Determine which layout to use
+    const isViewingMobile = previewMode === 'mobile' || (previewMode === null && isMobile);
+    const currentWidgets = useMemo(() => {
+        if (!dashboard) return [];
+        return isViewingMobile ? dashboard.mobileWidgets : dashboard.desktopWidgets;
+    }, [dashboard, isViewingMobile]);
 
     useEffect(() => {
         // Load Dashboard from Grist
@@ -68,8 +80,25 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
                     }
                 }).filter(Boolean);
 
-                const current = dashboards.find(d => d.id === dashboardId);
+                let current = dashboards.find(d => d.id === dashboardId);
                 if (current) {
+                    // Migration: Convert old single 'widgets' array to dual layout
+                    if (current.widgets && !current.desktopWidgets) {
+                        console.log('Migrating dashboard to dual-layout format');
+                        current.desktopWidgets = [...current.widgets];
+                        current.mobileWidgets = current.widgets.map(w => ({
+                            ...w,
+                            w: 4, // Full width on mobile (4 cols)
+                            x: 0  // Stack vertically
+                        }));
+                        delete current.widgets;
+                        // Auto-save migrated format
+                        await saveDashboardToGrist(current);
+                    }
+                    // Ensure both arrays exist (for new dashboards)
+                    if (!current.desktopWidgets) current.desktopWidgets = [];
+                    if (!current.mobileWidgets) current.mobileWidgets = [];
+
                     setDashboard(current);
                 }
             } catch (err) {
@@ -125,36 +154,39 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
         setRefreshTrigger(prev => prev + 1);
     };
 
-    const saveDashboard = async (updatedDashboard) => {
-        setDashboard(updatedDashboard);
-
-        // Sync to Grist PWA_Data
+    const saveDashboardToGrist = async (dashboardData) => {
         try {
             const { savePwaData } = await import('../utils/gristDataSync');
             const PWA_DATA_DOC_ID = '8vRFY3UUf4spJroktByH4u';
-            await savePwaData(PWA_DATA_DOC_ID, [updatedDashboard], 'DASHBOARD', getHeaders, getUrl);
+            await savePwaData(PWA_DATA_DOC_ID, [dashboardData], 'DASHBOARD', getHeaders, getUrl);
         } catch (err) {
             console.error("Failed to sync dashboard to Grist:", err);
         }
     };
 
+    const saveDashboard = async (updatedDashboard) => {
+        setDashboard(updatedDashboard);
+        await saveDashboardToGrist(updatedDashboard);
+    };
+
     const onLayoutChange = (layout) => {
         if (!dashboard) return;
-        // Merge new layout positions into widgets
-        const updatedWidgets = dashboard.widgets.map(w => {
+
+        // Determine which layout array to update
+        const widgetKey = isViewingMobile ? 'mobileWidgets' : 'desktopWidgets';
+
+        // Merge new layout positions into the correct widget array
+        const updatedWidgets = dashboard[widgetKey].map(w => {
             const layoutItem = layout.find(l => l.i === w.i);
             return layoutItem ? { ...w, ...layoutItem } : w;
         });
-        saveDashboard({ ...dashboard, widgets: updatedWidgets });
+
+        saveDashboard({ ...dashboard, [widgetKey]: updatedWidgets });
     };
 
     const addWidget = (queryItem) => {
-        const newWidget = {
+        const baseWidget = {
             i: Date.now().toString(),
-            x: 0,
-            y: Infinity, // Puts it at the bottom
-            w: 6,
-            h: 4,
             queryId: queryItem.id,
             name: queryItem.name,
             query: queryItem.query,
@@ -162,9 +194,27 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
             vizConfig: queryItem.vizConfig || {}
         };
 
+        // Create separate widgets for desktop and mobile with different layouts
+        const desktopWidget = {
+            ...baseWidget,
+            x: 0,
+            y: Infinity, // Puts it at the bottom
+            w: 6,
+            h: 4
+        };
+
+        const mobileWidget = {
+            ...baseWidget,
+            x: 0,
+            y: Infinity,
+            w: 4, // Full width on mobile
+            h: 4
+        };
+
         const updatedDashboard = {
             ...dashboard,
-            widgets: [...dashboard.widgets, newWidget]
+            desktopWidgets: [...dashboard.desktopWidgets, desktopWidget],
+            mobileWidgets: [...dashboard.mobileWidgets, mobileWidget]
         };
         saveDashboard(updatedDashboard);
         setShowAddWidgetModal(false);
@@ -173,16 +223,24 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
     const removeWidget = (widgetId) => {
         const updatedDashboard = {
             ...dashboard,
-            widgets: dashboard.widgets.filter(w => w.i !== widgetId)
+            desktopWidgets: dashboard.desktopWidgets.filter(w => w.i !== widgetId),
+            mobileWidgets: dashboard.mobileWidgets.filter(w => w.i !== widgetId)
         };
         saveDashboard(updatedDashboard);
     };
 
     const updateWidgetConfig = (widgetId, newConfig) => {
-        const updatedWidgets = dashboard.widgets.map(w =>
-            w.i === widgetId ? { ...w, vizConfig: newConfig } : w
-        );
-        saveDashboard({ ...dashboard, widgets: updatedWidgets });
+        // Update config in both layouts
+        const updatedDashboard = {
+            ...dashboard,
+            desktopWidgets: dashboard.desktopWidgets.map(w =>
+                w.i === widgetId ? { ...w, vizConfig: newConfig } : w
+            ),
+            mobileWidgets: dashboard.mobileWidgets.map(w =>
+                w.i === widgetId ? { ...w, vizConfig: newConfig } : w
+            )
+        };
+        saveDashboard(updatedDashboard);
     };
 
     const handleShare = async (elementId, fileName) => {
@@ -335,6 +393,25 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
                         <h1 className="font-bold text-slate-800 text-lg">{dashboard.name}</h1>
                     </div>
                     <div className="flex gap-2">
+                        {/* Layout Preview Toggle - only show on desktop */}
+                        {!isMobile && (
+                            <div className="flex bg-slate-100 rounded-lg p-1">
+                                <button
+                                    onClick={() => setPreviewMode(null)}
+                                    className={`p-1.5 rounded transition-colors ${previewMode === null ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
+                                    title="Desktop View"
+                                >
+                                    <Monitor size={18} />
+                                </button>
+                                <button
+                                    onClick={() => setPreviewMode('mobile')}
+                                    className={`p-1.5 rounded transition-colors ${previewMode === 'mobile' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
+                                    title="Mobile Preview"
+                                >
+                                    <Smartphone size={18} />
+                                </button>
+                            </div>
+                        )}
                         <button
                             onClick={() => handleShare('dashboard-content', dashboard.name)}
                             className="p-2 hover:bg-slate-100 rounded-lg text-slate-600 transition-colors"
@@ -373,9 +450,16 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
 
             <main className="flex-1 p-4 overflow-x-hidden" id="dashboard-content">
                 <div className="max-w-7xl mx-auto">
+                    {/* Preview mode indicator */}
+                    {previewMode === 'mobile' && (
+                        <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-center gap-2 text-amber-800">
+                            <Smartphone size={18} />
+                            <span className="text-sm font-medium">Mobile Preview Mode - Editing mobile layout</span>
+                        </div>
+                    )}
                     <ResponsiveGridLayout
                         className="layout"
-                        layouts={{ lg: dashboard.widgets }}
+                        layouts={{ lg: currentWidgets }}
                         breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
                         cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
                         rowHeight={60}
@@ -385,7 +469,7 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
                         draggableHandle=".drag-handle"
                         resizeHandles={['se']}
                     >
-                        {dashboard.widgets.map(widget => (
+                        {currentWidgets.map(widget => (
                             <div
                                 key={widget.i}
                                 id={`widget-${widget.i}`}

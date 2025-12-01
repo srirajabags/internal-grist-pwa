@@ -53,7 +53,8 @@ const DashboardList = ({ onNavigate, onBack, teamId, getHeaders, getUrl }) => {
             id: Date.now().toString(),
             uuid: newUuid,
             name: newDashboardName,
-            widgets: [],
+            desktopWidgets: [],
+            mobileWidgets: [],
             createdAt: new Date().toISOString(),
             createdBy: teamId
         };
@@ -219,7 +220,7 @@ const DashboardList = ({ onNavigate, onBack, teamId, getHeaders, getUrl }) => {
                                     </div>
                                     <h3 className="text-lg font-bold text-slate-800 mb-1">{dash.name}</h3>
                                     <p className="text-sm text-slate-500 mb-4">
-                                        {dash.widgets?.length || 0} widget{dash.widgets?.length !== 1 ? 's' : ''}
+                                        {(dash.desktopWidgets?.length || dash.widgets?.length || 0)} widget{(dash.desktopWidgets?.length || dash.widgets?.length || 0) !== 1 ? 's' : ''}
                                     </p>
                                     <div className="flex items-center text-indigo-600 text-sm font-medium">
                                         Open Dashboard <ArrowRight size={16} className="ml-1" />
