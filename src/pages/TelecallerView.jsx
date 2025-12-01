@@ -213,6 +213,38 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
                 </div>
 
                 <div className="flex-1 overflow-auto p-4 space-y-6 bg-slate-50/50">
+                    {/* 0. Sales Performance Summary */}
+                    <section>
+                        <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2 uppercase tracking-wider">
+                            <div className="p-1 bg-indigo-100 rounded text-indigo-600"><IndianRupee size={14} /></div>
+                            Sales Performance
+                        </h3>
+                        <div className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+                            {/* Hero: Total Orders */}
+                            <div className="p-4 text-center border-b border-slate-100 bg-gradient-to-b from-white to-slate-50">
+                                <span className="text-xs uppercase font-bold text-slate-400 tracking-widest mb-1 block">Orders Value</span>
+                                <span className="text-3xl font-black text-slate-800 tracking-tight">
+                                    ₹{(data.Total_Orders_Value || 0).toLocaleString('en-IN')}
+                                </span>
+                            </div>
+                            {/* Contributors: New & Repeat */}
+                            <div className="grid grid-cols-2 divide-x divide-slate-100">
+                                <div className="p-3 text-center">
+                                    <span className="text-[10px] uppercase font-bold text-green-600/70 tracking-wider mb-1 block">New Orders</span>
+                                    <span className="text-lg font-bold text-green-600">
+                                        ₹{(data.New_Orders_Value || 0).toLocaleString('en-IN')}
+                                    </span>
+                                </div>
+                                <div className="p-3 text-center">
+                                    <span className="text-[10px] uppercase font-bold text-blue-600/70 tracking-wider mb-1 block">Repeat Orders</span>
+                                    <span className="text-lg font-bold text-blue-600">
+                                        ₹{(data.Repeat_Orders_Value || 0).toLocaleString('en-IN')}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
                     {/* 1. Regular Customer Repeat Order Earnings */}
                     <section>
                         <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2 uppercase tracking-wider">
@@ -705,6 +737,15 @@ SELECT *
                                     </p>
                                 </div>
                             </div>
+
+                            {/* Total Orders Value - Highlighted Top Right */}
+                            {salaryData && (
+                                <div className="ml-auto bg-white/20 px-2 py-1 rounded border border-white/30 flex flex-col items-end">
+                                    <span className="text-[9px] text-blue-100 uppercase font-bold tracking-wider">Orders Value</span>
+                                    <span className="text-sm font-bold text-white">₹{(salaryData.Total_Orders_Value || 0).toLocaleString('en-IN')}</span>
+                                </div>
+                            )}
+
                             {/* Stats Chips */}
                             <div className="flex flex-wrap items-center w-full mt-2">
                                 {/* Regular Customers (Baseline) - Aggregated */}
