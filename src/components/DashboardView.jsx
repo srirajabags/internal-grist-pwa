@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Responsive, WidthProvider } from 'react-grid-layout';
 import { ArrowLeft, Settings, Plus, Save, X, Trash2, Edit2, Eye, RefreshCw, Share2 } from 'lucide-react';
-import SqlVisualization from './SqlVisualization';
+import WidgetContent from './WidgetContent';
 import domtoimage from 'dom-to-image-more';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
@@ -42,9 +42,8 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
     const [showAddWidgetModal, setShowAddWidgetModal] = useState(false);
     const [editingWidgetId, setEditingWidgetId] = useState(null);
 
-    // Widget Data State
-    const [widgetData, setWidgetData] = useState({});
-    const [loadingWidgets, setLoadingWidgets] = useState({});
+    // Force refresh trigger
+    const [refreshTrigger, setRefreshTrigger] = useState(0);
 
     useEffect(() => {
         // Load Dashboard from Grist
@@ -117,41 +116,13 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
         }
     };
 
-    // Fetch data for widgets
-    useEffect(() => {
-        if (!dashboard) return;
-
-        dashboard.widgets.forEach(widget => {
-            if (!widgetData[widget.i] && !loadingWidgets[widget.i]) {
-                fetchWidgetData(widget);
-            }
-        });
-    }, [dashboard]);
-
-    const fetchWidgetData = async (widget) => {
-        setLoadingWidgets(prev => ({ ...prev, [widget.i]: true }));
-        try {
-            const headers = await getHeaders();
-            const url = getUrl(`/api/docs/${widget.docId}/sql?q=${encodeURIComponent(widget.query)}`);
-            const res = await fetch(url, { headers });
-            if (res.ok) {
-                const data = await res.json();
-                setWidgetData(prev => ({ ...prev, [widget.i]: data.records }));
-            } else {
-                console.error(`Failed to fetch widget ${widget.i}`);
-            }
-        } catch (err) {
-            console.error(err);
-        } finally {
-            setLoadingWidgets(prev => ({ ...prev, [widget.i]: false }));
-        }
-    };
+    // Fetch data for widgets - REMOVED (Handled by DashboardWidget)
+    // useEffect(() => { ... }, [dashboard]);
+    // const fetchWidgetData = async (widget) => { ... };
 
     const refreshDashboard = () => {
-        if (!dashboard) return;
-        dashboard.widgets.forEach(widget => {
-            fetchWidgetData(widget);
-        });
+        // Trigger re-render of widgets to re-fetch
+        setRefreshTrigger(prev => prev + 1);
     };
 
     const saveDashboard = async (updatedDashboard) => {
@@ -197,7 +168,6 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
         };
         saveDashboard(updatedDashboard);
         setShowAddWidgetModal(false);
-        fetchWidgetData(newWidget);
     };
 
     const removeWidget = (widgetId) => {
@@ -416,102 +386,23 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
                         resizeHandles={['se']}
                     >
                         {dashboard.widgets.map(widget => (
-                            <div key={widget.i} id={`widget-${widget.i}`} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-visible flex flex-col relative group">
-                                {/* Widget Header */}
-                                <div className="flex justify-between items-center border-b border-slate-100">
-                                    <div className={`flex-1 px-3 py-2 min-w-0 ${isEditing ? 'cursor-move drag-handle bg-slate-50' : ''}`}>
-                                        <h3 className="font-semibold text-slate-700 text-sm truncate select-none">{widget.name}</h3>
-                                    </div>
-                                    <div className={`flex items-center gap-1 px-2 py-1 ${isEditing ? 'bg-slate-50' : ''}`}>
-                                        {/* Share Button for Widget */}
-                                        <button
-                                            onMouseDown={(e) => e.stopPropagation()}
-                                            onTouchStart={(e) => e.stopPropagation()}
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleShare(`widget-${widget.i}`, widget.name);
-                                            }}
-                                            className="p-1.5 rounded hover:bg-slate-200 text-slate-400"
-                                            title="Share Widget"
-                                        >
-                                            <Share2 size={16} />
-                                        </button>
-
-                                        {/* Gear Icon for Chart Settings */}
-                                        <button
-                                            onMouseDown={(e) => e.stopPropagation()}
-                                            onTouchStart={(e) => e.stopPropagation()}
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                setEditingWidgetId(editingWidgetId === widget.i ? null : widget.i);
-                                            }}
-                                            className={`p-1.5 rounded hover:bg-slate-200 ${editingWidgetId === widget.i ? 'text-indigo-600 bg-indigo-100' : 'text-slate-400'}`}
-                                            title="Configure Chart"
-                                        >
-                                            <Settings size={16} />
-                                        </button>
-
-                                        {isEditing && (
-                                            <button
-                                                onMouseDown={(e) => e.stopPropagation()}
-                                                onTouchStart={(e) => e.stopPropagation()}
-                                                onClick={(e) => { e.stopPropagation(); removeWidget(widget.i); }}
-                                                className="text-slate-400 hover:text-red-500 hover:bg-red-50 p-1.5 rounded transition-colors"
-                                            >
-                                                <Trash2 size={16} />
-                                            </button>
-                                        )}
-                                    </div>
-                                </div>
-
-                                {/* Widget Content */}
-                                <div className="flex-1 overflow-hidden p-2 relative">
-                                    {loadingWidgets[widget.i] ? (
-                                        <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm">
-                                            Loading...
-                                        </div>
-                                    ) : widgetData[widget.i] ? (
-                                        // If visualization config exists and viewMode is chart (implied by having config), render chart
-                                        // Otherwise render simple table preview
-                                        Object.keys(widget.vizConfig || {}).length > 0 ? (
-                                            <div className="h-full w-full">
-                                                <SqlVisualization
-                                                    data={widgetData[widget.i]}
-                                                    config={widget.vizConfig}
-                                                    onConfigChange={(newConfig) => updateWidgetConfig(widget.i, newConfig)}
-                                                    showControls={editingWidgetId === widget.i}
-                                                />
-                                            </div>
-                                        ) : (
-                                            <div className="overflow-auto h-full text-xs">
-                                                <table className="min-w-full">
-                                                    <thead>
-                                                        <tr className="bg-slate-50">
-                                                            {Object.keys(widgetData[widget.i][0]?.fields || {}).map(k => (
-                                                                <th key={k} className="px-2 py-1 text-left font-medium text-slate-500">{k}</th>
-                                                            ))}
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody>
-                                                        {widgetData[widget.i].slice(0, 10).map((row, idx) => (
-                                                            <tr key={idx} className="border-b border-slate-50">
-                                                                {Object.values(row.fields || {}).map((v, i) => (
-                                                                    <td key={i} className="px-2 py-1 truncate max-w-[100px]">{String(v)}</td>
-                                                                ))}
-                                                            </tr>
-                                                        ))}
-                                                    </tbody>
-                                                </table>
-                                            </div>
-                                        )
-                                    ) : (
-                                        <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm">
-                                            No Data
-                                        </div>
-                                    )}
-                                    {/* Overlay to prevent interaction during edit drag - ONLY if not editing this specific widget */}
-                                    {isEditing && editingWidgetId !== widget.i && <div className="absolute inset-0 z-10" />}
-                                </div>
+                            <div
+                                key={widget.i}
+                                id={`widget-${widget.i}`}
+                                className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-visible flex flex-col relative group h-full"
+                            >
+                                <WidgetContent
+                                    widget={widget}
+                                    isEditing={isEditing}
+                                    editingWidgetId={editingWidgetId}
+                                    onRemove={removeWidget}
+                                    onEditConfig={updateWidgetConfig}
+                                    onSetEditing={setEditingWidgetId}
+                                    onShare={handleShare}
+                                    getHeaders={getHeaders}
+                                    getUrl={getUrl}
+                                    refreshTrigger={refreshTrigger}
+                                />
                             </div>
                         ))}
                     </ResponsiveGridLayout>

@@ -1350,6 +1350,67 @@ const SQLAnalysisView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl })
     fetchDocs();
   }, []);
 
+  // Variable Support Logic
+  const [variables, setVariables] = useState({});
+  const [parsedVars, setParsedVars] = useState([]);
+
+  // Parse variables from SQL query
+  // Syntax: {{name:type:default}}
+  // Examples: 
+  // {{start_date:date:2023-01-01}}
+  // {{status:dropdown:Active,Inactive}}
+  // {{limit:number:10}}
+  // {{is_active:boolean:true}}
+  // {{search:text:default text}}
+  useEffect(() => {
+    const regex = /\{\{([^}]+)\}\}/g;
+    const matches = [...sqlQuery.matchAll(regex)];
+
+    const newVars = [];
+    const newVarState = { ...variables };
+    let hasNewVars = false;
+
+    matches.forEach(match => {
+      const content = match[1];
+      const parts = content.split(':');
+      const name = parts[0].trim();
+      const type = parts.length > 1 ? parts[1].trim().toLowerCase() : 'text';
+      const defaultValue = parts.length > 2 ? parts.slice(2).join(':').trim() : '';
+
+      newVars.push({
+        raw: match[0],
+        name,
+        type,
+        defaultValue,
+        options: type === 'dropdown' ? defaultValue.split(',').map(o => o.trim()) : []
+      });
+
+      // Initialize state if not exists
+      if (newVarState[name] === undefined) {
+        if (type === 'boolean') {
+          newVarState[name] = defaultValue === 'true';
+        } else if (type === 'dropdown') {
+          newVarState[name] = defaultValue.split(',')[0].trim();
+        } else {
+          newVarState[name] = defaultValue;
+        }
+        hasNewVars = true;
+      }
+    });
+
+    setParsedVars(newVars);
+    if (hasNewVars) {
+      setVariables(newVarState);
+    }
+  }, [sqlQuery]);
+
+  const handleVariableChange = (name, value) => {
+    setVariables(prev => ({
+      ...prev,
+      [name]: value
+    }));
+  };
+
   // Execute SQL query
   const executeQuery = async () => {
     if (!selectedDocId) {
@@ -1368,7 +1429,31 @@ const SQLAnalysisView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl })
 
     try {
       const headers = await getHeaders();
-      const url = getUrl(`/api/docs/${selectedDocId}/sql?q=${encodeURIComponent(sqlQuery)}`);
+
+      // Interpolate variables into SQL
+      let finalQuery = sqlQuery;
+      parsedVars.forEach(v => {
+        let value = variables[v.name];
+
+        // Handle different types for SQL injection safety/formatting
+        // Note: This is client-side interpolation. Ideally, use parameterized queries if API supports it.
+        // For now, we'll do basic string replacement.
+        if (v.type === 'boolean') {
+          // Map boolean to 1/0 or 'true'/'false' depending on preference. 
+          // SQLite often uses 1/0. Let's stick to string representation for now or 1/0 if standard.
+          // Grist usually handles standard SQL. Let's use 1 and 0 for safety with SQLite.
+          value = value ? 1 : 0;
+        }
+
+        // Replace ALL occurrences of this variable
+        // We escape special regex chars in the raw string just in case
+        const escapedRaw = v.raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        finalQuery = finalQuery.replace(new RegExp(escapedRaw, 'g'), value);
+      });
+
+      console.log("Executing Query:", finalQuery);
+
+      const url = getUrl(`/api/docs/${selectedDocId}/sql?q=${encodeURIComponent(finalQuery)}`);
       const response = await fetch(url, { headers });
 
       if (!response.ok) {
@@ -1485,11 +1570,76 @@ const SQLAnalysisView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl })
               <textarea
                 value={sqlQuery}
                 onChange={(e) => setSqlQuery(e.target.value)}
-                placeholder="Enter your SQL query here (SQLite3 syntax)&#10;Example: SELECT * FROM Customers LIMIT 10"
+                placeholder="Enter your SQL query here (SQLite3 syntax)&#10;Example: SELECT * FROM Customers WHERE Status = '{{status:dropdown:Active,Inactive}}'"
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition-all outline-none font-mono text-sm resize-y"
                 rows={8}
                 style={{ minHeight: '120px' }}
               />
+
+              {/* Variables Input Section */}
+              {parsedVars.length > 0 && (
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {parsedVars.filter((v, i, self) => i === self.findIndex(t => t.name === v.name)).map((variable) => (
+                    <div key={variable.name}>
+                      <label className="block text-xs font-medium text-slate-500 mb-1 ml-1">
+                        {variable.name} <span className="text-slate-400">({variable.type})</span>
+                      </label>
+
+                      {variable.type === 'dropdown' ? (
+                        <select
+                          value={variables[variable.name] || ''}
+                          onChange={(e) => handleVariableChange(variable.name, e.target.value)}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 outline-none bg-white text-sm"
+                        >
+                          {variable.options.map(opt => (
+                            <option key={opt} value={opt}>{opt}</option>
+                          ))}
+                        </select>
+                      ) : variable.type === 'boolean' ? (
+                        <div className="flex items-center h-[38px]">
+                          <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-700 select-none">
+                            <input
+                              type="checkbox"
+                              checked={!!variables[variable.name]}
+                              onChange={(e) => handleVariableChange(variable.name, e.target.checked)}
+                              className="w-4 h-4 text-cyan-600 rounded border-slate-300 focus:ring-cyan-500"
+                            />
+                            {variables[variable.name] ? 'True' : 'False'}
+                          </label>
+                        </div>
+                      ) : variable.type === 'date' ? (
+                        <input
+                          type="date"
+                          value={variables[variable.name] || ''}
+                          onChange={(e) => handleVariableChange(variable.name, e.target.value)}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 outline-none bg-white text-sm"
+                        />
+                      ) : variable.type === 'timestamp' ? (
+                        <input
+                          type="datetime-local"
+                          value={variables[variable.name] || ''}
+                          onChange={(e) => handleVariableChange(variable.name, e.target.value)}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 outline-none bg-white text-sm"
+                        />
+                      ) : variable.type === 'number' ? (
+                        <input
+                          type="number"
+                          value={variables[variable.name] || ''}
+                          onChange={(e) => handleVariableChange(variable.name, e.target.value)}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 outline-none bg-white text-sm"
+                        />
+                      ) : (
+                        <input
+                          type="text"
+                          value={variables[variable.name] || ''}
+                          onChange={(e) => handleVariableChange(variable.name, e.target.value)}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 outline-none bg-white text-sm"
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
               <div className="flex gap-2">
                 <Button
                   onClick={executeQuery}
