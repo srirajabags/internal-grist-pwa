@@ -92,30 +92,38 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
     // Section 1: Regular Repeat
     const repeatTargets = safeParse(data.Regular_Repeat_Orders_Targets); // Updated field name
     const repeatAchieved = safeParse(data.Regular_Repeat_Orders); // Updated field name
-    const repeatEarnings = safeParse(data.Regular_Repeat_Orders_Earning); // Updated field name
+    const repeatEarnings = safeParse(data.Regular_Repeat_Orders_Earnings); // Updated field name
 
     // Section 2: Non-Regular Repeat
-    const nonRegEarnings = safeParse(data.Non_Regular_Repeat_Orders_Earning); // Array of arrays
+    const nonRegEarnings = safeParse(data.Non_Regular_Repeat_Orders_Earnings); // Array of arrays
     const nonRegAbove40k = safeParse(data.Non_Regular_Repeat_Orders_above_40k); // Array of arrays
     const nonReg20kTo40k = safeParse(data.Non_Regular_Repeat_Orders_between_20_40k); // Array of arrays
-    const nonRegBelow20k = safeParse(data.Non_Regular_Repeat_Orders_below_20k); // Array of arrays
+    const nonReg5kTo20k = safeParse(data.Non_Regular_Repeat_Orders_between_5_20k); // NEW
+    const nonRegBelow5k = safeParse(data.Non_Regular_Repeat_Orders_below_5k); // NEW
 
     // Section 3: New Orders
-    const newOrderEarnings = safeParse(data.New_Orders_Earning); // Array of arrays
+    const newOrderEarnings = safeParse(data.New_Orders_Earnings); // Array of arrays
     const newOrdersAbove40k = safeParse(data.New_Orders_above_40k); // Array of arrays
     const newOrders20kTo40k = safeParse(data.New_Orders_between_20_40k); // Array of arrays
-    const newOrdersBelow20k = safeParse(data.New_Orders_below_20k); // Array of arrays
+    const newOrders5kTo20k = safeParse(data.New_Orders_between_5_20k); // NEW
+    const newOrdersBelow5k = safeParse(data.New_Orders_below_5k); // NEW
+
+    // Total Orders Values Breakdown
+    const newOrdersValues = safeParse(data.New_Orders_Values);
+    const regularRepeatValues = safeParse(data.Regular_Repeat_Orders_Values);
+    const nonRegularRepeatValues = safeParse(data.Non_Regular_Repeat_Orders_Values);
 
 
     // Helper Component for Group Earnings Card
-    const GroupEarningsCard = ({ groupName, earnings, countsAbove40k, counts20kTo40k, countsBelow20k, totalEarning }) => {
+    const GroupEarningsCard = ({ groupName, earnings, countsAbove40k, counts20kTo40k, counts5kTo20k, countsBelow5k, totalEarning }) => {
         // Calculate rewards per bucket (Earning / Count) - avoid division by zero
-        // Note: earnings is [above40k, 20k-40k, below20k]
+        // Note: earnings is [above40k, 20k-40k, 5k-20k, below5k]
         const getReward = (earning, count) => count > 0 ? earning / count : 0;
 
         const rewardAbove40k = getReward(earnings[0] || 0, countsAbove40k);
         const reward20kTo40k = getReward(earnings[1] || 0, counts20kTo40k);
-        const rewardBelow20k = getReward(earnings[2] || 0, countsBelow20k);
+        const reward5kTo20k = getReward(earnings[2] || 0, counts5kTo20k);
+        const rewardBelow5k = getReward(earnings[3] || 0, countsBelow5k);
 
         return (
             <div className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
@@ -123,7 +131,7 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
                     <span className="font-semibold text-slate-700 text-sm">{groupName}</span>
                     <span className="font-bold text-green-600 text-sm">₹{totalEarning.toLocaleString('en-IN')}</span>
                 </div>
-                <div className="p-2 grid grid-cols-3 gap-2">
+                <div className="p-2 grid grid-cols-2 sm:grid-cols-4 gap-2">
                     {/* Above 40k */}
                     <div className="bg-green-50 rounded p-1.5 border border-green-100 flex flex-col justify-between">
                         <div className="text-[9px] font-bold text-green-800 uppercase leading-tight mb-1">Above 40k</div>
@@ -133,7 +141,7 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
                                 <span className="text-[9px] text-green-600">orders</span>
                             </div>
                             <div className="flex justify-between items-end mt-1 pt-1 border-t border-green-200/50">
-                                <span className="text-[9px] text-green-600">₹{rewardAbove40k}</span>
+                                <span className="text-[9px] text-green-600">₹{Math.round(rewardAbove40k)}</span>
                                 <span className="text-[10px] font-bold text-green-800">₹{(earnings[0] || 0).toLocaleString('en-IN')}</span>
                             </div>
                         </div>
@@ -148,23 +156,38 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
                                 <span className="text-[9px] text-blue-600">orders</span>
                             </div>
                             <div className="flex justify-between items-end mt-1 pt-1 border-t border-blue-200/50">
-                                <span className="text-[9px] text-blue-600">₹{reward20kTo40k}</span>
+                                <span className="text-[9px] text-blue-600">₹{Math.round(reward20kTo40k)}</span>
                                 <span className="text-[10px] font-bold text-blue-800">₹{(earnings[1] || 0).toLocaleString('en-IN')}</span>
                             </div>
                         </div>
                     </div>
 
-                    {/* Below 20k */}
+                    {/* 5k - 20k */}
                     <div className="bg-orange-50 rounded p-1.5 border border-orange-100 flex flex-col justify-between">
-                        <div className="text-[9px] font-bold text-orange-800 uppercase leading-tight mb-1">Below 20k</div>
+                        <div className="text-[9px] font-bold text-orange-800 uppercase leading-tight mb-1">5k - 20k</div>
                         <div>
                             <div className="flex items-baseline gap-1">
-                                <span className="text-base font-bold text-orange-700 leading-none">{countsBelow20k}</span>
+                                <span className="text-base font-bold text-orange-700 leading-none">{counts5kTo20k}</span>
                                 <span className="text-[9px] text-orange-600">orders</span>
                             </div>
                             <div className="flex justify-between items-end mt-1 pt-1 border-t border-orange-200/50">
-                                <span className="text-[9px] text-orange-600">₹{rewardBelow20k}</span>
+                                <span className="text-[9px] text-orange-600">₹{Math.round(reward5kTo20k)}</span>
                                 <span className="text-[10px] font-bold text-orange-800">₹{(earnings[2] || 0).toLocaleString('en-IN')}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Below 5k */}
+                    <div className="bg-slate-50 rounded p-1.5 border border-slate-200 flex flex-col justify-between">
+                        <div className="text-[9px] font-bold text-slate-800 uppercase leading-tight mb-1">Below 5k</div>
+                        <div>
+                            <div className="flex items-baseline gap-1">
+                                <span className="text-base font-bold text-slate-700 leading-none">{countsBelow5k}</span>
+                                <span className="text-[9px] text-slate-600">orders</span>
+                            </div>
+                            <div className="flex justify-between items-end mt-1 pt-1 border-t border-slate-200/50">
+                                <span className="text-[9px] text-slate-600">₹{Math.round(rewardBelow5k)}</span>
+                                <span className="text-[10px] font-bold text-slate-800">₹{(earnings[3] || 0).toLocaleString('en-IN')}</span>
                             </div>
                         </div>
                     </div>
@@ -227,21 +250,74 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
                                     ₹{(data.Total_Orders_Value || 0).toLocaleString('en-IN')}
                                 </span>
                             </div>
-                            {/* Contributors: New & Repeat */}
-                            <div className="grid grid-cols-2 divide-x divide-slate-100">
+
+                            {/* Contributors: Regular, Non-Regular, New */}
+                            <div className="grid grid-cols-3 divide-x divide-slate-100">
                                 <div className="p-3 text-center">
-                                    <span className="text-[10px] uppercase font-bold text-green-600/70 tracking-wider mb-1 block">New Orders</span>
-                                    <span className="text-lg font-bold text-green-600">
-                                        ₹{(data.New_Orders_Value || 0).toLocaleString('en-IN')}
+                                    <span className="text-[10px] uppercase font-bold text-blue-600/70 tracking-wider mb-1 block">Regular</span>
+                                    <span className="text-lg font-bold text-blue-600">
+                                        ₹{regularRepeatValues.reduce((acc, val) => acc + (val || 0), 0).toLocaleString('en-IN')}
                                     </span>
                                 </div>
                                 <div className="p-3 text-center">
-                                    <span className="text-[10px] uppercase font-bold text-blue-600/70 tracking-wider mb-1 block">Repeat Orders</span>
-                                    <span className="text-lg font-bold text-blue-600">
-                                        ₹{(data.Repeat_Orders_Value || 0).toLocaleString('en-IN')}
+                                    <span className="text-[10px] uppercase font-bold text-purple-600/70 tracking-wider mb-1 block">Non-Reg</span>
+                                    <span className="text-lg font-bold text-purple-600">
+                                        ₹{nonRegularRepeatValues.reduce((acc, val) => acc + (val || 0), 0).toLocaleString('en-IN')}
+                                    </span>
+                                </div>
+                                <div className="p-3 text-center">
+                                    <span className="text-[10px] uppercase font-bold text-green-600/70 tracking-wider mb-1 block">New</span>
+                                    <span className="text-lg font-bold text-green-600">
+                                        ₹{newOrdersValues.reduce((acc, val) => acc + (val || 0), 0).toLocaleString('en-IN')}
                                     </span>
                                 </div>
                             </div>
+                        </div>
+
+                        {/* Order Values Breakdown Table */}
+                        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden shadow-sm mt-3">
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-xs text-left whitespace-nowrap">
+                                    <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-100">
+                                        <tr>
+                                            <th className="px-3 py-2">Group</th>
+                                            <th className="px-3 py-2 text-right">Regular</th>
+                                            <th className="px-3 py-2 text-right">Non-Regular</th>
+                                            <th className="px-3 py-2 text-right">New</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {areaGroups.map((group, idx) => {
+                                            const groupName = areaGroupNames[group] || `Group ${group}`;
+                                            const regularVal = regularRepeatValues[idx] || 0;
+                                            const nonRegularVal = nonRegularRepeatValues[idx] || 0;
+                                            const newVal = newOrdersValues[idx] || 0;
+
+                                            return (
+                                                <tr key={idx} className="hover:bg-slate-50/50">
+                                                    <td className="px-3 py-2.5 font-medium text-slate-700">{groupName}</td>
+                                                    <td className="px-3 py-2.5 text-right text-blue-600">₹{regularVal.toLocaleString('en-IN')}</td>
+                                                    <td className="px-3 py-2.5 text-right text-purple-600">₹{nonRegularVal.toLocaleString('en-IN')}</td>
+                                                    <td className="px-3 py-2.5 text-right text-green-600">₹{newVal.toLocaleString('en-IN')}</td>
+                                                </tr>
+                                            );
+                                        })}
+                                        <tr className="bg-slate-50 font-bold border-t border-slate-200">
+                                            <td className="px-3 py-2">Total</td>
+                                            <td className="px-3 py-2 text-right text-blue-700">
+                                                ₹{regularRepeatValues.reduce((acc, val) => acc + (val || 0), 0).toLocaleString('en-IN')}
+                                            </td>
+                                            <td className="px-3 py-2 text-right text-purple-700">
+                                                ₹{nonRegularRepeatValues.reduce((acc, val) => acc + (val || 0), 0).toLocaleString('en-IN')}
+                                            </td>
+                                            <td className="px-3 py-2 text-right text-green-700">
+                                                ₹{newOrdersValues.reduce((acc, val) => acc + (val || 0), 0).toLocaleString('en-IN')}
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+
                         </div>
                     </section>
 
@@ -308,26 +384,8 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
                         <div className="space-y-3">
                             {areaGroups.map((group, idx) => {
                                 const groupName = areaGroupNames[group] || `Group ${group}`;
-                                const earnings = nonRegEarnings[idx] || [0, 0, 0];
-                                const countsAbove = (nonRegAbove40k[idx] || 0); // Assuming these are arrays of numbers matching groups? Or arrays of arrays? 
-                                // Based on sample: "Non_Regular_Repeat_Orders_above_40k": "[0, 1]" -> It's a flat array matching groups?
-                                // Wait, sample says: "New_Orders_Earning": "[[0, 0, 0], [0, 0, 600]]" -> Array of Arrays.
-                                // "New_Orders_above_40k": "[0, 0]" -> Flat array?
-                                // Let's re-read sample carefully.
-                                // "New_Orders_Earning": "[[0, 0, 0], [0, 0, 600]]" (2 groups)
-                                // "New_Orders_above_40k": "[0, 0]" (2 groups) -> This implies total count for that bucket for that group?
-                                // Yes, likely: Group 1 has 0 above 40k. Group 2 has 0 above 40k.
-                                // Let's assume the structure is:
-                                // earnings[groupIndex] = [earningAbove40k, earning20-40k, earningBelow20k]
-                                // countsAbove40k[groupIndex] = count
+                                const earnings = nonRegEarnings[idx] || [0, 0, 0, 0];
 
-                                // Let's check "Non_Regular_Repeat_Orders_Earning": "[[0, 0, 4500], [800, 500, 2100]]"
-                                // "Non_Regular_Repeat_Orders_above_40k": "[0, 1]"
-                                // "Non_Regular_Repeat_Orders_below_20k": "[15, 7]"
-
-                                // So yes:
-                                // nonRegEarnings[idx] is an array of 3 numbers.
-                                // nonRegAbove40k[idx] is a number.
 
                                 return (
                                     <GroupEarningsCard
@@ -336,7 +394,8 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
                                         earnings={earnings}
                                         countsAbove40k={nonRegAbove40k[idx] || 0}
                                         counts20kTo40k={nonReg20kTo40k[idx] || 0}
-                                        countsBelow20k={nonRegBelow20k[idx] || 0}
+                                        counts5kTo20k={nonReg5kTo20k[idx] || 0}
+                                        countsBelow5k={nonRegBelow5k[idx] || 0}
                                         totalEarning={earnings.reduce((a, b) => a + b, 0)}
                                     />
                                 );
@@ -356,7 +415,7 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
                         <div className="space-y-3">
                             {areaGroups.map((group, idx) => {
                                 const groupName = areaGroupNames[group] || `Group ${group}`;
-                                const earnings = newOrderEarnings[idx] || [0, 0, 0];
+                                const earnings = newOrderEarnings[idx] || [0, 0, 0, 0];
 
                                 return (
                                     <GroupEarningsCard
@@ -365,7 +424,8 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
                                         earnings={earnings}
                                         countsAbove40k={newOrdersAbove40k[idx] || 0}
                                         counts20kTo40k={newOrders20kTo40k[idx] || 0}
-                                        countsBelow20k={newOrdersBelow20k[idx] || 0}
+                                        counts5kTo20k={newOrders5kTo20k[idx] || 0}
+                                        countsBelow5k={newOrdersBelow5k[idx] || 0}
                                         totalEarning={earnings.reduce((a, b) => a + b, 0)}
                                     />
                                 );
@@ -777,8 +837,9 @@ SELECT *
                                         try {
                                             const above = JSON.parse(salaryData.Non_Regular_Repeat_Orders_above_40k || '[]');
                                             const between = JSON.parse(salaryData.Non_Regular_Repeat_Orders_between_20_40k || '[]');
-                                            const below = JSON.parse(salaryData.Non_Regular_Repeat_Orders_below_20k || '[]');
-                                            const totalNonReg = [above, between, below].flat().reduce((a, b) => a + (Number(b) || 0), 0);
+                                            const between5_20 = JSON.parse(salaryData.Non_Regular_Repeat_Orders_between_5_20k || '[]');
+                                            const below5 = JSON.parse(salaryData.Non_Regular_Repeat_Orders_below_5k || '[]');
+                                            const totalNonReg = [above, between, between5_20, below5].flat().reduce((a, b) => a + (Number(b) || 0), 0);
 
                                             return (
                                                 <div className="bg-purple-500/20 px-2 py-1 rounded border border-purple-400/30 flex items-center gap-1.5">
