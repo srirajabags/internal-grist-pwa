@@ -93,6 +93,7 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
     const repeatTargets = safeParse(data.Regular_Repeat_Orders_Targets); // Updated field name
     const repeatAchieved = safeParse(data.Regular_Repeat_Orders); // Updated field name
     const repeatEarnings = safeParse(data.Regular_Repeat_Orders_Earnings); // Updated field name
+    const regCustomerEarnings = safeParse(data.Regular_Customer_Orders_Telecaller_Earnings); // NEW field
 
     // Section 2: Non-Regular Repeat
     const nonRegEarnings = safeParse(data.Non_Regular_Repeat_Orders_Earnings); // Array of arrays
@@ -343,6 +344,7 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
                                             const target = repeatTargets[idx] || 0;
                                             const achieved = repeatAchieved[idx] || 0;
                                             const earning = repeatEarnings[idx] || 0;
+                                            const maxEarning = regCustomerEarnings[idx] || 6000; // Fallback to 6000 if missing
                                             const groupName = areaGroupNames[group] || `Group ${group}`;
 
                                             return (
@@ -354,7 +356,7 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
                                                         <span className="text-slate-500">{target}</span>
                                                     </td>
                                                     <td className="px-3 py-2.5 text-right text-slate-400 font-mono text-[10px]">
-                                                        ({achieved}/{target}) * 6000
+                                                        ({achieved}/{target}) * {maxEarning}
                                                     </td>
                                                     <td className="px-3 py-2.5 text-right font-bold text-green-600">
                                                         ₹{earning.toLocaleString('en-IN')}
@@ -515,8 +517,8 @@ SELECT *
                 sql: sqlQuery,
                 args: [
                     monthTimestamp,
-                    "eswarmedhari2662@gmail.com"
-                    // user.email
+                    // "manin8763@gmail.com"
+                    user.email
                 ]
             })
         });
