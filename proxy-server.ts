@@ -5,6 +5,9 @@
 const GRIST_BASE_URL = process.env.GRIST_URL ?? "https://your-grist.railway.app";
 const AUTH0_DOMAIN = process.env.AUTH0_DOMAIN ?? "your-tenant.us.auth0.com";
 const SQL_KEY = process.env.SQL_KEY; // Dedicated API key for SQL endpoints
+const IMPERSONATION_ALLOWED_USERS = process.env.IMPERSONATION_ALLOWED_USERS
+    ? process.env.IMPERSONATION_ALLOWED_USERS.split(',').map(email => email.trim())
+    : []; // Comma-separated list of emails allowed to impersonate
 
 // Map Auth0 User Emails (or 'sub' IDs) to Grist API Keys
 // Map Auth0 User Emails (or 'sub' IDs) to Grist API Keys
@@ -68,7 +71,7 @@ export default {
                 headers: {
                     "Access-Control-Allow-Origin": "*",
                     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-                    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Impersonate",
                 },
             });
         }
@@ -142,10 +145,37 @@ export default {
         const userEmail = userProfile.email;
         const userSub = userProfile.sub;
 
-        const gristKey = USER_KEY_MAP[userEmail] || USER_KEY_MAP[userSub];
+        // Check for impersonation header
+        const impersonateEmail = request.headers.get("X-Impersonate");
+        let effectiveEmail = userEmail;
+
+        if (impersonateEmail) {
+            // Validate that the current user is allowed to impersonate
+            if (!IMPERSONATION_ALLOWED_USERS.includes(userEmail)) {
+                console.warn(`Impersonation denied: ${userEmail} is not in allowed list`);
+                return new Response('{"error":"User not authorized to impersonate"}', {
+                    status: 403,
+                    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                });
+            }
+
+            // Check if the impersonated user exists in the key map
+            if (!USER_KEY_MAP[impersonateEmail]) {
+                console.warn(`Impersonation failed: No key found for ${impersonateEmail}`);
+                return new Response('{"error":"Impersonated user not found or not authorized"}', {
+                    status: 404,
+                    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                });
+            }
+
+            effectiveEmail = impersonateEmail;
+            console.log(`User ${userEmail} is impersonating ${impersonateEmail}`);
+        }
+
+        const gristKey = USER_KEY_MAP[effectiveEmail] || USER_KEY_MAP[userSub];
 
         if (!gristKey) {
-            console.warn(`No Grist Key found for user: ${userEmail} (${userSub})`);
+            console.warn(`No Grist Key found for user: ${effectiveEmail} (${userSub})`);
             return new Response('{"error":"User not authorized for Grist access"}', {
                 status: 403,
                 headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
@@ -198,7 +228,7 @@ export default {
             const response = new Response(upstream.body, upstream);
             response.headers.set("Access-Control-Allow-Origin", "*");
             response.headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-            response.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+            response.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Impersonate");
 
             return response;
         } catch (e: any) {

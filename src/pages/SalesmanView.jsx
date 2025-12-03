@@ -29,7 +29,7 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
     const [selectedAreaGroup, setSelectedAreaGroup] = useState('');
     const [selectedSalesStatus, setSelectedSalesStatus] = useState('');
     const [selectedCity, setSelectedCity] = useState('');
-    const [showSettings, setShowSettings] = useState(false);
+
     const [selectedCustomerId, setSelectedCustomerId] = useState(null);
     const [error, setError] = useState(null);
 
@@ -187,13 +187,6 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
                             >
                                 <RefreshCw size={18} className={loadingTodos ? "animate-spin" : ""} />
                             </Button>
-                            <Button
-                                variant="secondary"
-                                onClick={() => setShowSettings(true)}
-                                className="!px-3"
-                            >
-                                <Settings size={18} />
-                            </Button>
                         </div>
                     </div>
 
@@ -276,42 +269,7 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
                 </div>
             )}
 
-            {showSettings && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={() => setShowSettings(false)}>
-                    <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-between mb-4">
-                            <h2 className="text-xl font-bold text-slate-800">Settings</h2>
-                            <button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-slate-700">
-                                <X size={20} />
-                            </button>
-                        </div>
 
-                        {/* User Info */}
-                        <div className="flex items-center gap-3 pb-4 border-b border-slate-100 mb-4">
-                            {user?.picture ? (
-                                <img src={user.picture} alt={user.name} className="w-12 h-12 rounded-full" />
-                            ) : (
-                                <div className="w-12 h-12 bg-slate-200 rounded-full flex items-center justify-center text-slate-500">
-                                    <User size={24} />
-                                </div>
-                            )}
-                            <div className="overflow-hidden flex-1">
-                                <p className="font-medium text-slate-900 truncate">{user?.name}</p>
-                                <p className="text-sm text-slate-500 truncate">{user?.email}</p>
-                            </div>
-                        </div>
-
-                        <Button
-                            variant="secondary"
-                            className="w-full"
-                            onClick={onLogout}
-                            icon={LogOut}
-                        >
-                            Logout
-                        </Button>
-                    </div>
-                </div>
-            )}
         </div>
     );
 };

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users } from 'lucide-react';
 import SqlVisualization from './components/SqlVisualization';
@@ -41,7 +41,7 @@ const Select = ({ label, value, onChange, options, placeholder, disabled = false
 
 
 // Settings Modal Component
-const SettingsModal = ({ onClose, user, onLogout }) => (
+const SettingsModal = ({ onClose, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers }) => (
   <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={onClose}>
     <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
       <div className="flex items-center justify-between mb-4">
@@ -63,7 +63,58 @@ const SettingsModal = ({ onClose, user, onLogout }) => (
         <div className="overflow-hidden flex-1">
           <p className="font-medium text-slate-900 truncate">{user?.name}</p>
           <p className="text-sm text-slate-500 truncate">{user?.email}</p>
+          {user?.originalUser && (
+            <p className="text-xs text-slate-400 mt-1">
+              Logged in as: {user.originalUser.email}
+            </p>
+          )}
         </div>
+      </div>
+
+      {/* Impersonation Section */}
+      <div className="mb-4 p-4 bg-slate-50 rounded-lg border border-slate-200">
+        <label className="block text-sm font-medium text-slate-700 mb-2">
+          Impersonate User
+        </label>
+
+        {impersonateEmail && (
+          <div className="mb-3 p-2 bg-amber-50 border border-amber-200 rounded-lg flex items-center gap-2">
+            <AlertCircle size={16} className="text-amber-600 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium text-amber-800">Currently Impersonating</p>
+              <p className="text-xs text-amber-700 truncate">{impersonateEmail}</p>
+            </div>
+          </div>
+        )}
+
+        <select
+          value={impersonateEmail}
+          onChange={(e) => setImpersonateEmail(e.target.value)}
+          disabled={loadingTeamMembers}
+          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none disabled:bg-slate-100 disabled:text-slate-500 appearance-none bg-white mb-2"
+        >
+          <option value="">
+            {loadingTeamMembers ? 'Loading members...' : 'Select a team member...'}
+          </option>
+          {teamMembers.map((member) => (
+            <option key={member.Email} value={member.Email}>
+              {member.Name} ({member.Email})
+            </option>
+          ))}
+        </select>
+
+        {impersonateEmail && (
+          <button
+            onClick={() => setImpersonateEmail('')}
+            className="w-full px-3 py-2 text-sm bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg transition-colors"
+          >
+            Clear Impersonation
+          </button>
+        )}
+
+        <p className="text-xs text-slate-500 mt-2">
+          View data as another team member for support or testing purposes.
+        </p>
       </div>
 
       {/* Server Info */}
@@ -85,7 +136,9 @@ const SettingsModal = ({ onClose, user, onLogout }) => (
 );
 
 // Home Page Component
-const HomePage = ({ onNavigate }) => {
+const HomePage = ({ onNavigate, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers }) => {
+  const [showSettings, setShowSettings] = useState(false);
+
   const pageOptions = [
     {
       id: 'dashboards',
@@ -141,14 +194,23 @@ const HomePage = ({ onNavigate }) => {
     <div className="min-h-screen bg-slate-50 flex flex-col">
       <header className="bg-white border-b border-slate-200 px-4 py-4">
         <div className="max-w-7xl mx-auto">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-green-600 rounded-xl flex items-center justify-center text-white">
-              <Database size={24} />
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-green-600 rounded-xl flex items-center justify-center text-white">
+                <Database size={24} />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold text-slate-800">SRB Grist PWA</h1>
+                <p className="text-sm text-slate-500">Select a view to get started</p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-2xl font-bold text-slate-800">SRB Grist PWA</h1>
-              <p className="text-sm text-slate-500">Select a view to get started</p>
-            </div>
+            <button
+              onClick={() => setShowSettings(true)}
+              className="p-2 hover:bg-slate-100 rounded-lg transition-colors"
+              aria-label="Settings"
+            >
+              <Settings size={24} className="text-slate-600" />
+            </button>
           </div>
         </div>
       </header>
@@ -175,6 +237,21 @@ const HomePage = ({ onNavigate }) => {
           </div>
         </div>
       </main>
+
+
+      {
+        showSettings && (
+          <SettingsModal
+            onClose={() => setShowSettings(false)}
+            user={user}
+            onLogout={onLogout}
+            impersonateEmail={impersonateEmail}
+            setImpersonateEmail={setImpersonateEmail}
+            teamMembers={teamMembers}
+            loadingTeamMembers={loadingTeamMembers}
+          />
+        )
+      }
     </div>
   );
 };
@@ -192,8 +269,7 @@ import SalesmanView from './pages/SalesmanView';
 import SalesmanCustomerView from './pages/SalesmanCustomerView';
 
 // Design Confirmation View Component (Placeholder)
-const DesignConfirmationView = ({ onBack, user, onLogout }) => {
-  const [showSettings, setShowSettings] = useState(false);
+const DesignConfirmationView = ({ onBack, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers }) => {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
@@ -210,13 +286,6 @@ const DesignConfirmationView = ({ onBack, user, onLogout }) => {
               <h1 className="font-bold text-slate-800">Design Confirmation View</h1>
             </div>
           </div>
-          <Button
-            variant="secondary"
-            onClick={() => setShowSettings(true)}
-            className="!px-3"
-          >
-            <Settings size={18} />
-          </Button>
         </div>
       </header>
 
@@ -234,14 +303,6 @@ const DesignConfirmationView = ({ onBack, user, onLogout }) => {
           </Card>
         </div>
       </main>
-
-      {showSettings && (
-        <SettingsModal
-          onClose={() => setShowSettings(false)}
-          user={user}
-          onLogout={onLogout}
-        />
-      )}
     </div>
   );
 };
@@ -280,11 +341,10 @@ const ImagePreviewModal = ({ src, onClose, loading }) => (
 );
 
 // Factory View Component
-const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
+const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers }) => {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [showSettings, setShowSettings] = useState(false);
 
   // Preview State
   const [previewImage, setPreviewImage] = useState(null);
@@ -555,13 +615,6 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
               >
                 <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
               </Button>
-              <Button
-                variant="secondary"
-                onClick={() => setShowSettings(true)}
-                className="!px-3"
-              >
-                <Settings size={18} />
-              </Button>
             </div>
           </div>
 
@@ -706,20 +759,12 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
           onClose={closePreview}
         />
       )}
-
-      {showSettings && (
-        <SettingsModal
-          onClose={() => setShowSettings(false)}
-          user={user}
-          onLogout={onLogout}
-        />
-      )}
     </div>
   );
 };
 
 // Custom Table Viewer Component (Extracted from main App)
-const CustomTableViewer = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
+const CustomTableViewer = ({ onBack, user, onLogout, getHeaders, getUrl, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers }) => {
   // State for Document/Table Selection
   const [docId, setDocId] = useState('');
   const [tableId, setTableId] = useState('');
@@ -735,7 +780,6 @@ const CustomTableViewer = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
   const [columns, setColumns] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [showSettings, setShowSettings] = useState(false);
 
   // --- Discovery Functions ---
 
@@ -965,13 +1009,7 @@ const CustomTableViewer = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
             >
               <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
             </Button>
-            <Button
-              variant="secondary"
-              onClick={() => setShowSettings(true)}
-              className="!px-3"
-            >
-              <Settings size={18} />
-            </Button>
+
           </div>
         </div>
       </header>
@@ -1037,13 +1075,6 @@ const CustomTableViewer = ({ onBack, user, onLogout, getHeaders, getUrl }) => {
       </main>
 
       {/* Settings Modal */}
-      {showSettings && (
-        <SettingsModal
-          onClose={() => setShowSettings(false)}
-          user={user}
-          onLogout={onLogout}
-        />
-      )}
     </div>
   );
 };
@@ -1054,8 +1085,7 @@ import ShareQueryModal from './components/ShareQueryModal';
 
 const PWA_DATA_DOC_ID = '8vRFY3UUf4spJroktByH4u';
 
-const SQLAnalysisView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) => {
-  const [showSettings, setShowSettings] = useState(false);
+const SQLAnalysisView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers }) => {
   const [docs, setDocs] = useState([]);
   const [selectedDocId, setSelectedDocId] = useState('');
   const [loadingDocs, setLoadingDocs] = useState(true);
@@ -1527,13 +1557,7 @@ const SQLAnalysisView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl })
             >
               <span className="hidden sm:inline">Save</span>
             </Button>
-            <Button
-              variant="secondary"
-              onClick={() => setShowSettings(true)}
-              className="!px-3"
-            >
-              <Settings size={18} />
-            </Button>
+
           </div>
         </div>
       </header>
@@ -2006,6 +2030,10 @@ const SQLAnalysisView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl })
           onClose={() => setShowSettings(false)}
           user={user}
           onLogout={onLogout}
+          impersonateEmail={impersonateEmail}
+          setImpersonateEmail={setImpersonateEmail}
+          teamMembers={teamMembers}
+          loadingTeamMembers={loadingTeamMembers}
         />
       )}
     </div>
@@ -2020,6 +2048,39 @@ export default function App() {
   const [teamId, setTeamId] = useState(null);
   const [loadingTeamId, setLoadingTeamId] = useState(false);
 
+  // Global impersonation state
+  // Global impersonation state
+  const [impersonateEmail, setImpersonateEmail] = useState(() => {
+    return localStorage.getItem('impersonateEmail') || '';
+  });
+  const [teamMembers, setTeamMembers] = useState([]);
+  const [loadingTeamMembers, setLoadingTeamMembers] = useState(false);
+
+  // Derived user object for impersonation
+  const derivedUser = useMemo(() => {
+    if (!user) return null;
+
+    if (impersonateEmail) {
+      const impersonatedMember = teamMembers.find(m => m.Email === impersonateEmail);
+      if (impersonatedMember) {
+        return {
+          ...user,
+          email: impersonatedMember.Email,
+          name: impersonatedMember.Name,
+          id: impersonatedMember.id, // Ensure ID is available
+          picture: user.picture, // Keep original picture or use placeholder if available
+          originalUser: user // Keep reference to original user
+        };
+      }
+    }
+
+    // Not impersonating or member not found
+    return {
+      ...user,
+      id: teamId // Add the fetched teamId to the user object
+    };
+  }, [user, impersonateEmail, teamMembers, teamId]);
+
   const handleLogout = () => {
     logout({ logoutParams: { returnTo: window.location.origin } });
   };
@@ -2032,14 +2093,62 @@ export default function App() {
     return `${base}${path}`;
   };
 
-  const getHeaders = async () => {
+  // Update LocalStorage when impersonation changes
+  useEffect(() => {
+    if (impersonateEmail) {
+      localStorage.setItem('impersonateEmail', impersonateEmail);
+    } else {
+      localStorage.removeItem('impersonateEmail');
+    }
+  }, [impersonateEmail]);
+
+  // Fetch team members for impersonation dropdown
+  const fetchTeamMembers = async () => {
+    if (teamMembers.length > 0) return; // Already fetched
+    setLoadingTeamMembers(true);
+    try {
+      const headers = await getHeaders();
+      const DOC_ID = '8vRFY3UUf4spJroktByH4u';
+      const url = getUrl(`/api/docs/${DOC_ID}/sql`);
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sql: "SELECT id, Name, Email FROM Team WHERE Email != ''",
+          args: []
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const members = data.records.map(r => r.fields);
+        setTeamMembers(members);
+      }
+    } catch (e) {
+      console.error('Error fetching team members:', e);
+    } finally {
+      setLoadingTeamMembers(false);
+    }
+  };
+
+  const getHeaders = async (overrideImpersonateEmail = null) => {
     try {
       const token = await getAccessTokenSilently();
-      return {
+      const headers = {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       };
+
+      // Use override if provided, otherwise use global impersonation state
+      const emailToUse = overrideImpersonateEmail !== null ? overrideImpersonateEmail : impersonateEmail;
+
+      // Add impersonation header if provided
+      if (emailToUse) {
+        headers['X-Impersonate'] = emailToUse;
+      }
+
+      return headers;
     } catch (e) {
       console.error("Failed to get access token", e);
       throw new Error("Failed to authenticate with Auth0");
@@ -2091,7 +2200,15 @@ export default function App() {
   // Fetch Team ID when user authenticates
   useEffect(() => {
     if (isAuthenticated && user?.email && !teamId && !loadingTeamId) {
+      console.log('Triggering fetchTeamId from useEffect');
       fetchTeamId();
+    }
+  }, [isAuthenticated, user, teamId, loadingTeamId]);
+
+  // Fetch team members when authenticated
+  useEffect(() => {
+    if (isAuthenticated && user?.email) {
+      fetchTeamMembers();
     }
   }, [isAuthenticated, user]);
 
@@ -2135,14 +2252,14 @@ export default function App() {
   // Main Application - Render based on URL routes
   return (
     <Routes>
-      <Route path="/" element={<HomePage onNavigate={(path) => navigate(`/${path}`)} />} />
+      <Route path="/" element={<HomePage onNavigate={(path) => navigate(`/${path}`)} user={derivedUser} onLogout={handleLogout} impersonateEmail={impersonateEmail} setImpersonateEmail={setImpersonateEmail} teamMembers={teamMembers} loadingTeamMembers={loadingTeamMembers} />} />
       <Route
         path="/telecaller"
         element={
           <TelecallerView
             onBack={() => navigate('/')}
-            user={user}
-            teamId={teamId}
+            user={derivedUser}
+            teamId={derivedUser?.id}
             onLogout={handleLogout}
             getHeaders={getHeaders}
             getUrl={getUrl}
@@ -2154,7 +2271,7 @@ export default function App() {
         element={
           <DesignConfirmationView
             onBack={() => navigate('/')}
-            user={user}
+            user={derivedUser}
             onLogout={handleLogout}
           />
         }
@@ -2164,7 +2281,7 @@ export default function App() {
         element={
           <CustomTableViewer
             onBack={() => navigate('/')}
-            user={user}
+            user={derivedUser}
             onLogout={handleLogout}
             getHeaders={getHeaders}
             getUrl={getUrl}
@@ -2176,20 +2293,19 @@ export default function App() {
         element={
           <FactoryView
             onBack={() => navigate('/')}
-            user={user}
+            user={derivedUser}
             onLogout={handleLogout}
             getHeaders={getHeaders}
             getUrl={getUrl}
           />
         }
       />
-      <Route path="/sql" element={<SQLAnalysisView onBack={() => navigate('/dashboards')} user={user} teamId={teamId} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
-      <Route path="/dashboards" element={<DashboardList onNavigate={(id) => navigate(`/dashboards/${id}`)} onBack={() => navigate('/')} teamId={teamId} getHeaders={getHeaders} getUrl={getUrl} />} />
-      <Route path="/dashboards/:id" element={<DashboardWrapper onBack={() => navigate('/dashboards')} getHeaders={getHeaders} getUrl={getUrl} teamId={teamId} />} />
-      <Route path="/telecaller" element={<TelecallerView onBack={() => navigate('/')} user={user} teamId={teamId} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
-      <Route path="/telecaller/customer/:customerId" element={<TelecallerCustomerView onBack={() => navigate('/telecaller')} user={user} getHeaders={getHeaders} getUrl={getUrl} />} />
-      <Route path="/salesman" element={<SalesmanView onBack={() => navigate('/')} user={user} teamId={teamId} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
-      <Route path="/salesman/customer/:customerId" element={<SalesmanCustomerView onBack={() => navigate('/salesman')} user={user} getHeaders={getHeaders} getUrl={getUrl} />} />
+      <Route path="/sql" element={<SQLAnalysisView onBack={() => navigate('/dashboards')} user={derivedUser} teamId={derivedUser?.id} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
+      <Route path="/dashboards" element={<DashboardList onNavigate={(id) => navigate(`/dashboards/${id}`)} onBack={() => navigate('/')} teamId={derivedUser?.id} getHeaders={getHeaders} getUrl={getUrl} user={derivedUser} />} />
+      <Route path="/dashboards/:id" element={<DashboardWrapper onBack={() => navigate('/dashboards')} getHeaders={getHeaders} getUrl={getUrl} teamId={derivedUser?.id} user={derivedUser} />} />
+      <Route path="/telecaller/customer/:customerId" element={<TelecallerCustomerView onBack={() => navigate('/telecaller')} user={derivedUser} getHeaders={getHeaders} getUrl={getUrl} />} />
+      <Route path="/salesman" element={<SalesmanView onBack={() => navigate('/')} user={derivedUser} teamId={derivedUser?.id} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
+      <Route path="/salesman/customer/:customerId" element={<SalesmanCustomerView onBack={() => navigate('/salesman')} user={derivedUser} getHeaders={getHeaders} getUrl={getUrl} />} />
     </Routes>
   );
 }

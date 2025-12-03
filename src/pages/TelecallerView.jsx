@@ -723,6 +723,7 @@ SELECT *
         if (teamId && viewCache.todoList.length === 0) {
             fetchTodos();
         }
+
     }, [user, teamId]);
 
     // Format current month for display
@@ -739,7 +740,7 @@ SELECT *
         <div className="min-h-screen bg-slate-50 flex flex-col">
             {/* Header */}
             <header className="bg-white border-b border-slate-200 sticky top-0 z-20 px-4 py-3">
-                <div className="max-w-7xl mx-auto flex flex-col gap-3">
+                <div className="max-w-7xl mx-auto flex flex-col gap-4">
                     <div className="flex justify-between items-center">
                         <div className="flex items-center gap-3">
                             <Button variant="ghost" onClick={onBack} className="!px-2">
@@ -760,13 +761,6 @@ SELECT *
                                 className="!px-3"
                             >
                                 <RefreshCw size={18} className={(loadingSalary || loadingTodos) ? "animate-spin" : ""} />
-                            </Button>
-                            <Button
-                                variant="secondary"
-                                onClick={() => setShowSettings(true)}
-                                className="!px-3"
-                            >
-                                <Settings size={18} />
                             </Button>
                         </div>
                     </div>
@@ -896,7 +890,7 @@ SELECT *
                         </div>
                     </div>
                 </div>
-            </header>
+            </header >
 
             <main className="flex-1 p-4 overflow-auto">
                 <div className="max-w-7xl mx-auto space-y-4">
@@ -940,68 +934,35 @@ SELECT *
             </main>
 
             {/* Customer View Modal */}
-            {selectedCustomerId && (
-                <div className="fixed inset-0 z-50 bg-white overflow-auto animate-in slide-in-from-right duration-300">
-                    <TelecallerCustomerView
-                        customerId={selectedCustomerId}
-                        customerRowId={todoList.find(t => t.Customer_ID === selectedCustomerId)?.id}
-                        shopName={todoList.find(t => t.Customer_ID === selectedCustomerId)?.Shop_Name}
-                        onBack={() => setSelectedCustomerId(null)}
-                        user={user}
-                        getHeaders={getHeaders}
-                        getUrl={getUrl}
-                    />
-                </div>
-            )}
-
-            {showSalaryModal && (
-                <SalaryDetailsModal
-                    data={modalSalaryData}
-                    areaGroupNames={areaGroupNames}
-                    month={new Date(modalMonthTimestamp * 1000).toLocaleString('default', { month: 'short', year: '2-digit' })}
-                    selectedMonthTimestamp={modalMonthTimestamp}
-                    onClose={() => setShowSalaryModal(false)}
-                    onMonthChange={handleModalMonthChange}
-                />
-            )}
-
-            {showSettings && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={() => setShowSettings(false)}>
-                    <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-between mb-4">
-                            <h2 className="text-xl font-bold text-slate-800">Settings</h2>
-                            <button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-slate-700">
-                                <X size={20} />
-                            </button>
-                        </div>
-
-                        {/* User Info */}
-                        <div className="flex items-center gap-3 pb-4 border-b border-slate-100 mb-4">
-                            {user?.picture ? (
-                                <img src={user.picture} alt={user.name} className="w-12 h-12 rounded-full" />
-                            ) : (
-                                <div className="w-12 h-12 bg-slate-200 rounded-full flex items-center justify-center text-slate-500">
-                                    <User size={24} />
-                                </div>
-                            )}
-                            <div className="overflow-hidden flex-1">
-                                <p className="font-medium text-slate-900 truncate">{user?.name}</p>
-                                <p className="text-sm text-slate-500 truncate">{user?.email}</p>
-                            </div>
-                        </div>
-
-                        <Button
-                            variant="secondary"
-                            className="w-full"
-                            onClick={onLogout}
-                            icon={LogOut}
-                        >
-                            Logout
-                        </Button>
+            {
+                selectedCustomerId && (
+                    <div className="fixed inset-0 z-50 bg-white overflow-auto animate-in slide-in-from-right duration-300">
+                        <TelecallerCustomerView
+                            customerId={selectedCustomerId}
+                            customerRowId={todoList.find(t => t.Customer_ID === selectedCustomerId)?.id}
+                            shopName={todoList.find(t => t.Customer_ID === selectedCustomerId)?.Shop_Name}
+                            onBack={() => setSelectedCustomerId(null)}
+                            user={user}
+                            getHeaders={getHeaders}
+                            getUrl={getUrl}
+                        />
                     </div>
-                </div>
-            )}
-        </div>
+                )
+            }
+
+            {
+                showSalaryModal && (
+                    <SalaryDetailsModal
+                        data={modalSalaryData}
+                        areaGroupNames={areaGroupNames}
+                        month={new Date(modalMonthTimestamp * 1000).toLocaleString('default', { month: 'short', year: '2-digit' })}
+                        selectedMonthTimestamp={modalMonthTimestamp}
+                        onClose={() => setShowSalaryModal(false)}
+                        onMonthChange={handleModalMonthChange}
+                    />
+                )
+            }
+        </div >
     );
 };
 
