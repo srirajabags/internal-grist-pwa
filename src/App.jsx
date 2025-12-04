@@ -1557,7 +1557,6 @@ const SQLAnalysisView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl, i
             >
               <span className="hidden sm:inline">Save</span>
             </Button>
-
           </div>
         </div>
       </header>
@@ -2025,17 +2024,6 @@ const SQLAnalysisView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl, i
         </div>
       )}
 
-      {showSettings && (
-        <SettingsModal
-          onClose={() => setShowSettings(false)}
-          user={user}
-          onLogout={onLogout}
-          impersonateEmail={impersonateEmail}
-          setImpersonateEmail={setImpersonateEmail}
-          teamMembers={teamMembers}
-          loadingTeamMembers={loadingTeamMembers}
-        />
-      )}
     </div>
   );
 };
