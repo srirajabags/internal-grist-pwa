@@ -1,0 +1,21 @@
+{
+  "medium": {
+    "whitelist": ["IN PERSON", "CALL", "WHATSAPP"],
+    "default": "IN PERSON"
+  },
+  "outcome": {
+    "whitelist": ["GIVEN NEW ORDER", "NOTIFIED PROBLEM", "GIVEN REMINDER DATE"],
+    "linkedTo": "medium",
+    "default": "GIVEN REMINDER DATE"
+  },
+  "outcomeBriefs": {
+    "whitelist": ["COMPLAINED ABOUT SERVICE", "COMPLAINED ABOUT PRODUCT", "REQUESTED FOR DISCOUNT", "REQUESTED FOR RETURN"],
+    "linkedTo": "outcome",
+    "mappings": {
+      "GIVEN REMINDER DATE": [],
+      "GIVEN NEW ORDER": [],
+      "NOTIFIED PROBLEM": ["COMPLAINED ABOUT SERVICE", "COMPLAINED ABOUT PRODUCT", "REQUESTED FOR DISCOUNT", "REQUESTED FOR RETURN"]
+    },
+    "default": "COMPLAINED ABOUT PRODUCT"
+  }
+}

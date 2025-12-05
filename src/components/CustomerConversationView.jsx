@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Phone, MessageCircle, Clock, Save, AlertCircle, Loader2, CheckCircle, MapPin, XCircle } from 'lucide-react';
 import { useParams } from 'react-router-dom';
+import salesmanConfig from '../config/salesman-conversation-config.json';
+import telecallerConfig from '../config/telecaller-conversation-config.json';
 
 const Button = ({ onClick, children, variant = "primary", disabled = false, className = "", icon: Icon }) => {
     const baseStyle = "flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
@@ -57,8 +59,17 @@ const CustomerConversationView = ({
     const [mediumChoices, setMediumChoices] = useState([defaultMedium]);
     const [outcome, setOutcome] = useState(defaultOutcome);
     const [outcomeChoices, setOutcomeChoices] = useState([defaultOutcome]);
+    const [filteredOutcomeChoices, setFilteredOutcomeChoices] = useState([defaultOutcome]);
     const [outcomeBriefs, setOutcomeBriefs] = useState('');
     const [outcomeBriefsChoices, setOutcomeBriefsChoices] = useState([]);
+    const [filteredOutcomeBriefsChoices, setFilteredOutcomeBriefsChoices] = useState([]);
+    const [showOutcomeDate, setShowOutcomeDate] = useState(false);
+    const [isOutcomeBriefsRequired, setIsOutcomeBriefsRequired] = useState(false);
+
+    // Check view type
+    const isSalesmanView = defaultMedium === 'IN PERSON';
+    const isTelecallerView = defaultMedium === 'CALL';
+    const currentConfig = isSalesmanView ? salesmanConfig : isTelecallerView ? telecallerConfig : null;
     const [notes, setNotes] = useState('');
     const [nextFollowUp, setNextFollowUp] = useState('');
     const [submitting, setSubmitting] = useState(false);
@@ -95,12 +106,18 @@ const CustomerConversationView = ({
                     try {
                         const widgetOptions = JSON.parse(mediumColumn.fields.widgetOptions);
                         if (widgetOptions.choices && Array.isArray(widgetOptions.choices)) {
-                            setMediumChoices(widgetOptions.choices);
+                            let filteredMediumChoices = widgetOptions.choices;
+                            if (currentConfig?.medium?.whitelist) {
+                                filteredMediumChoices = widgetOptions.choices.filter(choice =>
+                                    currentConfig.medium.whitelist.includes(choice)
+                                );
+                            }
+                            setMediumChoices(filteredMediumChoices);
                             // Set default if it exists in choices
-                            if (widgetOptions.choices.includes(defaultMedium)) {
+                            if (filteredMediumChoices.includes(defaultMedium)) {
                                 setMedium(defaultMedium);
-                            } else if (widgetOptions.choices.length > 0) {
-                                setMedium(widgetOptions.choices[0]);
+                            } else if (filteredMediumChoices.length > 0) {
+                                setMedium(filteredMediumChoices[0]);
                             }
                         }
                     } catch (e) {
@@ -114,12 +131,19 @@ const CustomerConversationView = ({
                     try {
                         const widgetOptions = JSON.parse(outcomesColumn.fields.widgetOptions);
                         if (widgetOptions.choices && Array.isArray(widgetOptions.choices)) {
-                            setOutcomeChoices(widgetOptions.choices);
+                            let filteredOutcomeChoices = widgetOptions.choices;
+                            if (currentConfig?.outcome?.whitelist) {
+                                filteredOutcomeChoices = widgetOptions.choices.filter(choice =>
+                                    currentConfig.outcome.whitelist.includes(choice)
+                                );
+                            }
+                            setOutcomeChoices(filteredOutcomeChoices);
+                            setFilteredOutcomeChoices(filteredOutcomeChoices);
                             // Set default if it exists in choices
-                            if (widgetOptions.choices.includes(defaultOutcome)) {
+                            if (filteredOutcomeChoices.includes(defaultOutcome)) {
                                 setOutcome(defaultOutcome);
-                            } else if (widgetOptions.choices.length > 0) {
-                                setOutcome(widgetOptions.choices[0]);
+                            } else if (filteredOutcomeChoices.length > 0) {
+                                setOutcome(filteredOutcomeChoices[0]);
                             }
                         }
                     } catch (e) {
@@ -133,15 +157,22 @@ const CustomerConversationView = ({
                     try {
                         const widgetOptions = JSON.parse(outcomeBriefsColumn.fields.widgetOptions);
                         if (widgetOptions.choices && Array.isArray(widgetOptions.choices)) {
-                            setOutcomeBriefsChoices(widgetOptions.choices);
+                            let filteredOutcomeBriefsChoices = widgetOptions.choices;
+                            if (currentConfig?.outcomeBriefs?.whitelist) {
+                                filteredOutcomeBriefsChoices = widgetOptions.choices.filter(choice =>
+                                    currentConfig.outcomeBriefs.whitelist.includes(choice)
+                                );
+                            }
+                            setOutcomeBriefsChoices(filteredOutcomeBriefsChoices);
+                            setFilteredOutcomeBriefsChoices(filteredOutcomeBriefsChoices);
                         }
                     } catch (e) {
                         console.error('Error parsing Outcome_Briefs widget options:', e);
                     }
                 }
             }
-        } catch (e) {
-            console.error('Error fetching outcome choices:', e);
+        } catch (error) {
+            console.error('Error fetching outcome choices:', error);
         }
     };
 
@@ -222,8 +253,69 @@ const CustomerConversationView = ({
         }
     }, [customerId]);
 
+    // Handle linked dropdowns
+    useEffect(() => {
+        if (currentConfig?.outcome?.linkedTo === 'medium' && currentConfig.outcome?.mappings) {
+            const allowedOutcomes = currentConfig.outcome.mappings[medium] || currentConfig.outcome.whitelist;
+            const filtered = outcomeChoices.filter(choice => allowedOutcomes.includes(choice));
+            setFilteredOutcomeChoices(filtered);
+            // If current outcome is not in filtered list, reset to first available or default
+            if (!filtered.includes(outcome)) {
+                const defaultOutcomeFromConfig = currentConfig.outcome.default;
+                if (filtered.includes(defaultOutcomeFromConfig)) {
+                    setOutcome(defaultOutcomeFromConfig);
+                } else if (filtered.length > 0) {
+                    setOutcome(filtered[0]);
+                }
+            }
+        }
+    }, [medium, outcomeChoices, currentConfig]);
+
+    useEffect(() => {
+        if (currentConfig?.outcomeBriefs?.linkedTo === 'outcome' && currentConfig.outcomeBriefs?.mappings) {
+            const allowedBriefs = currentConfig.outcomeBriefs.mappings[outcome] || currentConfig.outcomeBriefs.whitelist;
+            const filtered = outcomeBriefsChoices.filter(choice => allowedBriefs.includes(choice));
+            setFilteredOutcomeBriefsChoices(filtered);
+            // If current outcomeBriefs is not in filtered list, reset it
+            if (outcomeBriefs && !filtered.includes(outcomeBriefs)) {
+                setOutcomeBriefs('');
+            }
+        }
+    }, [outcome, outcomeBriefsChoices, currentConfig]);
+
+    // Control conditional fields based on current config
+    useEffect(() => {
+        const shouldShowOutcomeDate = currentConfig && outcome === 'GIVEN REMINDER DATE';
+        const shouldRequireOutcomeBriefs = currentConfig && outcome === 'NOTIFIED PROBLEM';
+
+        setShowOutcomeDate(shouldShowOutcomeDate);
+        setIsOutcomeBriefsRequired(shouldRequireOutcomeBriefs);
+
+        // Clear the date if it's no longer required
+        if (!shouldShowOutcomeDate) {
+            setNextFollowUp('');
+        }
+
+        // Clear outcome briefs if it's no longer required
+        if (!shouldRequireOutcomeBriefs) {
+            setOutcomeBriefs('');
+        }
+    }, [outcome, currentConfig]);
+
     const handleFormSubmit = async (e) => {
         e.preventDefault();
+
+        // Validate required Outcome Date when "GIVEN REMINDER DATE" is selected
+        if (currentConfig && outcome === 'GIVEN REMINDER DATE' && !nextFollowUp) {
+            setError('Outcome Date is required when "GIVEN REMINDER DATE" outcome is selected.');
+            return;
+        }
+
+        // Validate required Outcome Briefs when "NOTIFIED PROBLEM" is selected
+        if (currentConfig && outcome === 'NOTIFIED PROBLEM' && !outcomeBriefs) {
+            setError('Outcome Briefs is required when "NOTIFIED PROBLEM" outcome is selected.');
+            return;
+        }
 
         // Check if we need to update location
         if (enableLocationUpdate && customerData && (!customerData.Latitude || !customerData.Longitude)) {
@@ -322,11 +414,17 @@ const CustomerConversationView = ({
             showToast('success', 'Conversation saved successfully');
 
             // Reset form to defaults
-            setMedium(mediumChoices.includes(defaultMedium) ? defaultMedium : (mediumChoices.length > 0 ? mediumChoices[0] : 'CALL'));
-            setOutcome(outcomeChoices.includes(defaultOutcome) ? defaultOutcome : (outcomeChoices.length > 0 ? outcomeChoices[0] : 'NOT RESPONDING'));
+            if (currentConfig) {
+                setMedium(currentConfig.medium?.default || defaultMedium);
+                setOutcome(currentConfig.outcome?.default || defaultOutcome);
+            } else {
+                setMedium(mediumChoices.includes(defaultMedium) ? defaultMedium : (mediumChoices.length > 0 ? mediumChoices[0] : 'CALL'));
+                setOutcome(outcomeChoices.includes(defaultOutcome) ? defaultOutcome : (outcomeChoices.length > 0 ? outcomeChoices[0] : 'NOT RESPONDING'));
+            }
+            // Clear conditional fields
             setOutcomeBriefs('');
-            setNotes('');
             setNextFollowUp('');
+            setNotes('');
             fetchHistory(); // Refresh history
 
             setTimeout(() => setSubmitSuccess(false), 3000);
@@ -453,25 +551,30 @@ const CustomerConversationView = ({
                                     onChange={e => setOutcome(e.target.value)}
                                     className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-green-500 outline-none bg-white text-sm"
                                 >
-                                    {outcomeChoices.map(choice => (
+                                    {(currentConfig ? filteredOutcomeChoices : outcomeChoices).map(choice => (
                                         <option key={choice} value={choice}>{choice}</option>
                                     ))}
                                 </select>
                             </div>
 
-                            <div>
-                                <label className="block text-xs font-medium text-slate-700 mb-1">Outcome Briefs <span className="text-slate-400 text-[10px]">(Optional)</span></label>
-                                <select
-                                    value={outcomeBriefs}
-                                    onChange={e => setOutcomeBriefs(e.target.value)}
-                                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-green-500 outline-none bg-white text-sm"
-                                >
-                                    <option value="">-- Select --</option>
-                                    {outcomeBriefsChoices.map(choice => (
-                                        <option key={choice} value={choice}>{choice}</option>
-                                    ))}
-                                </select>
-                            </div>
+                            {isOutcomeBriefsRequired && (
+                                <div>
+                                    <label className="block text-xs font-medium text-slate-700 mb-1">
+                                        Outcome Briefs <span className="text-red-500">*</span>
+                                    </label>
+                                    <select
+                                        value={outcomeBriefs}
+                                        onChange={e => setOutcomeBriefs(e.target.value)}
+                                        required={isOutcomeBriefsRequired}
+                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-green-500 outline-none bg-white text-sm"
+                                    >
+                                        <option value="">-- Select --</option>
+                                        {(currentConfig ? filteredOutcomeBriefsChoices : outcomeBriefsChoices).map(choice => (
+                                            <option key={choice} value={choice}>{choice}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            )}
 
                             <div>
                                 <label className="block text-xs font-medium text-slate-700 mb-1">Notes</label>
@@ -483,15 +586,20 @@ const CustomerConversationView = ({
                                 />
                             </div>
 
-                            <div>
-                                <label className="block text-xs font-medium text-slate-700 mb-1">Outcome Date</label>
-                                <input
-                                    type="date"
-                                    value={nextFollowUp}
-                                    onChange={e => setNextFollowUp(e.target.value)}
-                                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-green-500 outline-none bg-white text-sm"
-                                />
-                            </div>
+                            {showOutcomeDate && (
+                                <div>
+                                    <label className="block text-xs font-medium text-slate-700 mb-1">
+                                        Outcome Date <span className="text-red-500">*</span>
+                                    </label>
+                                    <input
+                                        type="date"
+                                        value={nextFollowUp}
+                                        onChange={e => setNextFollowUp(e.target.value)}
+                                        required={showOutcomeDate}
+                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-green-500 outline-none bg-white text-sm"
+                                    />
+                                </div>
+                            )}
 
                             <Button
                                 type="submit"

@@ -1,0 +1,25 @@
+{
+  "medium": {
+    "whitelist": ["CALL", "WHATSAPP"],
+    "default": "CALL"
+  },
+  "outcome": {
+    "whitelist": ["NOT RESPONDING", "GIVEN REMINDER DATE", "REQUESTED FOR SALESMAN VISIT", "PURCHASING FROM COMPETITION", "NO SHOP IDENTIFIED", "GIVEN NEW ORDER", "NOTIFIED PROBLEM"],
+    "linkedTo": "medium",
+    "default": "NOT RESPONDING"
+  },
+  "outcomeBriefs": {
+    "whitelist": ["COMPLAINED ABOUT SERVICE", "COMPLAINED ABOUT PRODUCT", "REQUESTED FOR DISCOUNT", "REQUESTED FOR RETURN"],
+    "linkedTo": "outcome",
+    "mappings": {
+      "NOT RESPONDING": [],
+      "GIVEN REMINDER DATE": [],
+      "REQUESTED FOR SALESMAN VISIT": [],
+      "PURCHASING FROM COMPETITION": [],
+      "NO SHOP IDENTIFIED": [],
+      "GIVEN NEW ORDER": [],
+      "NOTIFIED PROBLEM": ["COMPLAINED ABOUT SERVICE", "COMPLAINED ABOUT PRODUCT", "REQUESTED FOR DISCOUNT", "REQUESTED FOR RETURN"]
+    },
+    "default": ""
+  }
+}
