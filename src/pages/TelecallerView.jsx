@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Settings, Phone, Loader2, AlertCircle, RefreshCw, IndianRupee, X, User, LogOut, ChevronDown, Calendar } from 'lucide-react';
+import { ArrowLeft, Settings, Phone, Loader2, AlertCircle, RefreshCw, IndianRupee, X, User, LogOut, ChevronDown, ChevronUp, Calendar } from 'lucide-react';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import TelecallerCustomerView from './TelecallerCustomerView';
@@ -93,7 +93,7 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
     const repeatTargets = safeParse(data.Regular_Repeat_Orders_Targets); // Updated field name
     const repeatAchieved = safeParse(data.Regular_Repeat_Orders); // Updated field name
     const repeatEarnings = safeParse(data.Regular_Repeat_Orders_Earnings); // Updated field name
-    const regCustomerEarnings = safeParse(data.Regular_Customer_Orders_Telecaller_Earnings); // NEW field
+
 
     // Section 2: Non-Regular Repeat
     const nonRegEarnings = safeParse(data.Non_Regular_Repeat_Orders_Earnings); // Array of arrays
@@ -114,6 +114,47 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
     const regularRepeatValues = safeParse(data.Regular_Repeat_Orders_Values);
     const nonRegularRepeatValues = safeParse(data.Non_Regular_Repeat_Orders_Values);
 
+    // New Fields for Calculation & Penalties
+    const potentialEarnings = safeParse(data.Potential_Order_Earnings_Breakup);
+    const penaltyRate = data.Penalty_for_Delayed_Regular_Customer || 0;
+    const totalPenalties = data.Total_Penalties || 0;
+    const delayedRegularCustomersPenalties = safeParse(data.Delayed_Regular_Customers_Penalties); // Array
+    const delayedRegularCustomersCount = safeParse(data.Delayed_Regular_Customers); // Array
+
+    // Calculate Gross Earnings (Sum of all earning components)
+    const totalRegularEarnings = repeatEarnings.reduce((a, b) => a + (b || 0), 0);
+    const totalNonRegularEarnings = nonRegEarnings.flat().reduce((a, b) => a + (b || 0), 0);
+    const totalNewEarnings = newOrderEarnings.flat().reduce((a, b) => a + (b || 0), 0);
+    const grossEarnings = totalRegularEarnings + totalNonRegularEarnings + totalNewEarnings;
+
+    // Helper: Get Regular Rate (assuming first bucket [0, rate])
+    const regularRate = potentialEarnings?.REGULAR?.[0]?.[1] || 0;
+
+    // State for collapsible sections
+    const [expandedSections, setExpandedSections] = React.useState({
+        regularRepeat: false,
+        nonRegularRepeat: false,
+        newOrders: false,
+        penalties: false
+    });
+
+    const toggleSection = (section) => {
+        setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
+    };
+
+    const toggleAllSections = () => {
+        const allExpanded = Object.values(expandedSections).every(v => v);
+        const newState = !allExpanded;
+        setExpandedSections({
+            regularRepeat: newState,
+            nonRegularRepeat: newState,
+            newOrders: newState,
+            penalties: newState
+        });
+    };
+
+
+
 
     // Helper Component for Group Earnings Card
     const GroupEarningsCard = ({ groupName, earnings, countsAbove40k, counts20kTo40k, counts5kTo20k, countsBelow5k, totalEarning }) => {
@@ -132,7 +173,7 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
                     <span className="font-semibold text-slate-700 text-sm">{groupName}</span>
                     <span className="font-bold text-green-600 text-sm">₹{totalEarning.toLocaleString('en-IN')}</span>
                 </div>
-                <div className="p-2 grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="p-2 grid grid-cols-4 gap-2">
                     {/* Above 40k */}
                     <div className="bg-green-50 rounded p-1.5 border border-green-100 flex flex-col justify-between">
                         <div className="text-[9px] font-bold text-green-800 uppercase leading-tight mb-1">Above 40k</div>
@@ -231,9 +272,27 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
                             )}
                         </div>
                     </div>
-                    <button onClick={onClose} className="text-slate-400 hover:text-slate-700 bg-white rounded-full p-1 hover:bg-slate-100 transition-colors">
-                        <X size={20} />
-                    </button>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={toggleAllSections}
+                            className="flex items-center gap-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 bg-white px-2 py-1 rounded border border-slate-200 hover:border-slate-300 transition-all"
+                        >
+                            {Object.values(expandedSections).every(v => v) ? (
+                                <>
+                                    <ChevronUp size={14} />
+                                    Collapse All
+                                </>
+                            ) : (
+                                <>
+                                    <ChevronDown size={14} />
+                                    Expand All
+                                </>
+                            )}
+                        </button>
+                        <button onClick={onClose} className="text-slate-400 hover:text-slate-700 bg-white rounded-full p-1 hover:bg-slate-100 transition-colors">
+                            <X size={20} />
+                        </button>
+                    </div>
                 </div>
 
                 <div className="flex-1 overflow-auto p-4 space-y-6 bg-slate-50/50">
@@ -324,129 +383,254 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
 
                     {/* 1. Regular Customer Repeat Order Earnings */}
                     <section>
-                        <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2 uppercase tracking-wider">
-                            <div className="p-1 bg-blue-100 rounded text-blue-600"><RefreshCw size={14} /></div>
-                            Regular Repeat Orders
-                        </h3>
-                        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden shadow-sm">
-                            <div className="overflow-x-auto">
-                                <table className="w-full text-xs text-left whitespace-nowrap">
-                                    <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-100">
-                                        <tr>
-                                            <th className="px-3 py-2">Group</th>
-                                            <th className="px-3 py-2 text-right">Progress</th>
-                                            <th className="px-3 py-2 text-right">Calculation</th>
-                                            <th className="px-3 py-2 text-right">Earning</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-slate-100">
-                                        {areaGroups.map((group, idx) => {
-                                            const target = repeatTargets[idx] || 0;
-                                            const achieved = repeatAchieved[idx] || 0;
-                                            const earning = repeatEarnings[idx] || 0;
-                                            const maxEarning = regCustomerEarnings[idx] || 6000; // Fallback to 6000 if missing
-                                            const groupName = areaGroupNames[group] || `Group ${group}`;
-
-                                            return (
-                                                <tr key={idx} className="hover:bg-slate-50/50">
-                                                    <td className="px-3 py-2.5 font-medium text-slate-700">{groupName}</td>
-                                                    <td className="px-3 py-2.5 text-right">
-                                                        <span className="font-bold text-slate-800">{achieved}</span>
-                                                        <span className="text-slate-400 mx-1">/</span>
-                                                        <span className="text-slate-500">{target}</span>
-                                                    </td>
-                                                    <td className="px-3 py-2.5 text-right text-slate-400 font-mono text-[10px]">
-                                                        ({achieved}/{target}) * {maxEarning}
-                                                    </td>
-                                                    <td className="px-3 py-2.5 text-right font-bold text-green-600">
-                                                        ₹{earning.toLocaleString('en-IN')}
-                                                    </td>
-                                                </tr>
-                                            );
-                                        })}
-                                        <tr className="bg-slate-50 font-bold border-t border-slate-200">
-                                            <td className="px-3 py-2" colSpan={2}>Total</td>
-                                            <td className="px-3 py-2"></td>
-                                            <td className="px-3 py-2 text-right text-green-700">
-                                                ₹{repeatEarnings.reduce((a, b) => a + b, 0).toLocaleString('en-IN')}
-                                            </td>
-                                        </tr>
-                                    </tbody>
-                                </table>
+                        <button
+                            onClick={() => toggleSection('regularRepeat')}
+                            className="w-full text-sm font-bold text-slate-700 mb-3 flex items-center justify-between uppercase tracking-wider hover:bg-slate-50 p-2 rounded transition-colors"
+                        >
+                            <div className="flex items-center gap-2">
+                                <div className="p-1 bg-blue-100 rounded text-blue-600"><RefreshCw size={14} /></div>
+                                Regular Orders
+                                <span className="text-xs font-normal text-slate-500 normal-case">
+                                    ({repeatAchieved.reduce((a, b) => a + (b || 0), 0)}/{repeatTargets.reduce((a, b) => a + (b || 0), 0)})
+                                </span>
                             </div>
-                        </div>
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm font-bold text-blue-600">
+                                    ₹{repeatEarnings.reduce((a, b) => a + (b || 0), 0).toLocaleString('en-IN')}
+                                </span>
+                                {expandedSections.regularRepeat ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                            </div>
+                        </button>
+                        {expandedSections.regularRepeat && (
+                            <div className="bg-white rounded-lg border border-slate-200 overflow-hidden shadow-sm">
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-xs text-left whitespace-nowrap">
+                                        <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-100">
+                                            <tr>
+                                                <th className="px-3 py-2">Group</th>
+                                                <th className="px-3 py-2 text-right">Progress</th>
+                                                <th className="px-3 py-2 text-right">Calculation</th>
+                                                <th className="px-3 py-2 text-right">Earning</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-100">
+                                            {areaGroups.map((group, idx) => {
+                                                const target = repeatTargets[idx] || 0;
+                                                const achieved = repeatAchieved[idx] || 0;
+                                                const earning = repeatEarnings[idx] || 0;
+                                                const groupName = areaGroupNames[group] || `Group ${group}`;
+
+                                                return (
+                                                    <tr key={idx} className="hover:bg-slate-50/50">
+                                                        <td className="px-3 py-2.5 font-medium text-slate-700">{groupName}</td>
+                                                        <td className="px-3 py-2.5 text-right">
+                                                            <span className="font-bold text-slate-800">{achieved}</span>
+                                                            <span className="text-slate-400 mx-1">/</span>
+                                                            <span className="text-slate-500">{target}</span>
+                                                        </td>
+                                                        <td className="px-3 py-2.5 text-right text-slate-400 font-mono text-[10px]">
+                                                            {achieved} * ₹{regularRate}
+                                                        </td>
+                                                        <td className="px-3 py-2.5 text-right font-bold text-green-600">
+                                                            ₹{earning.toLocaleString('en-IN')}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                            <tr className="bg-slate-50 font-bold border-t border-slate-200">
+                                                <td className="px-3 py-2" colSpan={2}>Total</td>
+                                                <td className="px-3 py-2"></td>
+                                                <td className="px-3 py-2 text-right text-green-700">
+                                                    ₹{repeatEarnings.reduce((a, b) => a + b, 0).toLocaleString('en-IN')}
+                                                </td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
                     </section>
 
                     {/* 2. Non Regular Repeat Order Earnings */}
                     <section>
-                        <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2 uppercase tracking-wider">
-                            <div className="p-1 bg-purple-100 rounded text-purple-600"><RefreshCw size={14} /></div>
-                            Non-Regular Repeat Orders
-                        </h3>
-                        <div className="space-y-3">
-                            {areaGroups.map((group, idx) => {
-                                const groupName = areaGroupNames[group] || `Group ${group}`;
-                                const earnings = nonRegEarnings[idx] || [0, 0, 0, 0];
-
-
-                                return (
-                                    <GroupEarningsCard
-                                        key={idx}
-                                        groupName={groupName}
-                                        earnings={earnings}
-                                        countsAbove40k={nonRegAbove40k[idx] || 0}
-                                        counts20kTo40k={nonReg20kTo40k[idx] || 0}
-                                        counts5kTo20k={nonReg5kTo20k[idx] || 0}
-                                        countsBelow5k={nonRegBelow5k[idx] || 0}
-                                        totalEarning={earnings.reduce((a, b) => a + b, 0)}
-                                    />
-                                );
-                            })}
-                            <div className="text-right font-bold text-slate-700 text-xs mt-2">
-                                Total Non-Regular: <span className="text-green-600">₹{nonRegEarnings.flat().reduce((a, b) => a + b, 0).toLocaleString('en-IN')}</span>
+                        <button
+                            onClick={() => toggleSection('nonRegularRepeat')}
+                            className="w-full text-sm font-bold text-slate-700 mb-3 flex items-center justify-between uppercase tracking-wider hover:bg-slate-50 p-2 rounded transition-colors"
+                        >
+                            <div className="flex items-center gap-2">
+                                <div className="p-1 bg-purple-100 rounded text-purple-600"><RefreshCw size={14} /></div>
+                                Non-Regular Orders
                             </div>
-                        </div>
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm font-bold text-purple-600">
+                                    ₹{nonRegEarnings.flat().reduce((a, b) => a + (b || 0), 0).toLocaleString('en-IN')}
+                                </span>
+                                {expandedSections.nonRegularRepeat ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                            </div>
+                        </button>
+                        {expandedSections.nonRegularRepeat && (
+                            <div className="space-y-3">
+                                {areaGroups.map((group, idx) => {
+                                    const groupName = areaGroupNames[group] || `Group ${group}`;
+                                    const earnings = nonRegEarnings[idx] || [0, 0, 0, 0];
+
+
+                                    return (
+                                        <GroupEarningsCard
+                                            key={idx}
+                                            groupName={groupName}
+                                            earnings={earnings}
+                                            countsAbove40k={nonRegAbove40k[idx] || 0}
+                                            counts20kTo40k={nonReg20kTo40k[idx] || 0}
+                                            counts5kTo20k={nonReg5kTo20k[idx] || 0}
+                                            countsBelow5k={nonRegBelow5k[idx] || 0}
+                                            totalEarning={earnings.reduce((a, b) => a + b, 0)}
+                                        />
+                                    );
+                                })}
+                            </div>
+                        )}
                     </section>
 
                     {/* 3. New Order Earnings */}
                     <section>
-                        <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2 uppercase tracking-wider">
-                            <div className="p-1 bg-green-100 rounded text-green-600"><Phone size={14} /></div>
-                            New Orders
-                        </h3>
-                        <div className="space-y-3">
-                            {areaGroups.map((group, idx) => {
-                                const groupName = areaGroupNames[group] || `Group ${group}`;
-                                const earnings = newOrderEarnings[idx] || [0, 0, 0, 0];
-
-                                return (
-                                    <GroupEarningsCard
-                                        key={idx}
-                                        groupName={groupName}
-                                        earnings={earnings}
-                                        countsAbove40k={newOrdersAbove40k[idx] || 0}
-                                        counts20kTo40k={newOrders20kTo40k[idx] || 0}
-                                        counts5kTo20k={newOrders5kTo20k[idx] || 0}
-                                        countsBelow5k={newOrdersBelow5k[idx] || 0}
-                                        totalEarning={earnings.reduce((a, b) => a + b, 0)}
-                                    />
-                                );
-                            })}
-                            <div className="text-right font-bold text-slate-700 text-xs mt-2">
-                                Total New: <span className="text-green-600">₹{newOrderEarnings.flat().reduce((a, b) => a + b, 0).toLocaleString('en-IN')}</span>
+                        <button
+                            onClick={() => toggleSection('newOrders')}
+                            className="w-full text-sm font-bold text-slate-700 mb-3 flex items-center justify-between uppercase tracking-wider hover:bg-slate-50 p-2 rounded transition-colors"
+                        >
+                            <div className="flex items-center gap-2">
+                                <div className="p-1 bg-green-100 rounded text-green-600"><Phone size={14} /></div>
+                                New Orders
                             </div>
-                        </div>
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm font-bold text-green-600">
+                                    ₹{newOrderEarnings.flat().reduce((a, b) => a + (b || 0), 0).toLocaleString('en-IN')}
+                                </span>
+                                {expandedSections.newOrders ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                            </div>
+                        </button>
+                        {expandedSections.newOrders && (
+                            <div className="space-y-3">
+                                {areaGroups.map((group, idx) => {
+                                    const groupName = areaGroupNames[group] || `Group ${group}`;
+                                    const earnings = newOrderEarnings[idx] || [0, 0, 0, 0];
+
+                                    return (
+                                        <GroupEarningsCard
+                                            key={idx}
+                                            groupName={groupName}
+                                            earnings={earnings}
+                                            countsAbove40k={newOrdersAbove40k[idx] || 0}
+                                            counts20kTo40k={newOrders20kTo40k[idx] || 0}
+                                            counts5kTo20k={newOrders5kTo20k[idx] || 0}
+                                            countsBelow5k={newOrdersBelow5k[idx] || 0}
+                                            totalEarning={earnings.reduce((a, b) => a + b, 0)}
+                                        />
+                                    );
+                                })}
+                            </div>
+                        )}
                     </section>
 
-                    {/* Grand Total */}
-                    <div className="flex justify-between items-center bg-slate-800 text-white p-4 rounded-lg shadow-md mt-4">
-                        <span className="text-lg font-medium">Total Monthly Earnings</span>
-                        <span className="text-2xl font-bold">₹{data.Total_Earnings?.toLocaleString('en-IN')}</span>
+                    {/* 4. Delayed Orders */}
+                    <section>
+                        <button
+                            onClick={() => toggleSection('penalties')}
+                            className="w-full text-sm font-bold text-slate-700 mb-3 flex items-center justify-between uppercase tracking-wider hover:bg-slate-50 p-2 rounded transition-colors"
+                        >
+                            <div className="flex items-center gap-2">
+                                <div className="p-1 bg-red-100 rounded text-red-600"><AlertCircle size={14} /></div>
+                                Delayed Orders
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm font-bold text-red-600">
+                                    {totalPenalties < 0 ? `-₹${Math.abs(totalPenalties).toLocaleString('en-IN')}` : `₹${totalPenalties.toLocaleString('en-IN')}`}
+                                </span>
+                                {expandedSections.penalties ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                            </div>
+                        </button>
+                        {expandedSections.penalties && (
+                            <div className="bg-white rounded-lg border border-slate-200 overflow-hidden shadow-sm">
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-xs text-left whitespace-nowrap">
+                                        <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-100">
+                                            <tr>
+                                                <th className="px-2 py-2">Group</th>
+                                                <th className="px-2 py-2 text-right">
+                                                    <div className="text-[10px]">Customers</div>
+                                                    <div className="text-[10px]">(&gt;3M)</div>
+                                                </th>
+                                                <th className="px-2 py-2 text-right text-[10px]">Calculation</th>
+                                                <th className="px-2 py-2 text-right text-[10px]">Penalty</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-100">
+                                            {areaGroups.map((group, idx) => {
+                                                const groupName = areaGroupNames[group] || `Group ${group}`;
+                                                const count = delayedRegularCustomersCount[idx] || 0;
+                                                const penaltyAmount = delayedRegularCustomersPenalties[idx] || 0; // Negative value
+
+                                                if (count === 0 && penaltyAmount === 0) return null;
+
+                                                return (
+                                                    <tr key={idx} className="hover:bg-slate-50/50">
+                                                        <td className="px-2 py-2 font-medium text-slate-700">{groupName}</td>
+                                                        <td className="px-2 py-2 text-right text-slate-800">{count}</td>
+                                                        <td className="px-2 py-2 text-right text-slate-400 font-mono text-[9px]">
+                                                            {count} * {penaltyRate < 0 ? `-₹${Math.abs(penaltyRate)}` : `₹${penaltyRate}`}
+                                                        </td>
+                                                        <td className="px-2 py-2 text-right font-bold text-red-600">
+                                                            {/* Amount is already negative */}
+                                                            {penaltyAmount < 0 ? `-₹${Math.abs(penaltyAmount).toLocaleString('en-IN')}` : `₹${penaltyAmount.toLocaleString('en-IN')}`}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                            <tr className="bg-slate-50 font-bold border-t border-slate-200">
+                                                <td className="px-2 py-2" colSpan={2}>Total Penalties</td>
+                                                <td className="px-2 py-2"></td>
+                                                <td className="px-2 py-2 text-right text-red-700">
+                                                    {totalPenalties < 0 ? `-₹${Math.abs(totalPenalties).toLocaleString('en-IN')}` : `₹${totalPenalties.toLocaleString('en-IN')}`}
+                                                </td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+                    </section>
+
+                    {/* Grand Total Breakdown */}
+                    <div className="bg-white border border-slate-200 rounded-lg shadow-sm p-4 space-y-2">
+                        <div className="flex justify-between items-center text-sm">
+                            <span className="text-slate-600">Gross Earnings</span>
+                            <span className="font-bold text-slate-800">₹{grossEarnings.toLocaleString('en-IN')}</span>
+                        </div>
+                        <div className="flex justify-between items-center text-sm">
+                            <span className="text-red-600">Less: Penalties</span>
+                            <span className="font-bold text-red-600">
+                                {/* totalPenalties is negative, so just display it. Adding 'Less:' label makes it clear it's a deduction, 
+                                     but math-wise we want to show the negative number or absolute? 
+                                     User screenshot showed "-₹-5,100". 
+                                     Standard accounting: "Less: Penalties   (5,100)" or just "- ₹5,100" 
+                                     Since totalPenalties is negative, `Total: -5100`. 
+                                     Let's just show the value as is, which interprets to negative.
+                                 */}
+                                {totalPenalties < 0 ? `-₹${Math.abs(totalPenalties).toLocaleString('en-IN')}` : `₹${totalPenalties.toLocaleString('en-IN')}`}
+                            </span>
+                        </div>
+                        <div className="flex justify-between items-center pt-2 border-t border-slate-200 mt-2">
+                            <span className="text-base font-bold text-slate-800">Net Payable</span>
+                            <span className="text-xl font-bold text-green-600">
+                                {/* Gross (positive) + Penalties (negative) = Net */}
+                                {(grossEarnings + totalPenalties) < 0 ? `-₹${Math.abs(grossEarnings + totalPenalties).toLocaleString('en-IN')}` : `₹${(grossEarnings + totalPenalties).toLocaleString('en-IN')}`}
+                            </span>
+                        </div>
                     </div>
 
                 </div>
-            </div>
-        </div>
+            </div >
+        </div >
     );
 };
 
@@ -499,12 +683,18 @@ const TelecallerView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) 
 
         const headers = await getHeaders();
         const sqlQuery = `
-SELECT *
-    FROM Telecaller_Salaries ts
-        JOIN Team t ON t.id = ts.Telecaller
-        WHERE Month = ?
-    AND t.Email = ?
-        `;
+SELECT 
+    *,
+    Potential_Order_Earnings_Breakup,
+    Penalty_for_Delayed_Regular_Customer,
+    Total_Penalties,
+    Delayed_Regular_Customers_Penalties,
+    Delayed_Regular_Customers
+FROM Telecaller_Salaries ts
+    JOIN Team t ON t.id = ts.Telecaller
+    WHERE Month = ?
+AND t.Email = ?
+`;
 
         const url = getUrl(`/api/docs/${DOC_ID}/sql`);
         const response = await fetch(url, {
@@ -774,24 +964,53 @@ SELECT *
                     >
                         <div className="p-3 flex flex-wrap items-center gap-2">
                             {/* Main Salary - Full width on very small, auto on larger */}
-                            <div className="flex items-center gap-2 mr-auto">
-                                <div className="bg-white/20 p-1.5 rounded-lg">
-                                    <IndianRupee size={18} className="text-white" />
+                            <div className="flex items-center gap-3 mr-auto">
+                                {/* Earnings - More Prominent with Green */}
+                                <div className="flex items-center gap-2 bg-green-500/20 px-2 py-1.5 rounded-lg border border-green-400/30">
+                                    <div className="bg-green-500/30 p-1.5 rounded-lg">
+                                        <IndianRupee size={20} className="text-green-100" />
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] text-green-100 leading-none mb-0.5 flex items-center gap-1">
+                                            Earnings <span className="bg-green-500/20 px-1 rounded text-[8px]">{currentMonth}</span>
+                                        </p>
+                                        <p className="font-bold text-xl leading-none text-green-50">
+                                            {loadingSalary ? (
+                                                <span className="animate-pulse">...</span>
+                                            ) : salaryData ? (
+                                                (salaryData.Total_Earnings || 0).toLocaleString('en-IN')
+                                            ) : (
+                                                "0"
+                                            )}
+                                        </p>
+                                    </div>
                                 </div>
-                                <div>
-                                    <p className="text-[10px] text-blue-100 leading-none mb-0.5 flex items-center gap-1">
-                                        Salary <span className="bg-white/20 px-1 rounded text-[8px]">{currentMonth}</span>
-                                    </p>
-                                    <p className="font-bold text-lg leading-none">
-                                        {loadingSalary ? (
-                                            <span className="animate-pulse">...</span>
-                                        ) : salaryData ? (
-                                            salaryData.Total_Earnings?.toLocaleString('en-IN') || 0
-                                        ) : (
-                                            "0"
-                                        )}
-                                    </p>
-                                </div>
+
+                                {/* Penalties - Next to Earnings, Less Prominent */}
+                                {salaryData && (salaryData.Total_Penalties !== 0) && (() => {
+                                    try {
+                                        const delayedCounts = typeof salaryData.Delayed_Regular_Customers === 'string'
+                                            ? JSON.parse(salaryData.Delayed_Regular_Customers)
+                                            : (salaryData.Delayed_Regular_Customers || []);
+                                        const totalDelayed = Array.isArray(delayedCounts)
+                                            ? delayedCounts.reduce((a, b) => a + (Number(b) || 0), 0)
+                                            : 0;
+
+                                        return (
+                                            <div className="flex items-center gap-1.5">
+                                                <div className="bg-red-500/10 p-1 rounded">
+                                                    <AlertCircle size={14} className="text-red-200" />
+                                                </div>
+                                                <div>
+                                                    <p className="text-[9px] text-red-100/70 leading-none mb-0.5">Penalties</p>
+                                                    <p className="font-bold text-sm leading-none text-red-100">
+                                                        {(salaryData.Total_Penalties || 0) < 0 ? `-₹${Math.abs(salaryData.Total_Penalties || 0).toLocaleString('en-IN')}` : `₹${(salaryData.Total_Penalties || 0).toLocaleString('en-IN')}`}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        );
+                                    } catch (e) { return null; }
+                                })()}
                             </div>
 
                             {/* Total Orders Value - Highlighted Top Right */}
@@ -826,6 +1045,30 @@ SELECT *
                                         );
                                     } catch (e) { return null; }
                                 })()}
+
+                                {/* Delayed Customers - Subtle red chip next to REG */}
+                                {salaryData && (() => {
+                                    try {
+                                        const delayedCounts = typeof salaryData.Delayed_Regular_Customers === 'string'
+                                            ? JSON.parse(salaryData.Delayed_Regular_Customers)
+                                            : (salaryData.Delayed_Regular_Customers || []);
+                                        const totalDelayed = Array.isArray(delayedCounts)
+                                            ? delayedCounts.reduce((a, b) => a + (Number(b) || 0), 0)
+                                            : 0;
+
+                                        if (totalDelayed === 0) return null;
+
+                                        return (
+                                            <div className="bg-red-500/10 px-2 py-1 rounded border border-red-400/10 flex items-center gap-1.5">
+                                                <span className="text-[10px] text-red-100/60 uppercase tracking-wider font-bold">!</span>
+                                                <span className="font-bold text-sm text-red-100/80">
+                                                    {totalDelayed}
+                                                </span>
+                                            </div>
+                                        );
+                                    } catch (e) { return null; }
+                                })()}
+
 
                                 <div className="flex items-center gap-2 ml-auto">
                                     {/* Non-Reg Chip */}
