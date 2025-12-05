@@ -38,6 +38,145 @@ const Select = ({ label, value, onChange, options, placeholder, disabled = false
   </div>
 );
 
+// Helper to parse Roles (handles Grist list formats)
+const parseRoles = (rolesVal) => {
+  if (!rolesVal) return [];
+  if (Array.isArray(rolesVal)) {
+    // Check if it's a Grist ['L', ...] list
+    if (rolesVal[0] === 'L') return rolesVal.slice(1);
+    return rolesVal;
+  }
+  if (typeof rolesVal === 'string') {
+    try {
+      const parsed = JSON.parse(rolesVal);
+      if (Array.isArray(parsed)) {
+        if (parsed[0] === 'L') return parsed.slice(1);
+        return parsed;
+      }
+      return [rolesVal];
+    } catch (e) {
+      return [rolesVal];
+    }
+  }
+  return [];
+};
+
+const UserImpersonationSelect = ({ value, onChange, options, loading, placeholder }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const dropdownRef = React.useRef(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const selectedOption = options.find(opt => opt.Email === value);
+
+  const filteredOptions = options.filter(opt =>
+    opt.Name.toLowerCase().includes(search.toLowerCase()) ||
+    opt.Email.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div className="relative" ref={dropdownRef}>
+      <div
+        onClick={() => !loading && setIsOpen(!isOpen)}
+        className={`w-full px-3 py-2 border border-slate-300 rounded-lg bg-white flex items-center justify-between cursor-pointer transition-all ${isOpen ? 'ring-2 ring-blue-500 border-blue-500' : 'hover:border-slate-400'} ${loading ? 'opacity-70 cursor-not-allowed' : ''}`}
+      >
+        <div className="flex-1 min-w-0">
+          {selectedOption ? (
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-xs font-bold shrink-0">
+                {selectedOption.Name.charAt(0).toUpperCase()}
+              </div>
+              <div className="truncate">
+                <span className="font-medium text-slate-900 mr-2">{selectedOption.Name}</span>
+                <span className="text-xs text-slate-500 hidden sm:inline">({selectedOption.Email})</span>
+              </div>
+            </div>
+          ) : (
+            <span className="text-slate-500">{loading ? "Loading members..." : placeholder}</span>
+          )}
+        </div>
+        <div className="ml-2 text-slate-400 shrink-0">
+          {loading ? <Loader2 size={16} className="animate-spin" /> : <svg className={`w-4 h-4 transition-transform ${isOpen ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" /></svg>}
+        </div>
+      </div>
+
+      {isOpen && (
+        <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-xl max-h-80 overflow-hidden flex flex-col">
+          <div className="p-2 border-b border-slate-100 sticky top-0 bg-white">
+            <div className="relative">
+              <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search users..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full pl-8 pr-3 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                autoFocus
+              />
+            </div>
+          </div>
+
+          <div className="overflow-y-auto flex-1 p-1">
+            {filteredOptions.length === 0 ? (
+              <div className="p-3 text-center text-sm text-slate-500">No users found</div>
+            ) : (
+              filteredOptions.map((member) => {
+                const roles = parseRoles(member.Roles);
+                return (
+                  <div
+                    key={member.Email}
+                    onClick={() => {
+                      onChange(member.Email);
+                      setIsOpen(false);
+                      setSearch('');
+                    }}
+                    className={`p-2 rounded-md cursor-pointer flex items-start gap-3 transition-colors ${value === member.Email ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
+                  >
+                    <div className="mt-0.5 w-8 h-8 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center font-bold shrink-0 border border-slate-200">
+                      {member.Name.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className={`font-medium truncate ${value === member.Email ? 'text-blue-700' : 'text-slate-900'}`}>{member.Name}</p>
+                      </div>
+                      <p className="text-xs text-slate-500 truncate">{member.Email}</p>
+
+                      {roles.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1.5">
+                          {roles.map((role, idx) => (
+                            <span key={idx} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-700 border border-purple-200">
+                              {role}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {value === member.Email && (
+                      <div className="mt-2 text-blue-600">
+                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 
 
 // Settings Modal Component
@@ -87,21 +226,13 @@ const SettingsModal = ({ onClose, user, onLogout, impersonateEmail, setImpersona
           </div>
         )}
 
-        <select
+        <UserImpersonationSelect
           value={impersonateEmail}
-          onChange={(e) => setImpersonateEmail(e.target.value)}
-          disabled={loadingTeamMembers}
-          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none disabled:bg-slate-100 disabled:text-slate-500 appearance-none bg-white mb-2"
-        >
-          <option value="">
-            {loadingTeamMembers ? 'Loading members...' : 'Select a team member...'}
-          </option>
-          {teamMembers.map((member) => (
-            <option key={member.Email} value={member.Email}>
-              {member.Name} ({member.Email})
-            </option>
-          ))}
-        </select>
+          onChange={setImpersonateEmail}
+          options={teamMembers}
+          loading={loadingTeamMembers}
+          placeholder="Select a team member..."
+        />
 
         {impersonateEmail && (
           <button
@@ -2102,7 +2233,7 @@ export default function App() {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sql: "SELECT id, Name, Email FROM Team WHERE Email != ''",
+          sql: "SELECT id, Name, Email, Roles FROM Team WHERE Email != ''",
           args: []
         })
       });
@@ -2110,6 +2241,8 @@ export default function App() {
       if (response.ok) {
         const data = await response.json();
         const members = data.records.map(r => r.fields);
+        // Sort by Name
+        members.sort((a, b) => (a.Name || '').localeCompare(b.Name || ''));
         setTeamMembers(members);
       }
     } catch (e) {
