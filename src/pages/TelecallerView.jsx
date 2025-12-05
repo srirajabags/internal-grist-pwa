@@ -660,7 +660,11 @@ const TelecallerView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) 
     const [selectedAreaGroup, setSelectedAreaGroup] = useState('');
     const [selectedSalesStatus, setSelectedSalesStatus] = useState('');
     const [showSalaryModal, setShowSalaryModal] = useState(false);
-    const [showSettings, setShowSettings] = useState(false);
+    const [selectedMonthTimestamp, setSelectedMonthTimestamp] = useState(null);
+
+    // Penalty tooltip state for mobile
+    const [showPenaltyTooltip, setShowPenaltyTooltip] = useState(false);
+    const longPressTimer = useRef(null);
     const [selectedCustomerId, setSelectedCustomerId] = useState(null);
     const [error, setError] = useState(null);
 
@@ -926,6 +930,23 @@ AND t.Email = ?
         return groupMatch && statusMatch;
     });
 
+    // Penalty tooltip handlers
+    const handlePenaltyTouchStart = () => {
+        longPressTimer.current = setTimeout(() => {
+            setShowPenaltyTooltip(true);
+        }, 500); // 500ms long press
+    };
+
+    const handlePenaltyTouchEnd = () => {
+        if (longPressTimer.current) {
+            clearTimeout(longPressTimer.current);
+        }
+        // Hide tooltip after 2 seconds
+        if (showPenaltyTooltip) {
+            setTimeout(() => setShowPenaltyTooltip(false), 2000);
+        }
+    };
+
     return (
         <div className="min-h-screen bg-slate-50 flex flex-col">
             {/* Header */}
@@ -956,7 +977,7 @@ AND t.Email = ?
                     </div>
 
                     {/* Salary Section (Moved here) */}
-                    <Card className="bg-gradient-to-r from-blue-600 to-blue-700 text-white border-none cursor-pointer hover:shadow-lg transition-shadow"
+                    <Card className="bg-gradient-to-r from-blue-600 to-blue-700 text-white border-none cursor-pointer hover:shadow-lg transition-shadow overflow-visible"
                         onClick={() => {
                             console.log("Salary Card Clicked. Data:", salaryData);
                             setShowSalaryModal(true);
@@ -997,17 +1018,47 @@ AND t.Email = ?
                                             : 0;
 
                                         return (
-                                            <div className="flex items-center gap-1.5">
-                                                <div className="bg-red-500/10 p-1 rounded">
-                                                    <AlertCircle size={14} className="text-red-200" />
+                                            <>
+                                                {/* Desktop: Show full penalties */}
+                                                <div className="hidden md:flex items-center gap-1.5">
+                                                    <div className="bg-red-500/10 p-1 rounded">
+                                                        <AlertCircle size={14} className="text-red-200" />
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-[9px] text-red-100/70 leading-none mb-0.5">Penalties</p>
+                                                        <p className="font-bold text-sm leading-none text-red-100">
+                                                            {(salaryData.Total_Penalties || 0) < 0 ? `-₹${Math.abs(salaryData.Total_Penalties || 0).toLocaleString('en-IN')}` : `₹${(salaryData.Total_Penalties || 0).toLocaleString('en-IN')}`}
+                                                        </p>
+                                                    </div>
                                                 </div>
-                                                <div>
-                                                    <p className="text-[9px] text-red-100/70 leading-none mb-0.5">Penalties</p>
-                                                    <p className="font-bold text-sm leading-none text-red-100">
-                                                        {(salaryData.Total_Penalties || 0) < 0 ? `-₹${Math.abs(salaryData.Total_Penalties || 0).toLocaleString('en-IN')}` : `₹${(salaryData.Total_Penalties || 0).toLocaleString('en-IN')}`}
-                                                    </p>
+
+                                                {/* Mobile: Show icon with long-press tooltip */}
+                                                <div className="md:hidden relative">
+                                                    <div
+                                                        className="bg-white/90 p-1.5 rounded-full cursor-pointer shadow-sm"
+                                                        onTouchStart={handlePenaltyTouchStart}
+                                                        onTouchEnd={handlePenaltyTouchEnd}
+                                                        onMouseDown={handlePenaltyTouchStart}
+                                                        onMouseUp={handlePenaltyTouchEnd}
+                                                        onMouseLeave={handlePenaltyTouchEnd}
+                                                    >
+                                                        <AlertCircle size={16} className="text-red-500" />
+                                                    </div>
+                                                    {showPenaltyTooltip && (
+                                                        <div className="absolute top-full left-1/2 transform -translate-x-1/2 mt-2 bg-white text-slate-800 px-3 py-2 rounded-lg shadow-2xl border border-slate-200 whitespace-nowrap z-[9999]">
+                                                            <div className="text-[10px] text-slate-500 mb-1">Penalties</div>
+                                                            <div className="font-bold text-base text-red-600">
+                                                                {(salaryData.Total_Penalties || 0) < 0 ? `-₹${Math.abs(salaryData.Total_Penalties || 0).toLocaleString('en-IN')}` : `₹${(salaryData.Total_Penalties || 0).toLocaleString('en-IN')}`}
+                                                            </div>
+                                                            {totalDelayed > 0 && (
+                                                                <div className="text-[9px] text-slate-400 mt-1">{totalDelayed} delayed</div>
+                                                            )}
+                                                            {/* Tooltip arrow pointing up */}
+                                                            <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-b-4 border-transparent border-b-white"></div>
+                                                        </div>
+                                                    )}
                                                 </div>
-                                            </div>
+                                            </>
                                         );
                                     } catch (e) { return null; }
                                 })()}
