@@ -58,7 +58,7 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
                 JOIN Area_Groups ag ON ag.id = c.Area_Group 
                 WHERE Responsible_Sales_Team = 'SALESMAN' 
                 AND (ag.Salesman LIKE '%[${teamId}]%' OR ag.Salesman LIKE '%[${teamId},%' OR ag.Salesman LIKE '%,${teamId}]%' OR ag.Salesman LIKE '%,${teamId},%')
-                LIMIT 50
+                ORDER BY c.TEMP_FALLBACK_SALES_CATEGORY desc
             `;
 
             const response = await fetch(url, {
