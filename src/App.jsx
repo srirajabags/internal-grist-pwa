@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users } from 'lucide-react';
 import SqlVisualization from './components/SqlVisualization';
@@ -2167,6 +2167,7 @@ export default function App() {
   const navigate = useNavigate();
   const [teamId, setTeamId] = useState(null);
   const [loadingTeamId, setLoadingTeamId] = useState(false);
+  const hasAttemptedFetch = useRef(false);
 
   // Global impersonation state
   // Global impersonation state
@@ -2190,6 +2191,13 @@ export default function App() {
           id: impersonatedMember.id, // Ensure ID is available
           picture: user.picture, // Keep original picture or use placeholder if available
           originalUser: user // Keep reference to original user
+        };
+      } else {
+        console.warn('Impersonated member not found in teamMembers:', impersonateEmail);
+        // Fall back to original user if impersonated member not found
+        return {
+          ...user,
+          id: teamId // Add the fetched teamId to the user object
         };
       }
     }
@@ -2220,6 +2228,13 @@ export default function App() {
     } else {
       localStorage.removeItem('impersonateEmail');
     }
+  }, [impersonateEmail]);
+
+  // Clear teamId when impersonation changes to force re-fetch
+  useEffect(() => {
+    console.log('Impersonation changed, clearing teamId');
+    setTeamId(null);
+    hasAttemptedFetch.current = false; // Reset fetch attempt flag
   }, [impersonateEmail]);
 
   // Fetch team members for impersonation dropdown
@@ -2279,22 +2294,40 @@ export default function App() {
 
   // Fetch Team ID for the logged-in user
   const fetchTeamId = async () => {
-    console.log('fetchTeamId called, user email:', user?.email, 'current teamId:', teamId);
-    if (!user?.email || teamId) return; // Skip if already fetched
+    // Use impersonated email if active, otherwise use original user email
+    const emailToUse = impersonateEmail || user?.email;
+    console.log('fetchTeamId called, user email:', user?.email, 'impersonateEmail:', impersonateEmail, 'emailToUse:', emailToUse, 'current teamId:', teamId, 'loadingTeamId:', loadingTeamId);
+    
+    // Multiple guards to prevent multiple calls
+    if (!emailToUse) {
+      console.log('Skipping fetchTeamId - no email');
+      return; 
+    }
+    
+    if (teamId) {
+      console.log('Skipping fetchTeamId - teamId already set:', teamId);
+      return; // Skip if already fetched
+    }
+    
+    if (loadingTeamId) {
+      console.log('Skipping fetchTeamId - already loading');
+      return; // Skip if already loading
+    }
 
     setLoadingTeamId(true);
+    
     try {
       const headers = await getHeaders();
       const DOC_ID = '8vRFY3UUf4spJroktByH4u';
       const url = getUrl(`/api/docs/${DOC_ID}/sql`);
 
-      console.log('Fetching Team ID for email:', user.email);
+      console.log('Fetching Team ID for email:', emailToUse);
       const response = await fetch(url, {
         method: 'POST',
         headers: headers,
         body: JSON.stringify({
           sql: 'SELECT id FROM Team WHERE Email = ?',
-          args: [user.email]
+          args: [emailToUse]
         })
       });
 
@@ -2305,27 +2338,78 @@ export default function App() {
           const id = data.records[0].fields.id;
           setTeamId(id);
           console.log('Team ID fetched and set:', id);
+          hasAttemptedFetch.current = true; // Mark as completed
+          return; // Success, exit
         } else {
-          console.warn('No Team record found for user:', user.email);
+          console.warn('No Team record found for user:', emailToUse);
         }
       } else {
         const errorText = await response.text();
         console.error('Team ID fetch failed:', response.status, errorText);
+        
+        // If this is an impersonation error and we're impersonating, try to fall back to original user
+        if (impersonateEmail && errorText.includes('Impersonated user not found or not authorized')) {
+          console.log('Impersonation failed, trying with original user email:', user?.email);
+          
+          // Only try fallback if we haven't already tried it for this session
+          const fallbackKey = `fallback_attempted_${user?.email}_${impersonateEmail}`;
+          if (!sessionStorage.getItem(fallbackKey)) {
+            sessionStorage.setItem(fallbackKey, 'true');
+            
+            // Try with original user email
+            if (user?.email && user.email !== emailToUse) {
+              console.log('Attempting fallback fetch...');
+              const fallbackResponse = await fetch(url, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify({
+                  sql: 'SELECT id FROM Team WHERE Email = ?',
+                  args: [user.email]
+                })
+              });
+              
+              if (fallbackResponse.ok) {
+                const fallbackData = await fallbackResponse.json();
+                if (fallbackData.records && fallbackData.records.length > 0) {
+                  const id = fallbackData.records[0].fields.id;
+                  setTeamId(id);
+                  console.log('Team ID fetched and set (fallback):', id);
+                  hasAttemptedFetch.current = true; // Mark as completed
+                  return; // Success with fallback, exit
+                }
+              } else {
+                console.error('Fallback fetch also failed:', await fallbackResponse.text());
+              }
+            }
+          } else {
+            console.log('Fallback already attempted for this session, skipping');
+          }
+        }
       }
     } catch (e) {
       console.error('Error fetching Team ID:', e);
     } finally {
       setLoadingTeamId(false);
+      console.log('fetchTeamId completed, loadingTeamId set to false');
     }
   };
 
-  // Fetch Team ID when user authenticates
+  // Fetch Team ID when user authenticates or impersonation changes
   useEffect(() => {
-    if (isAuthenticated && user?.email && !teamId && !loadingTeamId) {
-      console.log('Triggering fetchTeamId from useEffect');
-      fetchTeamId();
-    }
-  }, [isAuthenticated, user, teamId, loadingTeamId]);
+    // Reset fetch attempt flag when user or impersonation changes
+    hasAttemptedFetch.current = false;
+    
+    // Add debouncing to prevent rapid successive calls
+    const timeoutId = setTimeout(() => {
+      if (isAuthenticated && user?.email && !teamId && !loadingTeamId && !hasAttemptedFetch.current) {
+        console.log('Triggering fetchTeamId from useEffect');
+        hasAttemptedFetch.current = true;
+        fetchTeamId();
+      }
+    }, 1000); // Even longer debounce time
+    
+    return () => clearTimeout(timeoutId);
+  }, [isAuthenticated, user?.email, impersonateEmail]); // Removed teamId and loadingTeamId from dependencies
 
   // Fetch team members when authenticated
   useEffect(() => {
