@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Routes, Route, useNavigate } from 'react-router-dom';
+import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users } from 'lucide-react';
 import SqlVisualization from './components/SqlVisualization';
 import DashboardList from './components/DashboardList';
 import DashboardView from './components/DashboardView';
 import Card from './components/Card';
 import Button from './components/Button';
+import Console from './components/Console';
 import { useAuth0 } from '@auth0/auth0-react';
 
 // Get server URL from environment
@@ -183,7 +184,7 @@ const UserImpersonationSelect = ({ value, onChange, options, loading, placeholde
 
 
 // Settings Modal Component
-const SettingsModal = ({ onClose, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers }) => (
+const SettingsModal = ({ onClose, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers, showConsole, setShowConsole }) => (
   <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={onClose}>
     <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
       <div className="flex items-center justify-between mb-4">
@@ -251,6 +252,24 @@ const SettingsModal = ({ onClose, user, onLogout, impersonateEmail, setImpersona
         </p>
       </div>
 
+      {/* Console Settings Section */}
+      <div className="mb-4 p-4 bg-slate-50 rounded-lg border border-slate-200">
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={showConsole}
+            onChange={(e) => setShowConsole(e.target.checked)}
+            className="w-4 h-4 text-green-600 rounded border-slate-300 focus:ring-green-500"
+          />
+          <div className="flex-1">
+            <span className="text-sm font-medium text-slate-700">Enable Console Panel</span>
+            <p className="text-xs text-slate-500 mt-1">
+              Show a console panel at the bottom of the UI to monitor logs, warnings, and errors.
+            </p>
+          </div>
+        </label>
+      </div>
+
       {/* Server Info */}
       <div className="mb-4 p-3 bg-slate-50 rounded-lg">
         <p className="text-xs font-medium text-slate-600 mb-1">Grist Server</p>
@@ -282,7 +301,7 @@ const SettingsModal = ({ onClose, user, onLogout, impersonateEmail, setImpersona
 );
 
 // Home Page Component
-const HomePage = ({ onNavigate, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers }) => {
+const HomePage = ({ onNavigate, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers, showConsole, setShowConsole }) => {
   const [showSettings, setShowSettings] = useState(false);
 
   const pageOptions = [
@@ -395,6 +414,8 @@ const HomePage = ({ onNavigate, user, onLogout, impersonateEmail, setImpersonate
             setImpersonateEmail={setImpersonateEmail}
             teamMembers={teamMembers}
             loadingTeamMembers={loadingTeamMembers}
+            showConsole={showConsole}
+            setShowConsole={setShowConsole}
           />
         )
       }
@@ -613,8 +634,9 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl, impersonateEm
 
       setRecords(allRecords);
     } catch (err) {
-      console.error("Factory View Error:", err);
-      setError(err.message);
+      const errorMessage = err.message || err.toString() || JSON.stringify(err) || "Unknown error occurred";
+      console.error("Factory View Error:", errorMessage);
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -994,11 +1016,14 @@ const CustomTableViewer = ({ onBack, user, onLogout, getHeaders, getUrl, imperso
         setDocId(allDocs[0].value);
       }
     } catch (err) {
-      console.error("Discovery Error:", err);
       if (err.name === 'TypeError' && err.message.includes('Failed to fetch')) {
-        setError("Network blocked (CORS). Please configure GRIST_CORS_ALLOW_ORIGIN on your Grist server.");
+        const errorMessage = "Network blocked (CORS). Please configure GRIST_CORS_ALLOW_ORIGIN on your Grist server.";
+        console.error("Discovery Error:", errorMessage);
+        setError(errorMessage);
       } else {
-        setError(`Discovery failed: ${err.message}`);
+        const errorMessage = err.message || err.toString() || JSON.stringify(err) || "Unknown error occurred";
+        console.error("Discovery Error:", errorMessage);
+        setError(`Discovery failed: ${errorMessage}`);
       }
     } finally {
       setLoadingDocs(false);
@@ -1028,8 +1053,9 @@ const CustomTableViewer = ({ onBack, user, onLogout, getHeaders, getUrl, imperso
         }
       }
     } catch (err) {
-      console.error("Table Discovery Error:", err);
-      setError(`Failed to load tables: ${err.message}`);
+      const errorMessage = err.message || err.toString() || JSON.stringify(err) || "Unknown error occurred";
+      console.error("Table Discovery Error:", errorMessage);
+      setError(`Failed to load tables: ${errorMessage}`);
     } finally {
       setLoadingTables(false);
     }
@@ -1092,11 +1118,14 @@ const CustomTableViewer = ({ onBack, user, onLogout, getHeaders, getUrl, imperso
       }
 
     } catch (err) {
-      console.error(err);
       if (err.name === 'TypeError' && err.message.includes('Failed to fetch')) {
-        setError("Network Error: The server blocked the request (CORS). Please configure GRIST_CORS_ALLOW_ORIGIN on your Grist server.");
+        const errorMessage = "Network Error: The server blocked the request (CORS). Please configure GRIST_CORS_ALLOW_ORIGIN on your Grist server.";
+        console.error('Custom Table Viewer Error:', errorMessage);
+        setError(errorMessage);
       } else {
-        setError(err.message);
+        const errorMessage = err.message || err.toString() || JSON.stringify(err) || "Unknown error occurred";
+        console.error('Custom Table Viewer Error:', errorMessage);
+        setError(errorMessage);
       }
     } finally {
       setLoading(false);
@@ -1294,7 +1323,8 @@ const SQLAnalysisView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl, i
       setSavedQueries(remoteQueries);
 
     } catch (err) {
-      console.error("Fetch Error:", err);
+      const errorMessage = err.message || err.toString() || JSON.stringify(err) || "Unknown error occurred";
+      console.error("Fetch Error:", errorMessage);
     }
   };
 
@@ -1512,11 +1542,14 @@ const SQLAnalysisView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl, i
         setSelectedDocId(allDocs[0].id);
       }
     } catch (err) {
-      console.error('Error fetching documents:', err);
       if (err.name === 'TypeError' && err.message.includes('Failed to fetch')) {
-        setError("Network blocked (CORS). Please configure GRIST_CORS_ALLOW_ORIGIN on your Grist server.");
+        const errorMessage = "Network blocked (CORS). Please configure GRIST_CORS_ALLOW_ORIGIN on your Grist server.";
+        console.error('Error fetching documents:', errorMessage);
+        setError(errorMessage);
       } else {
-        setError(`Discovery failed: ${err.message}`);
+        const errorMessage = err.message || err.toString() || JSON.stringify(err) || "Unknown error occurred";
+        console.error('Error fetching documents:', errorMessage);
+        setError(`Discovery failed: ${errorMessage}`);
       }
     } finally {
       setLoadingDocs(false);
@@ -1644,8 +1677,9 @@ const SQLAnalysisView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl, i
       // Add to history on successful execution
       addToHistory(sqlQuery, selectedDocId);
     } catch (err) {
-      console.error('SQL Query Error:', err);
-      setError(err.message);
+      const errorMessage = err.message || err.toString() || JSON.stringify(err) || "Unknown error occurred";
+      console.error('SQL Query Error:', errorMessage);
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -2180,9 +2214,13 @@ const SQLAnalysisView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl, i
 export default function App() {
   const { loginWithRedirect, logout, user, isAuthenticated, isLoading, getAccessTokenSilently } = useAuth0();
   const navigate = useNavigate();
+  const location = useLocation();
   const [teamId, setTeamId] = useState(null);
   const [loadingTeamId, setLoadingTeamId] = useState(false);
   const hasAttemptedFetch = useRef(false);
+  const [showConsole, setShowConsole] = useState(() => {
+    return localStorage.getItem('consoleEnabled') === 'true';
+  });
 
   // Global impersonation state
   // Global impersonation state
@@ -2433,6 +2471,13 @@ export default function App() {
     }
   }, [isAuthenticated, user]);
 
+  // Update localStorage when console setting changes
+  useEffect(() => {
+    localStorage.setItem('consoleEnabled', showConsole.toString());
+  }, [showConsole]);
+
+
+
   // --- VIEWS ---
 
   if (isLoading) {
@@ -2472,61 +2517,66 @@ export default function App() {
 
   // Main Application - Render based on URL routes
   return (
-    <Routes>
-      <Route path="/" element={<HomePage onNavigate={(path) => navigate(`/${path}`)} user={derivedUser} onLogout={handleLogout} impersonateEmail={impersonateEmail} setImpersonateEmail={setImpersonateEmail} teamMembers={teamMembers} loadingTeamMembers={loadingTeamMembers} />} />
-      <Route
-        path="/telecaller"
-        element={
-          <TelecallerView
-            onBack={() => navigate('/')}
-            user={derivedUser}
-            teamId={derivedUser?.id}
-            onLogout={handleLogout}
-            getHeaders={getHeaders}
-            getUrl={getUrl}
-          />
-        }
-      />
-      <Route
-        path="/design"
-        element={
-          <DesignConfirmationView
-            onBack={() => navigate('/')}
-            user={derivedUser}
-            onLogout={handleLogout}
-          />
-        }
-      />
-      <Route
-        path="/table"
-        element={
-          <CustomTableViewer
-            onBack={() => navigate('/')}
-            user={derivedUser}
-            onLogout={handleLogout}
-            getHeaders={getHeaders}
-            getUrl={getUrl}
-          />
-        }
-      />
-      <Route
-        path="/factory"
-        element={
-          <FactoryView
-            onBack={() => navigate('/')}
-            user={derivedUser}
-            onLogout={handleLogout}
-            getHeaders={getHeaders}
-            getUrl={getUrl}
-          />
-        }
-      />
-      <Route path="/sql" element={<SQLAnalysisView onBack={() => navigate('/dashboards')} user={derivedUser} teamId={derivedUser?.id} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
-      <Route path="/dashboards" element={<DashboardList onNavigate={(id) => navigate(`/dashboards/${id}`)} onBack={() => navigate('/')} teamId={derivedUser?.id} getHeaders={getHeaders} getUrl={getUrl} user={derivedUser} />} />
-      <Route path="/dashboards/:id" element={<DashboardWrapper onBack={() => navigate('/dashboards')} getHeaders={getHeaders} getUrl={getUrl} teamId={derivedUser?.id} user={derivedUser} />} />
-      <Route path="/telecaller/customer/:customerId" element={<TelecallerCustomerView onBack={() => navigate('/telecaller')} user={derivedUser} getHeaders={getHeaders} getUrl={getUrl} />} />
-      <Route path="/salesman" element={<SalesmanView onBack={() => navigate('/')} user={derivedUser} teamId={derivedUser?.id} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
-      <Route path="/salesman/customer/:customerId" element={<SalesmanCustomerView onBack={() => navigate('/salesman')} user={derivedUser} getHeaders={getHeaders} getUrl={getUrl} />} />
-    </Routes>
+    <div>
+      <Routes>
+        <Route path="/" element={<HomePage onNavigate={(path) => navigate(`/${path}`)} user={derivedUser} onLogout={handleLogout} impersonateEmail={impersonateEmail} setImpersonateEmail={setImpersonateEmail} teamMembers={teamMembers} loadingTeamMembers={loadingTeamMembers} showConsole={showConsole} setShowConsole={setShowConsole} />} />
+        <Route
+          path="/telecaller"
+          element={
+            <TelecallerView
+              onBack={() => navigate('/')}
+              user={derivedUser}
+              teamId={derivedUser?.id}
+              onLogout={handleLogout}
+              getHeaders={getHeaders}
+              getUrl={getUrl}
+            />
+          }
+        />
+        <Route
+          path="/design"
+          element={
+            <DesignConfirmationView
+              onBack={() => navigate('/')}
+              user={derivedUser}
+              onLogout={handleLogout}
+            />
+          }
+        />
+        <Route
+          path="/table"
+          element={
+            <CustomTableViewer
+              onBack={() => navigate('/')}
+              user={derivedUser}
+              onLogout={handleLogout}
+              getHeaders={getHeaders}
+              getUrl={getUrl}
+            />
+          }
+        />
+        <Route
+          path="/factory"
+          element={
+            <FactoryView
+              onBack={() => navigate('/')}
+              user={derivedUser}
+              onLogout={handleLogout}
+              getHeaders={getHeaders}
+              getUrl={getUrl}
+            />
+          }
+        />
+        <Route path="/sql" element={<SQLAnalysisView onBack={() => navigate('/dashboards')} user={derivedUser} teamId={derivedUser?.id} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
+        <Route path="/dashboards" element={<DashboardList onNavigate={(id) => navigate(`/dashboards/${id}`)} onBack={() => navigate('/')} teamId={derivedUser?.id} getHeaders={getHeaders} getUrl={getUrl} user={derivedUser} />} />
+        <Route path="/dashboards/:id" element={<DashboardWrapper onBack={() => navigate('/dashboards')} getHeaders={getHeaders} getUrl={getUrl} teamId={derivedUser?.id} user={derivedUser} />} />
+        <Route path="/telecaller/customer/:customerId" element={<TelecallerCustomerView onBack={() => navigate('/telecaller')} user={derivedUser} getHeaders={getHeaders} getUrl={getUrl} />} />
+        <Route path="/salesman" element={<SalesmanView onBack={() => navigate('/')} user={derivedUser} teamId={derivedUser?.id} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
+        <Route path="/salesman/customer/:customerId" element={<SalesmanCustomerView onBack={() => navigate('/salesman')} user={derivedUser} getHeaders={getHeaders} getUrl={getUrl} />} />
+      </Routes>
+
+      {/* Console Panel - conditionally rendered based on query parameter */}
+      {showConsole && <Console />}
+    </div>
   );
 }
