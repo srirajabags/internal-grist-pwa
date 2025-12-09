@@ -9,6 +9,7 @@ const CustomerCard = ({
     mobileNumber,
     daysSinceLastOrder,
     primaryInfo, // The content for the gray box (e.g., Area Group or City)
+    secondaryInfo, // Additional info (e.g., Address)
     onClick
 }) => {
     return (
@@ -27,14 +28,21 @@ const CustomerCard = ({
                 </div>
             </div>
 
-            <div className="flex items-center gap-2 text-xs text-slate-600 mb-4 bg-slate-50 p-2 rounded-lg">
-                {primaryInfo && (
-                    <>
-                        <span className="font-medium">{primaryInfo}</span>
-                        <span className="text-slate-300">|</span>
-                    </>
+            <div className="flex flex-col gap-1 text-xs text-slate-600 mb-4 bg-slate-50 p-2 rounded-lg">
+                <div className="flex items-center gap-2">
+                    {primaryInfo && (
+                        <>
+                            <span className="font-medium">{primaryInfo}</span>
+                            <span className="text-slate-300">|</span>
+                        </>
+                    )}
+                    <span>{daysSinceLastOrder || 0} days since last order</span>
+                </div>
+                {secondaryInfo && (
+                    <div className="text-slate-500 text-[11px] mt-0.5">
+                        {secondaryInfo}
+                    </div>
                 )}
-                <span>{daysSinceLastOrder || 0} days since last order</span>
             </div>
 
             <div className="grid grid-cols-2 gap-2" onClick={e => e.stopPropagation()}>

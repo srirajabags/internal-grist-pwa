@@ -53,8 +53,8 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
 
             // Fetch Todo List
             const todoQuery = `
-                SELECT c.id, Shop_Name, Sales_Status, Days_Since_Last_Order, c.Area_Group, c.Customer_ID, Mobile_Number, c.City, c.Latitude, c.Longitude
-                FROM Customers c 
+                SELECT c.id, Shop_Name, Sales_Status, Days_Since_Last_Order, c.Area_Group, c.Customer_ID, Mobile_Number, c.City, c.Address, c.Latitude, c.Longitude
+                FROM Customers c
                 JOIN Area_Groups ag ON ag.id = c.Area_Group 
                 WHERE Responsible_Sales_Team = 'SALESMAN' 
                 AND (ag.Salesman LIKE '%[${teamId}]%' OR ag.Salesman LIKE '%[${teamId},%' OR ag.Salesman LIKE '%,${teamId}]%' OR ag.Salesman LIKE '%,${teamId},%')
@@ -246,6 +246,7 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
                                     mobileNumber={todo.Mobile_Number}
                                     daysSinceLastOrder={todo.Days_Since_Last_Order}
                                     primaryInfo={todo.City}
+                                    secondaryInfo={todo.Address}
                                     onClick={() => setSelectedCustomerId(todo.Customer_ID)}
                                 />
                             ))}
