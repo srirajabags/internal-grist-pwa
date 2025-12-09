@@ -4,10 +4,11 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "node get-version.js && vite",
+    "build": "node get-version.js && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "update-version": "node get-version.js"
   },
   "dependencies": {
     "@auth0/auth0-react": "^2.9.0",

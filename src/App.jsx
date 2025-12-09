@@ -11,6 +11,9 @@ import { useAuth0 } from '@auth0/auth0-react';
 // Get server URL from environment
 const GRIST_SERVER_URL = import.meta.env.VITE_GRIST_SERVER_URL;
 
+// Import version info from generated file
+import { APP_VERSION, BUILD_TIMESTAMP_IST_READABLE } from './version.js';
+
 // Simple UI Components
 
 
@@ -252,6 +255,18 @@ const SettingsModal = ({ onClose, user, onLogout, impersonateEmail, setImpersona
       <div className="mb-4 p-3 bg-slate-50 rounded-lg">
         <p className="text-xs font-medium text-slate-600 mb-1">Grist Server</p>
         <p className="text-sm text-slate-800 font-mono break-all">{GRIST_SERVER_URL}</p>
+      </div>
+
+      {/* App Version */}
+      <div className="mb-4 p-3 bg-slate-50 rounded-lg">
+        <p className="text-xs font-medium text-slate-600 mb-1">App Version</p>
+        <p className="text-sm text-slate-800 font-mono break-all">{APP_VERSION}</p>
+      </div>
+
+      {/* Build Timestamp */}
+      <div className="mb-4 p-3 bg-slate-50 rounded-lg">
+        <p className="text-xs font-medium text-slate-600 mb-1">Build Timestamp (IST)</p>
+        <p className="text-sm text-slate-800 font-mono break-all">{BUILD_TIMESTAMP_IST_READABLE}</p>
       </div>
 
       <Button
