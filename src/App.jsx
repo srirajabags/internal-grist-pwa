@@ -577,7 +577,8 @@ const FactoryView = ({ onBack, user, onLogout, getHeaders, getUrl, impersonateEm
       });
 
       if (!response.ok) {
-        throw new Error(`Failed to fetch data: ${response.statusText}`);
+        const errorText = await response.text();
+        throw new Error(`Failed to fetch data: ${response.statusText}${errorText ? ` - ${errorText}` : ''}`);
       }
 
       const data = await response.json();
