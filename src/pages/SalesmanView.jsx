@@ -29,6 +29,8 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
     const [selectedAreaGroup, setSelectedAreaGroup] = useState('');
     const [selectedSalesStatus, setSelectedSalesStatus] = useState('');
     const [selectedCity, setSelectedCity] = useState('');
+    const [shopSearchTerm, setShopSearchTerm] = useState('');
+    const [showSearchBar, setShowSearchBar] = useState(false);
 
     const [selectedCustomerId, setSelectedCustomerId] = useState(null);
     const [error, setError] = useState(null);
@@ -158,7 +160,9 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
         const groupMatch = !selectedAreaGroup || String(todo.Area_Group) === selectedAreaGroup;
         const statusMatch = !selectedSalesStatus || todo.Sales_Status === selectedSalesStatus;
         const cityMatch = !selectedCity || todo.City === selectedCity;
-        return groupMatch && statusMatch && cityMatch;
+        const shopNameMatch = !shopSearchTerm || 
+            todo.Shop_Name.toLowerCase().includes(shopSearchTerm.toLowerCase());
+        return groupMatch && statusMatch && cityMatch && shopNameMatch;
     });
 
     return (
@@ -179,6 +183,13 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
                             </div>
                         </div>
                         <div className="flex gap-2">
+                            <Button
+                                variant="ghost"
+                                onClick={() => setShowSearchBar(!showSearchBar)}
+                                className={`!px-3 ${showSearchBar ? 'bg-green-100 text-green-700' : 'text-slate-600 hover:bg-slate-100'}`}
+                            >
+                                <Search size={18} />
+                            </Button>
                             <Button
                                 variant="secondary"
                                 onClick={() => fetchTodos()}
@@ -218,8 +229,33 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
                                 ))}
                             </select>
                         </div>
-
                     </div>
+                    {/* Collapsible Search Bar */}
+                        {showSearchBar && (
+                            <div className="animate-in slide-in-from-top duration-200">
+                                <div className="min-w-[200px] max-w-[300px]">
+                                    <label className="block text-xs font-medium text-slate-500 mb-1 ml-1">Search Shop</label>
+                                    <div className="relative">
+                                        <Search size={16} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" />
+                                        <input
+                                            type="text"
+                                            value={shopSearchTerm}
+                                            onChange={(e) => setShopSearchTerm(e.target.value)}
+                                            placeholder="Search by shop name..."
+                                            className="w-full pl-10 pr-8 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 transition-all outline-none bg-white text-sm"
+                                        />
+                                        {shopSearchTerm && (
+                                            <button
+                                                onClick={() => setShopSearchTerm('')}
+                                                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                                            >
+                                                <X size={14} />
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                 </div>
             </header>
 
