@@ -817,11 +817,12 @@ AND t.Email = ?
 
             // Fetch Todo List
             const todoQuery = `
-                SELECT c.id, Shop_Name, Sales_Status, Days_Since_Last_Order, c.Area_Group, c.Customer_ID, Mobile_Number
-                FROM Customers c 
-                JOIN Area_Groups ag ON ag.id = c.Area_Group 
-                WHERE Responsible_Sales_Team = 'TELECALLER' 
+                SELECT c.id, Shop_Name, Sales_Status, Days_Since_Last_Order, c.Area_Group, c.Customer_ID, Mobile_Number, c.TEMP_FALLBACK_SALES_CATEGORY
+                FROM Customers c
+                JOIN Area_Groups ag ON ag.id = c.Area_Group
+                WHERE Responsible_Sales_Team = 'TELECALLER'
                 AND (ag.Telecaller LIKE '%[${teamId}]%' OR ag.Telecaller LIKE '%[${teamId},%' OR ag.Telecaller LIKE '%,${teamId}]%' OR ag.Telecaller LIKE '%,${teamId},%')
+                ORDER BY c.TEMP_FALLBACK_SALES_CATEGORY desc
                 LIMIT 50
             `;
 
@@ -1219,6 +1220,7 @@ AND t.Email = ?
                                     mobileNumber={todo.Mobile_Number}
                                     daysSinceLastOrder={todo.Days_Since_Last_Order}
                                     primaryInfo={areaGroupNames[todo.Area_Group] || `Group ${todo.Area_Group}`} // Telecaller uses Area Group
+                                    tempFallbackSalesCategory={todo.TEMP_FALLBACK_SALES_CATEGORY}
                                     onClick={() => setSelectedCustomerId(todo.Customer_ID)}
                                 />
                             ))}

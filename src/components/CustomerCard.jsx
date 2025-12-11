@@ -10,12 +10,20 @@ const CustomerCard = ({
     daysSinceLastOrder,
     primaryInfo, // The content for the gray box (e.g., Area Group or City)
     secondaryInfo, // Additional info (e.g., Address)
+    tempFallbackSalesCategory,
     onClick
 }) => {
     return (
-        <Card className="p-4 hover:shadow-md transition-shadow cursor-pointer" onClick={onClick}>
+        <Card className={`p-4 hover:shadow-md transition-shadow cursor-pointer ${tempFallbackSalesCategory ? 'border-2 border-yellow-200 bg-yellow-50/50' : ''}`} onClick={onClick}>
             <div className="mb-3">
-                <h3 className="font-bold text-slate-800 leading-snug mb-1.5">{shopName}</h3>
+                <div className="flex items-center gap-2 mb-1.5">
+                    <h3 className="font-bold text-slate-800 leading-snug">{shopName}</h3>
+                    {tempFallbackSalesCategory && (
+                        <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide bg-yellow-100 text-yellow-800 border border-yellow-200">
+                            {tempFallbackSalesCategory}
+                        </span>
+                    )}
+                </div>
                 <div className="flex items-center gap-2 flex-wrap">
                     <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide border ${salesStatus === 'New' ? 'bg-blue-50 text-blue-700 border-blue-100' :
                         salesStatus === 'Follow-up' ? 'bg-orange-50 text-orange-700 border-orange-100' :
