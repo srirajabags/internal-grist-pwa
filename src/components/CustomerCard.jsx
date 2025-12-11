@@ -36,7 +36,12 @@ const CustomerCard = ({
                             <span className="text-slate-300">|</span>
                         </>
                     )}
-                    <span>{daysSinceLastOrder || 0} days since last order</span>
+                    <span>
+                        {daysSinceLastOrder === null || daysSinceLastOrder === undefined
+                            ? 'Never ordered'
+                            : `${daysSinceLastOrder} days since last order`
+                        }
+                    </span>
                 </div>
                 {secondaryInfo && (
                     <div className="text-slate-500 text-[11px] mt-0.5">
