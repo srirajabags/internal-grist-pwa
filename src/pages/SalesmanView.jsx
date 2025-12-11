@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Phone, Search, Filter, AlertCircle, Loader2, LogOut, User, X, RefreshCw, Settings } from 'lucide-react';
+import { ArrowLeft, Phone, Search, Filter, AlertCircle, Loader2, LogOut, User, X, RefreshCw, Settings, Map } from 'lucide-react';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import CustomerCard from '../components/CustomerCard';
 import SalesmanCustomerView from './SalesmanCustomerView';
+import MapViewModal from '../components/MapViewModal';
 
 const viewCache = {
     todoList: [],
@@ -34,6 +35,7 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
 
     const [selectedCustomerId, setSelectedCustomerId] = useState(null);
     const [error, setError] = useState(null);
+    const [showMapView, setShowMapView] = useState(false);
 
     const navigate = useNavigate();
 
@@ -185,6 +187,13 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
                         <div className="flex gap-2">
                             <Button
                                 variant="ghost"
+                                onClick={() => setShowMapView(true)}
+                                className="!px-3 text-slate-600 hover:bg-slate-100"
+                            >
+                                <Map size={18} />
+                            </Button>
+                            <Button
+                                variant="ghost"
                                 onClick={() => setShowSearchBar(!showSearchBar)}
                                 className={`!px-3 ${showSearchBar ? 'bg-green-100 text-green-700' : 'text-slate-600 hover:bg-slate-100'}`}
                             >
@@ -291,6 +300,14 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
                     )}
                 </div>
             </main>
+
+            {/* Map View Modal */}
+            {showMapView && (
+                <MapViewModal
+                    customers={filteredTodos}
+                    onClose={() => setShowMapView(false)}
+                />
+            )}
 
             {/* Customer View Modal */}
             {selectedCustomerId && (
