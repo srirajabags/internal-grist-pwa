@@ -15,6 +15,9 @@ const GRIST_SERVER_URL = import.meta.env.VITE_GRIST_SERVER_URL;
 // Import version info from generated file
 import { APP_VERSION, BUILD_TIMESTAMP_IST_READABLE } from './version.js';
 
+// Import diagnostic service
+import { generateAndDownloadDiagnosticReport } from './utils/diagnosticService';
+
 // Simple UI Components
 
 
@@ -184,9 +187,9 @@ const UserImpersonationSelect = ({ value, onChange, options, loading, placeholde
 
 
 // Settings Modal Component
-const SettingsModal = ({ onClose, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers, showConsole, setShowConsole }) => (
+const SettingsModal = ({ onClose, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers, showConsole, setShowConsole, getHeaders, getUrl, generatingReport, setGeneratingReport }) => (
   <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={onClose}>
-    <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+    <div className="bg-white rounded-xl shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6" onClick={(e) => e.stopPropagation()}>
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-xl font-bold text-slate-800">Settings</h2>
         <button onClick={onClose} className="text-slate-400 hover:text-slate-700">
@@ -288,6 +291,37 @@ const SettingsModal = ({ onClose, user, onLogout, impersonateEmail, setImpersona
         <p className="text-sm text-slate-800 font-mono break-all">{BUILD_TIMESTAMP_IST_READABLE}</p>
       </div>
 
+      {/* Diagnostic Report Section */}
+      <div className="mb-4 p-4 bg-slate-50 rounded-lg border border-slate-200">
+        <label className="block text-sm font-medium text-slate-700 mb-2">
+          Generate Diagnostic Report
+        </label>
+        <p className="text-xs text-slate-500 mb-3">
+          Create a comprehensive report to help debug API connectivity issues. The report includes system information, network tests, API diagnostics, error logs, and local storage data (with sensitive information redacted).
+        </p>
+        <Button
+          variant="primary"
+          className="w-full text-sm"
+          onClick={async () => {
+            setGeneratingReport(true);
+            try {
+              const result = await generateAndDownloadDiagnosticReport(getHeaders, getUrl);
+              if (!result.success) {
+                alert(`Failed to generate report: ${result.error}`);
+              }
+            } catch (error) {
+              alert(`Error generating diagnostic report: ${error.message}`);
+            } finally {
+              setGeneratingReport(false);
+            }
+          }}
+          disabled={generatingReport}
+          icon={generatingReport ? Loader2 : AlertCircle}
+        >
+          {generatingReport ? 'Generating Report...' : 'Generate Diagnostic Report'}
+        </Button>
+      </div>
+
       <Button
         variant="secondary"
         className="w-full"
@@ -301,8 +335,9 @@ const SettingsModal = ({ onClose, user, onLogout, impersonateEmail, setImpersona
 );
 
 // Home Page Component
-const HomePage = ({ onNavigate, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers, showConsole, setShowConsole }) => {
+const HomePage = ({ onNavigate, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers, showConsole, setShowConsole, getHeaders, getUrl }) => {
   const [showSettings, setShowSettings] = useState(false);
+  const [generatingReport, setGeneratingReport] = useState(false);
 
   const pageOptions = [
     {
@@ -416,6 +451,10 @@ const HomePage = ({ onNavigate, user, onLogout, impersonateEmail, setImpersonate
             loadingTeamMembers={loadingTeamMembers}
             showConsole={showConsole}
             setShowConsole={setShowConsole}
+            getHeaders={getHeaders}
+            getUrl={getUrl}
+            generatingReport={generatingReport}
+            setGeneratingReport={setGeneratingReport}
           />
         )
       }
@@ -2519,7 +2558,7 @@ export default function App() {
   return (
     <div>
       <Routes>
-        <Route path="/" element={<HomePage onNavigate={(path) => navigate(`/${path}`)} user={derivedUser} onLogout={handleLogout} impersonateEmail={impersonateEmail} setImpersonateEmail={setImpersonateEmail} teamMembers={teamMembers} loadingTeamMembers={loadingTeamMembers} showConsole={showConsole} setShowConsole={setShowConsole} />} />
+        <Route path="/" element={<HomePage onNavigate={(path) => navigate(`/${path}`)} user={derivedUser} onLogout={handleLogout} impersonateEmail={impersonateEmail} setImpersonateEmail={setImpersonateEmail} teamMembers={teamMembers} loadingTeamMembers={loadingTeamMembers} showConsole={showConsole} setShowConsole={setShowConsole} getHeaders={getHeaders} getUrl={getUrl} />} />
         <Route
           path="/telecaller"
           element={
