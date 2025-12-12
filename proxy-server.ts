@@ -2,6 +2,7 @@
 /// <reference types="@railway/cli" />
 
 // ────────────────────────────── CONFIG ──────────────────────────────
+const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN ?? "*"; // CORS Allowed Origin
 const GRIST_BASE_URL = process.env.GRIST_URL ?? "https://your-grist.railway.app";
 const AUTH0_DOMAIN = process.env.AUTH0_DOMAIN ?? "your-tenant.us.auth0.com";
 const SQL_KEY = process.env.SQL_KEY; // Dedicated API key for SQL endpoints
@@ -69,7 +70,7 @@ export default {
         if (request.method === "OPTIONS") {
             return new Response(null, {
                 headers: {
-                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Origin": ALLOW_ORIGIN,
                     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
                     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Impersonate",
                 },
@@ -90,7 +91,7 @@ export default {
         if (!authHeader || !authHeader.startsWith("Bearer ")) {
             return new Response('{"error":"Missing or invalid Authorization header"}', {
                 status: 401,
-                headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": ALLOW_ORIGIN },
             });
         }
         const token = authHeader.split(" ")[1];
@@ -117,7 +118,7 @@ export default {
                     console.error("Auth0 validation failed:", userRes.status);
                     return new Response('{"error":"Invalid Auth0 Token"}', {
                         status: 401,
-                        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": ALLOW_ORIGIN },
                     });
                 }
 
@@ -155,7 +156,7 @@ export default {
                 console.warn(`Impersonation denied: ${userEmail} is not in allowed list`);
                 return new Response('{"error":"User not authorized to impersonate"}', {
                     status: 403,
-                    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": ALLOW_ORIGIN },
                 });
             }
 
@@ -164,7 +165,7 @@ export default {
                 console.warn(`Impersonation failed: No key found for ${impersonateEmail}`);
                 return new Response('{"error":"Impersonated user not found or not authorized"}', {
                     status: 404,
-                    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": ALLOW_ORIGIN },
                 });
             }
 
@@ -178,7 +179,7 @@ export default {
             console.warn(`No Grist Key found for user: ${effectiveEmail} (${userSub})`);
             return new Response('{"error":"User not authorized for Grist access"}', {
                 status: 403,
-                headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": ALLOW_ORIGIN },
             });
         }
 
@@ -226,7 +227,7 @@ export default {
 
             // 6. Return Response with CORS
             const response = new Response(upstream.body, upstream);
-            response.headers.set("Access-Control-Allow-Origin", "*");
+            response.headers.set("Access-Control-Allow-Origin", ALLOW_ORIGIN);
             response.headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
             response.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Impersonate");
 
