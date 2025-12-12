@@ -87,6 +87,9 @@ export default defineConfig({
             icons: [{ src: 'pwa-192x192.png', sizes: '192x192' }]
           }
         ]
+      },
+      workbox: {
+        navigateFallbackDenylist: [/\/api/]
       }
     })
   ],
