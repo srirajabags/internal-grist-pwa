@@ -66,14 +66,16 @@ const getTokenExpiration = (token: string): number | null => {
 // ─────────────────────────── MAIN HANDLER ───────────────────────────
 export default {
     async fetch(request: Request): Promise<Response> {
+        const corsHeaders = {
+            "Access-Control-Allow-Origin": ALLOW_ORIGIN,
+            "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Impersonate",
+        };
+
         // Handle CORS preflight requests
         if (request.method === "OPTIONS") {
             return new Response(null, {
-                headers: {
-                    "Access-Control-Allow-Origin": ALLOW_ORIGIN,
-                    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-                    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Impersonate",
-                },
+                headers: corsHeaders,
             });
         }
 
@@ -82,7 +84,7 @@ export default {
         // Root check
         if (url.pathname === "/" || url.pathname === "") {
             return new Response(JSON.stringify({ message: "Grist Auth0 Proxy is running" }), {
-                headers: { "Content-Type": "application/json" },
+                headers: { "Content-Type": "application/json", ...corsHeaders },
             });
         }
 
@@ -91,7 +93,7 @@ export default {
         if (!authHeader || !authHeader.startsWith("Bearer ")) {
             return new Response('{"error":"Missing or invalid Authorization header"}', {
                 status: 401,
-                headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": ALLOW_ORIGIN },
+                headers: { "Content-Type": "application/json", ...corsHeaders },
             });
         }
         const token = authHeader.split(" ")[1];
@@ -118,7 +120,7 @@ export default {
                     console.error("Auth0 validation failed:", userRes.status);
                     return new Response('{"error":"Invalid Auth0 Token"}', {
                         status: 401,
-                        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": ALLOW_ORIGIN },
+                        headers: { "Content-Type": "application/json", ...corsHeaders },
                     });
                 }
 
@@ -137,7 +139,10 @@ export default {
                 });
             } catch (e) {
                 console.error("Auth0 connection error:", e);
-                return new Response('{"error":"Failed to validate token"}', { status: 502 });
+                return new Response('{"error":"Failed to validate token"}', {
+                    status: 502,
+                    headers: { "Content-Type": "application/json", ...corsHeaders },
+                });
             }
         }
 
@@ -156,7 +161,7 @@ export default {
                 console.warn(`Impersonation denied: ${userEmail} is not in allowed list`);
                 return new Response('{"error":"User not authorized to impersonate"}', {
                     status: 403,
-                    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": ALLOW_ORIGIN },
+                    headers: { "Content-Type": "application/json", ...corsHeaders },
                 });
             }
 
@@ -165,7 +170,7 @@ export default {
                 console.warn(`Impersonation failed: No key found for ${impersonateEmail}`);
                 return new Response('{"error":"Impersonated user not found or not authorized"}', {
                     status: 404,
-                    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": ALLOW_ORIGIN },
+                    headers: { "Content-Type": "application/json", ...corsHeaders },
                 });
             }
 
@@ -179,7 +184,7 @@ export default {
             console.warn(`No Grist Key found for user: ${effectiveEmail} (${userSub})`);
             return new Response('{"error":"User not authorized for Grist access"}', {
                 status: 403,
-                headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": ALLOW_ORIGIN },
+                headers: { "Content-Type": "application/json", ...corsHeaders },
             });
         }
 
@@ -194,7 +199,10 @@ export default {
         }
 
         if (record.count >= RATE_LIMIT) {
-            return new Response('{"error":"Rate limit exceeded"}', { status: 429 });
+            return new Response('{"error":"Rate limit exceeded"}', {
+                status: 429,
+                headers: { "Content-Type": "application/json", ...corsHeaders },
+            });
         }
 
         record.count++;
@@ -227,14 +235,17 @@ export default {
 
             // 6. Return Response with CORS
             const response = new Response(upstream.body, upstream);
-            response.headers.set("Access-Control-Allow-Origin", ALLOW_ORIGIN);
-            response.headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-            response.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Impersonate");
+            Object.entries(corsHeaders).forEach(([key, value]) => {
+                response.headers.set(key, value);
+            });
 
             return response;
         } catch (e: any) {
             console.error("Upstream error:", e.message);
-            return new Response('{"error":"Failed to reach Grist"}', { status: 502 });
+            return new Response('{"error":"Failed to reach Grist"}', {
+                status: 502,
+                headers: { "Content-Type": "application/json", ...corsHeaders },
+            });
         }
     },
 };
