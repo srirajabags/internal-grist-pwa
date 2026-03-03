@@ -33,6 +33,14 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
 
+    // State for collapsible sections
+    const [expandedSections, setExpandedSections] = React.useState({
+        regularRepeat: false,
+        nonRegularRepeat: false,
+        newOrders: false,
+        penalties: false
+    });
+
     if (!data) {
         return (
             <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={onClose}>
@@ -129,14 +137,6 @@ const SalaryDetailsModal = ({ data, areaGroupNames = {}, month, onClose, onMonth
 
     // Helper: Get Regular Rate (assuming first bucket [0, rate])
     const regularRate = potentialEarnings?.REGULAR?.[0]?.[1] || 0;
-
-    // State for collapsible sections
-    const [expandedSections, setExpandedSections] = React.useState({
-        regularRepeat: false,
-        nonRegularRepeat: false,
-        newOrders: false,
-        penalties: false
-    });
 
     const toggleSection = (section) => {
         setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));

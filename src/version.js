@@ -1,5 +1,5 @@
 // Auto-generated version file
-export const APP_VERSION = 'b00209ab0c620047a3bda09eff83c5577048db8f';
-export const BUILD_TIMESTAMP_UTC = '2025-12-09T11:39:28.340Z';
-export const BUILD_TIMESTAMP_IST = '2025-12-09T17:09:28.000Z';
-export const BUILD_TIMESTAMP_IST_READABLE = '09 Dec 2025, 05:09 pm IST';
+export const APP_VERSION = '219d5d67d83932fd55b03c0efc6ed1b9af000b7a';
+export const BUILD_TIMESTAMP_UTC = '2026-03-03T04:54:40.408Z';
+export const BUILD_TIMESTAMP_IST = '2026-03-03T10:24:40.000Z';
+export const BUILD_TIMESTAMP_IST_READABLE = '03 Mar 2026, 10:24 am IST';
