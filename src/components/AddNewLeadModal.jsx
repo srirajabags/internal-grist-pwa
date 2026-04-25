@@ -198,6 +198,12 @@ const AddNewLeadModal = ({ onClose, onSuccess, teamId, getHeaders, getUrl }) => 
 
     const handleSubmit = async (e) => {
         e.preventDefault();
+        
+        if (bagsRequirement.length === 0) {
+            setSubmitError("Please select at least one Bags Requirement.");
+            return;
+        }
+        
         setSubmitting(true);
         setSubmitError('');
 
@@ -409,10 +415,11 @@ const AddNewLeadModal = ({ onClose, onSuccess, teamId, getHeaders, getUrl }) => 
 
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
-                                    <label className="block text-sm font-medium text-slate-700 mb-1">Customer Type</label>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Customer Type <span className="text-red-500">*</span></label>
                                     <select
                                         value={customerType}
                                         onChange={e => setCustomerType(e.target.value)}
+                                        required
                                         className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
                                     >
                                         <option value="">Select...</option>
@@ -422,10 +429,11 @@ const AddNewLeadModal = ({ onClose, onSuccess, teamId, getHeaders, getUrl }) => 
                                     </select>
                                 </div>
                                 <div>
-                                    <label className="block text-sm font-medium text-slate-700 mb-1">Shop Type</label>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Shop Type <span className="text-red-500">*</span></label>
                                     <select
                                         value={shopType}
                                         onChange={e => setShopType(e.target.value)}
+                                        required
                                         className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
                                     >
                                         <option value="">Select...</option>
@@ -437,7 +445,7 @@ const AddNewLeadModal = ({ onClose, onSuccess, teamId, getHeaders, getUrl }) => 
                             </div>
 
                             <div>
-                                <label className="block text-sm font-medium text-slate-700 mb-2">Bags Requirement</label>
+                                <label className="block text-sm font-medium text-slate-700 mb-2">Bags Requirement <span className="text-red-500">*</span></label>
                                 <div className="grid grid-cols-2 gap-2">
                                     {bagsRequirementsChoices.map(req => (
                                         <label key={req} className="flex items-center gap-2 text-sm text-slate-700 bg-slate-50 p-2 rounded border border-slate-200 cursor-pointer hover:bg-slate-100">
@@ -454,11 +462,12 @@ const AddNewLeadModal = ({ onClose, onSuccess, teamId, getHeaders, getUrl }) => 
                             </div>
 
                             <div>
-                                <label className="block text-sm font-medium text-slate-700 mb-1">Revisit Date</label>
+                                <label className="block text-sm font-medium text-slate-700 mb-1">Revisit Date <span className="text-red-500">*</span></label>
                                 <input
                                     type="date"
                                     value={revisitDate}
                                     onChange={e => setRevisitDate(e.target.value)}
+                                    required
                                     className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
                                 />
                             </div>
