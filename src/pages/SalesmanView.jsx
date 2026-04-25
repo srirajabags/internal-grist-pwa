@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Phone, Search, Filter, AlertCircle, Loader2, LogOut, User, X, RefreshCw, Settings, Map } from 'lucide-react';
+import { ArrowLeft, Phone, Search, Filter, AlertCircle, Loader2, LogOut, User, X, RefreshCw, Settings, Map, UserPlus, MoreVertical } from 'lucide-react';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import CustomerCard from '../components/CustomerCard';
 import SalesmanCustomerView from './SalesmanCustomerView';
 import MapViewModal from '../components/MapViewModal';
+import AddNewLeadModal from '../components/AddNewLeadModal';
 
 const viewCache = {
     todoList: [],
@@ -36,6 +37,8 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
     const [selectedCustomerId, setSelectedCustomerId] = useState(null);
     const [error, setError] = useState(null);
     const [showMapView, setShowMapView] = useState(false);
+    const [showAddLeadModal, setShowAddLeadModal] = useState(false);
+    const [showActionMenu, setShowActionMenu] = useState(false);
 
     const navigate = useNavigate();
 
@@ -187,13 +190,6 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
                         <div className="flex gap-2">
                             <Button
                                 variant="ghost"
-                                onClick={() => setShowMapView(true)}
-                                className="!px-3 text-slate-600 hover:bg-slate-100"
-                            >
-                                <Map size={18} />
-                            </Button>
-                            <Button
-                                variant="ghost"
                                 onClick={() => setShowSearchBar(!showSearchBar)}
                                 className={`!px-3 ${showSearchBar ? 'bg-green-100 text-green-700' : 'text-slate-600 hover:bg-slate-100'}`}
                             >
@@ -207,6 +203,37 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
                             >
                                 <RefreshCw size={18} className={loadingTodos ? "animate-spin" : ""} />
                             </Button>
+                            <div className="relative">
+                                <Button
+                                    variant="ghost"
+                                    onClick={() => setShowActionMenu(!showActionMenu)}
+                                    className={`!px-3 ${showActionMenu ? 'bg-slate-100 text-slate-800' : 'text-slate-600 hover:bg-slate-100'}`}
+                                >
+                                    <MoreVertical size={18} />
+                                </Button>
+                                {showActionMenu && (
+                                    <>
+                                        <div className="fixed inset-0 z-40" onClick={() => setShowActionMenu(false)}></div>
+                                        <div className="absolute right-0 mt-2 w-48 bg-white border border-slate-200 rounded-lg shadow-lg z-50 py-1 overflow-hidden animate-in fade-in slide-in-from-top-2">
+                                            <button
+                                                className="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 focus:bg-slate-50 outline-none flex items-center gap-3 transition-colors"
+                                                onClick={() => { setShowAddLeadModal(true); setShowActionMenu(false); }}
+                                            >
+                                                <UserPlus size={16} className="text-slate-500" />
+                                                <span className="font-medium">Add New Lead</span>
+                                            </button>
+                                            <div className="h-px bg-slate-100 mx-2"></div>
+                                            <button
+                                                className="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 focus:bg-slate-50 outline-none flex items-center gap-3 transition-colors"
+                                                onClick={() => { setShowMapView(true); setShowActionMenu(false); }}
+                                            >
+                                                <Map size={16} className="text-slate-500" />
+                                                <span className="font-medium">Map View</span>
+                                            </button>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
                         </div>
                     </div>
 
@@ -324,6 +351,20 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
                 </div>
             )}
 
+            {/* Add New Lead Modal */}
+            {showAddLeadModal && (
+                <AddNewLeadModal
+                    onClose={() => setShowAddLeadModal(false)}
+                    onSuccess={() => {
+                        setShowAddLeadModal(false);
+                        // Optional: show a toast or fetch custom leads if there was a tab for it, but for now just close
+                        // fetchTodos(); // This only fetches from Customers table
+                    }}
+                    teamId={teamId}
+                    getHeaders={getHeaders}
+                    getUrl={getUrl}
+                />
+            )}
 
         </div>
     );
