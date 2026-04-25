@@ -56,6 +56,8 @@ const AddNewLeadModal = ({ onClose, onSuccess, teamId, getHeaders, getUrl }) => 
     // Form State
     const [shopName, setShopName] = useState('');
     const [cityId, setCityId] = useState('');
+    const [citySearch, setCitySearch] = useState('');
+    const [showCityDropdown, setShowCityDropdown] = useState(false);
     const [customerType, setCustomerType] = useState('');
     const [shopType, setShopType] = useState('');
     const [contactPerson, setContactPerson] = useState('');
@@ -364,19 +366,45 @@ const AddNewLeadModal = ({ onClose, onSuccess, teamId, getHeaders, getUrl }) => 
                                 />
                             </div>
 
-                            <div>
+                            <div className="relative">
                                 <label className="block text-sm font-medium text-slate-700 mb-1">City <span className="text-red-500">*</span></label>
-                                <select
-                                    value={cityId}
-                                    onChange={e => setCityId(e.target.value)}
-                                    required
+                                <input
+                                    type="text"
+                                    value={cityId ? cities.find(c => c.id === cityId)?.City_Code2 || '' : citySearch}
+                                    onChange={(e) => {
+                                        setCitySearch(e.target.value);
+                                        setCityId(''); // clear ID if typing to re-select
+                                        setShowCityDropdown(true);
+                                    }}
+                                    onFocus={() => setShowCityDropdown(true)}
+                                    placeholder="Search city..."
+                                    required={!cityId}
                                     className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                                >
-                                    <option value="">Select City...</option>
-                                    {cities.map(c => (
-                                        <option key={c.id} value={c.id}>{c.City_Code2}</option>
-                                    ))}
-                                </select>
+                                />
+                                {showCityDropdown && (
+                                    <>
+                                        <div className="fixed inset-0 z-40" onClick={() => setShowCityDropdown(false)}></div>
+                                        <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                                            {cities.filter(c => c.City_Code2 && c.City_Code2.toLowerCase().includes(citySearch.toLowerCase())).length > 0 ? (
+                                                cities.filter(c => c.City_Code2 && c.City_Code2.toLowerCase().includes(citySearch.toLowerCase())).map(c => (
+                                                    <div 
+                                                        key={c.id} 
+                                                        className="px-4 py-2 hover:bg-slate-100 cursor-pointer text-sm text-slate-800"
+                                                        onClick={() => {
+                                                            setCityId(c.id);
+                                                            setCitySearch('');
+                                                            setShowCityDropdown(false);
+                                                        }}
+                                                    >
+                                                        {c.City_Code2}
+                                                    </div>
+                                                ))
+                                            ) : (
+                                                <div className="px-4 py-2 text-sm text-slate-500">No cities found</div>
+                                            )}
+                                        </div>
+                                    </>
+                                )}
                             </div>
 
                             <div className="grid grid-cols-2 gap-4">
