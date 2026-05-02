@@ -63,9 +63,9 @@ const SalesmanView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl }) =>
                 SELECT c.id, Shop_Name, Sales_Status, Days_Since_Last_Order, c.Area_Group, c.Customer_ID, Mobile_Number, c.City, c.Address, c.Latitude, c.Longitude, c.TEMP_FALLBACK_SALES_CATEGORY
                 FROM Customers c
                 JOIN Area_Groups ag ON ag.id = c.Area_Group
-                WHERE Responsible_Sales_Team = 'SALESMAN'
+                WHERE c.TEMP_FALLBACK_SALES_CATEGORY = 'REGULAR' and c.Sales_Status != 'REPEAT ORDER COOLDOWN PERIOD' and c.Calculated_Sales_Category = 'CALCULATED AS REGULAR'
                 AND (ag.Salesman LIKE '%[${teamId}]%' OR ag.Salesman LIKE '%[${teamId},%' OR ag.Salesman LIKE '%,${teamId}]%' OR ag.Salesman LIKE '%,${teamId},%')
-                ORDER BY c.TEMP_FALLBACK_SALES_CATEGORY desc
+                ORDER BY Days_Since_Last_Order desc
             `;
 
             const response = await fetch(url, {
