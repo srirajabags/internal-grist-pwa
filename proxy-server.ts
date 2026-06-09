@@ -238,6 +238,8 @@ export default {
             Object.entries(corsHeaders).forEach(([key, value]) => {
                 response.headers.set(key, value);
             });
+            response.headers.delete("content-encoding");
+            response.headers.delete("content-length");
 
             return response;
         } catch (e: any) {
