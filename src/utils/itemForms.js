@@ -34,6 +34,7 @@ export const materialLabel = (mat) => {
 // Identify the physical form from a Type / readable name string.
 export const itemForm = (type, name) => {
     const s = `${type || ''} ${name || ''}`.toUpperCase();
+    if (/HANDLE.*BAG|BAG.*HANDLE/.test(s)) return 'handlebag';
     if (/HANDLE/.test(s)) return 'handle';
     if (/W.?CUT|VEST/.test(s)) return 'wcut';
     if (/D.?CUT/.test(s)) return 'dcut';
@@ -47,7 +48,7 @@ export const itemForm = (type, name) => {
 
 export const FORM_LABEL = {
     roll: 'Roll', sheet: 'Sheet', dcut: 'D-Cut Bag', wcut: 'W-Cut Bag',
-    sidepatty: 'Side Patty', bottompatty: 'Bottom Patty', handle: 'Handle', box: 'Item'
+    sidepatty: 'Side Patty', bottompatty: 'Bottom Patty', handle: 'Handle', handlebag: 'Handle Bag', box: 'Item'
 };
 
 export const typeName = (mat, type, name) =>

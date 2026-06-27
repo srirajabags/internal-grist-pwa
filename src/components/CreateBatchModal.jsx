@@ -39,6 +39,23 @@ const toRefList = (ids) => ['L', ...ids];
 const attrText = (a) => [a.material, a.colour, a.gsm && `${a.gsm} GSM`, a.width && `${a.width}"`]
     .filter(Boolean).join(' · ') || '—';
 
+const dateText = (v) => epochToDate(v) || '—';
+
+const sizeText = (batchType, so) => {
+    const type = String(batchType || '').trim().toUpperCase();
+    if (type === 'ROLLS TO SHEETS') {
+        return { label: 'Sheet', value: so.Sheet_Size || '—' };
+    }
+    if (type === 'ROLLS TO SIDEPATTY') {
+        const width = so.Sidepatty_Width;
+        return { label: 'Side patty', value: width ? width + '" wide' : '—' };
+    }
+    const w = so.Bag_Width;
+    const h = so.Bag_Height;
+    const value = w && h ? w + '" × ' + h + '"' : w ? w + '" wide' : h ? h + '" high' : '—';
+    return { label: 'Bag', value };
+};
+
 const PriorityBadge = ({ priority }) => {
     const tone = priority <= 2 ? 'green' : priority === 3 ? 'blue' : priority === 4 ? 'amber' : 'slate';
     const cls = {
@@ -150,6 +167,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                         so.Sidepatty_Width AS Sidepatty_Width, so.Handle_Colour AS Handle_Colour,
                         so.Sheet_Size AS Sheet_Size,
                         so.Quantity AS Quantity, so.Quantity_Type AS Quantity_Type,
+                        so.Order_Form_Date AS Order_Form_Date,
                         so.Factory_Updated_Date AS Factory_Updated_Date,
                         so.No_Stock_Identified AS No_Stock_Identified,
                         so.Factory_Production_Jobs AS Factory_Production_Jobs,
@@ -234,7 +252,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                         Inventory_Item_Code: g.matchedCodeId || null,
                         Inventory_Items: toRefList(itemIds),
                         Available_Weight_Kg_: assignedWeight,
-                        Estimated_Wastage_Weight_Kg_: 0
+                        Wastage_Weight_Kg_: 0
                     }
                 };
             });
@@ -369,6 +387,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                                 <Stat label="Sub-orders" value={totalSubOrders} />
                                 <Stat label="Jobs to create" value={plan.jobCount} />
                                 <Stat label="Postponed" value={plan.postponedCount} tone={plan.postponedCount ? 'amber' : 'slate'} />
+                                {plan.unmatchedCount > 0 && <Stat label="No roll width" value={plan.unmatchedCount} tone="red" />}
                             </div>
 
                             {plan.groups.length === 0 ? (
@@ -378,7 +397,8 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                                     <div className="flex items-start justify-between gap-2 mb-2">
                                         <div className="min-w-0">
                                             <p className="font-semibold text-slate-800 text-sm break-words">{attrText(g.attrs)}</p>
-                                            <p className="text-[11px] text-slate-400">
+                                            {g.rollWidth ? <div className="mt-1"><RollBadge width={g.rollWidth} /></div> : null}
+                                            <p className="text-[11px] text-slate-400 mt-1">
                                                 {g.matchedCodeId ? `Item code #${g.matchedCodeId}` : 'No matching item code'}
                                             </p>
                                         </div>
@@ -386,13 +406,13 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                                     </div>
                                     <div className="flex flex-wrap gap-1.5">
                                         {g.subOrders.map((so) => (
-                                            <span key={so.id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-slate-100 text-slate-600">
-                                                <Layers size={11} /> {so.Shop || `#${so.id}`} · {num(so.Quantity)}{unit}
-                                            </span>
+                                            <SubOrderPill key={so.id} so={so} batchType={batchType} unit={unit} />
                                         ))}
                                     </div>
                                 </div>
                             ))}
+
+                            <UnmatchedPanel subOrders={plan.unmatched} batchType={batchType} unit={unit} />
                         </div>
                     )}
 
@@ -403,12 +423,16 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                                 <Stat label="Jobs" value={plan.jobCount} />
                                 <Stat label={`Planned${plan.isPieces ? ' (pcs)' : ' kg'}`} value={num(plan.totalPlannedQty)} />
                                 <Stat label="Postponed" value={plan.postponedCount} tone={plan.postponedCount ? 'amber' : 'slate'} />
+                                {plan.unmatchedCount > 0 && <Stat label="No roll width" value={plan.unmatchedCount} tone="red" />}
                             </div>
 
                             {plan.groups.map((g) => (
                                 <div key={g.key} className="bg-white rounded-xl border border-slate-200 p-3">
                                     <div className="flex items-start justify-between gap-2 mb-1.5">
-                                        <p className="font-semibold text-slate-800 text-sm break-words min-w-0">{attrText(g.attrs)}</p>
+                                        <div className="min-w-0">
+                                            <p className="font-semibold text-slate-800 text-sm break-words">{attrText(g.attrs)}</p>
+                                            {g.rollWidth ? <div className="mt-1"><RollBadge width={g.rollWidth} /></div> : null}
+                                        </div>
                                         <PriorityBadge priority={g.priority} />
                                     </div>
                                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
@@ -427,6 +451,8 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                                     )}
                                 </div>
                             ))}
+
+                            <UnmatchedPanel subOrders={plan.unmatched} batchType={batchType} unit={unit} />
                         </div>
                     )}
 
@@ -487,11 +513,53 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
 };
 
 const Stat = ({ label, value, tone = 'slate' }) => {
-    const cls = tone === 'amber' ? 'text-amber-700' : 'text-slate-800';
+    const cls = tone === 'amber' ? 'text-amber-700' : tone === 'red' ? 'text-red-700' : 'text-slate-800';
     return (
         <div className="bg-white rounded-lg border border-slate-200 px-3 py-1.5">
             <span className="text-[11px] text-slate-400 mr-2">{label}</span>
             <span className={`font-bold ${cls}`}>{value}</span>
+        </div>
+    );
+};
+
+// Roll width a job will be cut from (roll-width batch types only).
+const RollBadge = ({ width }) => width ? (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold text-indigo-700 bg-indigo-50 ring-1 ring-indigo-200">
+        Roll {width}″
+    </span>
+) : null;
+
+const SubOrderPill = ({ so, batchType, unit, tone = 'slate' }) => {
+    const size = sizeText(batchType, so);
+    const cls = tone === 'red'
+        ? 'bg-white text-red-700 ring-red-200'
+        : 'bg-slate-100 text-slate-600 ring-slate-200';
+    return (
+        <span className={'inline-flex flex-col gap-0.5 px-2 py-1 rounded-md text-[11px] ring-1 ' + cls}>
+            <span className="inline-flex items-center gap-1 font-medium">
+                <Layers size={11} /> {so.Shop || ('#' + so.id)} · {num(so.Quantity)}{unit}
+            </span>
+            <span>{size.label}: <span className="font-medium">{size.value}</span></span>
+            <span>Order: {dateText(so.Order_Form_Date)} · Factory: {dateText(so.Factory_Updated_Date)}</span>
+        </span>
+    );
+};
+
+// Sub-orders whose required roll width exceeds every available roll — flagged here
+// during allocation; they are not placed in any job.
+const UnmatchedPanel = ({ subOrders, batchType, unit }) => {
+    if (!subOrders || subOrders.length === 0) return null;
+    return (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3">
+            <p className="text-sm font-semibold text-red-800 flex items-center gap-1.5 mb-1">
+                <AlertCircle size={15} /> {subOrders.length} sub-order{subOrders.length !== 1 ? 's' : ''} with no matching roll width
+            </p>
+            <p className="text-[11px] text-red-600 mb-2">Bag/sheet too large for any available roll — fix the size or add a wider roll. These are left out of every job.</p>
+            <div className="flex flex-wrap gap-1.5">
+                {subOrders.map((so) => (
+                    <SubOrderPill key={so.id} so={so} batchType={batchType} unit={unit} tone="red" />
+                ))}
+            </div>
         </div>
     );
 };

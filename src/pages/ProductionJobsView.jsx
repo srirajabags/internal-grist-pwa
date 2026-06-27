@@ -1,21 +1,35 @@
 import React, { useState, useEffect } from 'react';
 import {
     ArrowLeft, Boxes, AlertCircle, Loader2, RefreshCw, Package,
-    PlayCircle, CheckCircle2, Circle, Clock, ChevronRight, Layers, FileText, ArrowRight, Plus
+    PlayCircle, CheckCircle2, Circle, Clock, ChevronRight, Layers, FileText, ArrowRight, Plus, X
 } from 'lucide-react';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import CreateBatchModal from '../components/CreateBatchModal';
 import { ItemVisual, Dim } from '../components/itemVisuals';
 import { itemForm, FORM_LABEL, splitJobType } from '../utils/itemForms';
+import { outputTypeFor, ROLL_WIDTH_TYPES } from '../utils/productionBatch';
 
 // Grist document holding the factory production tables
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 const JOBS_TABLE = 'Factory_Production_Jobs';
 const BATCHES_TABLE = 'Factory_Production_Job_Batches';
 const TXN_TABLE = 'Inventory_Transactions';
+const ITEMS_TABLE = 'Inventory_Items';
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
+
+// Which output dimension a job type is ticked by when marking it complete, plus
+// the heading shown for that dimension's summary table.
+const SIZE_DIM = {
+    'ROLLS TO SHEETS': 'sheet',
+    'ROLLS TO DCUT': 'bag',
+    'ROLLS TO UCUT': 'bag',
+    'ROLLS TO WCUT': 'bag',
+    'ROLLS TO SIDEPATTY': 'patty',
+    'ROLLS TO HANDLES': 'bag'
+};
+const SIZE_TITLE = { sheet: 'Sheet Sizes', bag: 'Bag Sizes', patty: 'Side-Patty Sizes' };
 
 // Parse a Grist reference-list (stored as JSON like "[1,2]") into integer ids.
 const parseRefList = (v) => {
@@ -47,7 +61,7 @@ const TREE_SQL = `
         j.Production_Started AS job_started, j.Production_Started_At AS job_started_at,
         j.Production_Completed AS job_completed, j.Production_Completed_At AS job_completed_at,
         j.Planned_Weight_Kg_ AS job_planned_kg, j.Available_Weight_Kg_ AS job_available_kg,
-        j.Estimated_Wastage_Weight_Kg_ AS job_wastage_kg, j.Planned_Count_Bundles_ AS job_bundles,
+        j.Wastage_Weight_Kg_ AS job_wastage_kg, j.Planned_Count_Bundles_ AS job_bundles,
         j.From_Date AS job_from_date, j.To_Date AS job_to_date,
 
         ic.Item_Code AS item_name, ic.Type AS item_type,
@@ -130,6 +144,8 @@ const groupRows = (rows) => {
                     id: f.job_id,
                     type: batch.type,   // inferred from the parent batch
                     itemName: f.item_name,                 // readable code (Inventory_Item_Codes)
+                    itemCodeId: f.job_item_code,           // Inventory_Item_Code ref (roll code for roll-width jobs, else output code)
+                    itemType: f.item_type,                 // output Type (e.g. "DCUT BAG")
                     invItems: parseRefList(f.job_inv_items), // physical Inventory_Items refs
                     material: f.item_material,
                     colour: f.item_colour,
@@ -215,6 +231,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     const [updatingJobId, setUpdatingJobId] = useState(null);
     const [updatingBatchId, setUpdatingBatchId] = useState(null);
     const [showCreate, setShowCreate] = useState(false);
+    const [completingJob, setCompletingJob] = useState(null);
 
     // Fetch the whole tree in a single joined query. `silent` skips the full-page
     // spinner (used after an update to refresh data without flashing the tree).
@@ -289,17 +306,152 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
         );
     };
 
-    const markCompleted = (job) => {
-        const now = Date.now() / 1000;
-        const gristFields = { Production_Completed: true, Production_Completed_At: now };
-        const localPatch = { completed: true, completedAt: now };
-        if (!job.started) {
-            gristFields.Production_Started = true;
-            gristFields.Production_Started_At = job.startedAt || now;
-            localPatch.started = true;
-            localPatch.startedAt = job.startedAt || now;
+    // Compact, deterministic Item_ID label for a freshly produced output item,
+    // mirroring the existing finished-goods convention (e.g. "DB_W_NN_110_36").
+    const outputItemSlug = (job, outputType) => {
+        const abbr = (s) => String(s ?? '').trim().split(/\s+/).filter(Boolean).map((w) => w[0]).join('').toUpperCase();
+        return [abbr(outputType), abbr(job.colour), abbr(job.material), job.gsm, job.width]
+            .filter((v) => v !== '' && v !== null && v !== undefined)
+            .join('_');
+    };
+
+    // Resolve the Inventory_Item_Codes id for one of a job's output products. For
+    // roll-width jobs the output code shares the consumed roll's material/colour/gsm
+    // and roll width, so we look it up by (output type · those attributes). Other
+    // jobs carry their single output code directly. Returns null if none exists yet.
+    const resolveOutputCode = async (headers, job, outputType) => {
+        if (!ROLL_WIDTH_TYPES.has(job.type)) {
+            return Number.isInteger(job.itemCodeId) && job.itemCodeId > 0 ? job.itemCodeId : null;
         }
-        updateJob(job.id, gristFields, localPatch);
+        const resp = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sql: 'SELECT id, GSM, Width_Inches_ FROM Inventory_Item_Codes WHERE Type = ? AND Material = ? AND Colour = ?',
+                args: [outputType, job.material, job.colour]
+            })
+        });
+        if (!resp.ok) return null;
+        const data = await resp.json();
+        const norm = (v) => String(v ?? '').trim().toUpperCase();
+        const hit = (data.records || []).find((r) =>
+            norm(r.fields.GSM) === norm(job.gsm) && norm(r.fields.Width_Inches_) === norm(job.width));
+        return hit && Number.isInteger(hit.fields.id) ? hit.fields.id : null;
+    };
+
+    // Finished goods are tracked as one Inventory_Items row per output code. Reuse
+    // the existing row for a code, or create one labelled by `slug`.
+    const findOrCreateOutputItem = async (headers, codeId, slug) => {
+        const sqlResp = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sql: 'SELECT id FROM Inventory_Items WHERE Item_Code = ? LIMIT 1', args: [codeId] })
+        });
+        if (sqlResp.ok) {
+            const data = await sqlResp.json();
+            const found = (data.records || [])[0];
+            if (found && Number.isInteger(found.fields?.id)) return found.fields.id;
+        }
+        const createResp = await fetch(getUrl(`/api/docs/${DOC_ID}/tables/${ITEMS_TABLE}/records`), {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ records: [{ fields: { Item_ID: slug, Item_Code: codeId } }] })
+        });
+        if (!createResp.ok) {
+            const text = await createResp.text().catch(() => '');
+            throw new Error(`Failed to create output inventory item: ${createResp.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        const created = await createResp.json();
+        const newId = created.records?.[0]?.id;
+        if (!Number.isInteger(newId)) throw new Error('Output inventory item was not created.');
+        return newId;
+    };
+
+    // Complete a job from the output form. For each produced output (per model for
+    // DCUT), the planned portion lands in PRINTING AREA and any surplus in BAGS
+    // GODOWN. Any leftover roll the operator reports goes back to ROLLS GODOWN.
+    // Sequential (txns -> job) and throws (not setError) so the modal can show the
+    // failure and the job is only marked done once every transaction succeeds.
+    const submitJobOutput = async (job, form) => {
+        setUpdatingJobId(job.id);
+        try {
+            const headers = await getHeaders();
+            const now = Date.now() / 1000;
+            const txnRecords = [];
+
+            // One or more produced outputs, each crediting its own item code.
+            for (const o of form.outputs) {
+                const output = num(o.weight);
+                if (output <= 0) continue;
+                const codeId = await resolveOutputCode(headers, job, o.outputType);
+                if (!codeId) {
+                    throw new Error(`No ${o.outputType} item code for ${[job.material, job.colour, job.gsm && `${job.gsm} GSM`, job.width && `${job.width}″`].filter(Boolean).join(' · ')} — add it to Inventory_Item_Codes first.`);
+                }
+                const outItemId = await findOrCreateOutputItem(headers, codeId, outputItemSlug(job, o.outputType));
+                const planned = num(o.planned);
+                const surplus = Math.max(0, output - planned);
+                const printingQty = output - surplus; // = min(output, planned)
+                txnRecords.push({
+                    fields: {
+                        Item_ID: outItemId, Production_Job: job.id, Transaction_Type: 'ADD',
+                        Weight_Kg_: printingQty, Location: 'PRINTING AREA', Transaction_Time: now
+                    }
+                });
+                if (surplus > 0) {
+                    txnRecords.push({
+                        fields: {
+                            Item_ID: outItemId, Production_Job: job.id, Transaction_Type: 'ADD',
+                            Weight_Kg_: surplus, Location: 'BAGS GODOWN', Transaction_Time: now
+                        }
+                    });
+                }
+            }
+
+            // Leftover roll returned to ROLLS GODOWN, credited to the consumed roll.
+            const remaining = num(form.remainingRoll);
+            if (remaining > 0) {
+                const rollItemId = job.invItems && job.invItems.length > 0 ? job.invItems[0] : null;
+                if (!rollItemId) throw new Error('No roll on this job to return the remaining weight against.');
+                txnRecords.push({
+                    fields: {
+                        Item_ID: rollItemId, Production_Job: job.id, Transaction_Type: 'ADD',
+                        Weight_Kg_: remaining, Location: 'ROLLS GODOWN', Transaction_Time: now
+                    }
+                });
+            }
+
+            if (txnRecords.length > 0) {
+                const txnResp = await fetch(getUrl(`/api/docs/${DOC_ID}/tables/${TXN_TABLE}/records`), {
+                    method: 'POST',
+                    headers: { ...headers, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ records: txnRecords })
+                });
+                if (!txnResp.ok) {
+                    const text = await txnResp.text().catch(() => '');
+                    throw new Error(`Failed to record output transactions: ${txnResp.statusText}${text ? ` - ${text}` : ''}`);
+                }
+            }
+
+            const jobFields = { Production_Completed: true, Production_Completed_At: now };
+            if (!job.started) {
+                jobFields.Production_Started = true;
+                jobFields.Production_Started_At = job.startedAt || now;
+            }
+            const jobResp = await fetch(getUrl(`/api/docs/${DOC_ID}/tables/${JOBS_TABLE}/records`), {
+                method: 'PATCH',
+                headers: { ...headers, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ records: [{ id: job.id, fields: jobFields }] })
+            });
+            if (!jobResp.ok) {
+                const text = await jobResp.text().catch(() => '');
+                throw new Error(`Failed to mark job completed: ${jobResp.statusText}${text ? ` - ${text}` : ''}`);
+            }
+
+            setCompletingJob(null);
+            await fetchData(true);
+        } finally {
+            setUpdatingJobId(null);
+        }
     };
 
     // Mark a batch-level inventory flag and record one Inventory_Transactions row
@@ -435,6 +587,15 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                     getUrl={getUrl}
                     onClose={() => setShowCreate(false)}
                     onCreated={() => { setShowCreate(false); fetchData(); }}
+                />
+            )}
+
+            {completingJob && (
+                <OutputModal
+                    job={completingJob}
+                    updating={updatingJobId === completingJob.id}
+                    onClose={() => setCompletingJob(null)}
+                    onSubmit={(form) => submitJobOutput(completingJob, form)}
                 />
             )}
 
@@ -591,7 +752,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                     job={selectedJob}
                                     updating={updatingJobId === selectedJob.id}
                                     onStart={() => markStarted(selectedJob)}
-                                    onComplete={() => markCompleted(selectedJob)}
+                                    onComplete={() => setCompletingJob(selectedJob)}
                                 />
                             )}
                         </>
@@ -713,11 +874,25 @@ const InventoryAction = ({ label, done, at, actionLabel, doneLabel, updating, on
     </div>
 );
 
-// Raw material -> output illustration derived from the job Type (e.g. "ROLLS TO SHEETS").
+// Raw material -> output illustration derived from the job Type (e.g. "ROLLS TO
+// SHEETS"). A ROLLS TO DCUT job can produce both DCUT and HANDLE bags, so it shows
+// an output for each model present in the job's sub-orders.
+const jobOutputs = (job) => {
+    const { outRaw } = splitJobType(job.type);
+    if ((job.type || '').trim().toUpperCase() === 'ROLLS TO DCUT' && job.subOrders?.length) {
+        const models = new Set(job.subOrders.map((so) => String(so.model ?? '').trim().toUpperCase()));
+        const outs = [];
+        if (models.has('DCUT')) outs.push('DCUT BAG');
+        if (models.has('HANDLE')) outs.push('HANDLE BAG');
+        if (outs.length) return outs;
+    }
+    return outRaw ? [outRaw] : [];
+};
+
 const JobFlow = ({ job, size = 'md' }) => {
-    const { inRaw, outRaw } = splitJobType(job.type);
+    const { inRaw } = splitJobType(job.type);
     const inForm = itemForm(inRaw);
-    const outForm = outRaw ? itemForm(outRaw) : null;
+    const outputs = jobOutputs(job);
     const cellW = size === 'sm' ? 56 : 80;
     return (
         <div className="flex items-center justify-center gap-3">
@@ -727,14 +902,18 @@ const JobFlow = ({ job, size = 'md' }) => {
                 </div>
                 <span className="text-[11px] font-medium text-slate-500 mt-0.5 whitespace-nowrap">Raw · {FORM_LABEL[inForm]}</span>
             </div>
-            {outForm && (
+            {outputs.length > 0 && (
                 <>
                     <ArrowRight size={size === 'sm' ? 16 : 22} className="text-slate-300 shrink-0" />
-                    <div className="flex flex-col items-center">
-                        <div style={{ width: cellW }}>
-                            <ItemVisual colour={job.colour} type={outRaw} size={size} />
-                        </div>
-                        <span className="text-[11px] font-medium text-slate-500 mt-0.5 whitespace-nowrap">Output · {FORM_LABEL[outForm]}</span>
+                    <div className="flex items-center gap-2">
+                        {outputs.map((out) => (
+                            <div key={out} className="flex flex-col items-center">
+                                <div style={{ width: cellW }}>
+                                    <ItemVisual colour={job.colour} type={out} size={size} />
+                                </div>
+                                <span className="text-[11px] font-medium text-slate-500 mt-0.5 whitespace-nowrap">Output · {FORM_LABEL[itemForm(out)]}</span>
+                            </div>
+                        ))}
                     </div>
                 </>
             )}
@@ -745,13 +924,46 @@ const JobFlow = ({ job, size = 'md' }) => {
 const JobDetail = ({ job, updating, onStart, onComplete }) => {
     const startedAt = formatDateTime(job.startedAt);
     const completedAt = formatDateTime(job.completedAt);
-    const { outRaw } = splitJobType(job.type);
+    // Completion is ticked per output line rather than per sub-order: ROLLS TO
+    // SHEETS groups by sheet size, side-patty by patty width, DCUT by MODEL + bag
+    // size (a DCUT job mixes DCUT and HANDLE bags), every other type by bag W×H.
+    const jobType = (job.type || '').trim().toUpperCase();
+    const sizeDim = SIZE_DIM[jobType] || 'bag';
+    const isDcut = jobType === 'ROLLS TO DCUT';
+    // Sidepatty/handle outputs are counted in bundles; everything else in kg.
+    const isPieces = jobType === 'ROLLS TO SIDEPATTY' || jobType === 'ROLLS TO HANDLES';
+    const cell = (v) => (v === null || v === undefined || v === '' || typeof v === 'object') ? '—' : v;
+    const sizeKeyFor = (so) => {
+        if (sizeDim === 'sheet') return String(cell(so.sheetSize));
+        if (sizeDim === 'patty') return String(cell(so.sidepattyWidth));
+        const bag = `${cell(so.bagW)}×${cell(so.bagH)}`;
+        return isDcut ? `${cell(so.model)} | ${bag}` : bag;
+    };
+    const sizeLabelFor = (so) => {
+        if (sizeDim === 'sheet') return String(cell(so.sheetSize));
+        if (sizeDim === 'patty') { const w = cell(so.sidepattyWidth); return w === '—' ? '—' : `${w}″ wide`; }
+        const bag = `${cell(so.bagW)}″ × ${cell(so.bagH)}″`;
+        return isDcut ? `${cell(so.model)} · ${bag}` : bag;
+    };
 
-    // Each sub-order must be ticked before the job can be marked completed.
+    const sizeTitle = isDcut ? 'Output (model · size)' : SIZE_TITLE[sizeDim];
+
+    const sizeGroups = (() => {
+        const map = new Map();
+        for (const so of job.subOrders) {
+            const key = sizeKeyFor(so);
+            if (!map.has(key)) map.set(key, { key, label: sizeLabelFor(so), qty: 0, count: 0 });
+            const g = map.get(key);
+            g.qty += num(so.qty);
+            g.count += 1;
+        }
+        return [...map.values()].sort((a, b) => b.qty - a.qty);
+    })();
+
     const [checked, setChecked] = useState({});
-    const toggle = (id) => setChecked((prev) => ({ ...prev, [id]: !prev[id] }));
-    const total = job.subOrders.length;
-    const doneCount = job.subOrders.filter((so) => checked[so.id]).length;
+    const toggle = (key) => setChecked((prev) => ({ ...prev, [key]: !prev[key] }));
+    const total = sizeGroups.length;
+    const doneCount = sizeGroups.filter((g) => checked[g.key]).length;
     const allChecked = total === 0 || doneCount === total;
 
     return (
@@ -815,11 +1027,41 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
                     </div>
                     {job.started && !job.completed && !allChecked && (
                         <p className="text-xs text-amber-600 text-center mt-2">
-                            Tick all sub-orders to complete ({doneCount}/{total} done)
+                            Tick all {sizeTitle.toLowerCase()} to complete ({doneCount}/{total} done)
                         </p>
                     )}
                 </div>
             </Card>
+
+            {/* Size summary — tick each size to enable completion */}
+            {sizeGroups.length > 0 && (
+                <Card className="p-4">
+                    <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                        <Layers size={14} /> {sizeTitle}
+                        <span className="ml-auto font-normal text-slate-400 normal-case tracking-normal">{doneCount}/{total} done</span>
+                    </h2>
+                    <div className="divide-y divide-slate-100">
+                        {sizeGroups.map((g) => (
+                            <label key={g.key} className="flex items-center justify-between gap-3 py-2.5 cursor-pointer select-none">
+                                <div className="min-w-0">
+                                    <p className="font-semibold text-slate-800 break-words">{g.label}</p>
+                                    <p className="text-[11px] text-slate-400">{g.count} sub-order{g.count !== 1 ? 's' : ''}</p>
+                                </div>
+                                <div className="flex items-center gap-3 shrink-0">
+                                    <span className="text-sm font-semibold text-slate-700">{num(g.qty)}{isPieces ? '' : ' kg'}</span>
+                                    <input
+                                        type="checkbox"
+                                        checked={!!checked[g.key]}
+                                        onChange={() => toggle(g.key)}
+                                        disabled={job.completed}
+                                        className="w-5 h-5 rounded border-slate-300 text-green-600 focus:ring-green-500"
+                                    />
+                                </div>
+                            </label>
+                        ))}
+                    </div>
+                </Card>
+            )}
 
             {/* Sub-order line items */}
             <div>
@@ -832,26 +1074,19 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
                 ) : (
                     <div className="space-y-2.5">
                         {job.subOrders.map((so) => {
-                            const outForm = itemForm(outRaw || so.model);
+                            const outputType = outputTypeFor(job.type, { Model: so.model });
+                            const outForm = itemForm(outputType);
                             return (
-                            <Card key={so.id} className={`p-4 ${checked[so.id] ? 'ring-1 ring-green-300 bg-green-50/40' : ''}`}>
+                            <Card key={so.id} className={`p-4 ${checked[sizeKeyFor(so)] ? 'ring-1 ring-green-300 bg-green-50/40' : ''}`}>
                                 <div className="flex items-start justify-between gap-2 mb-3">
                                     <h4 className="font-semibold text-slate-800 break-words min-w-0">{so.shop || `Sub-order #${so.id}`}</h4>
-                                    <label className="flex items-center gap-1.5 shrink-0 cursor-pointer select-none">
-                                        <input
-                                            type="checkbox"
-                                            checked={!!checked[so.id]}
-                                            onChange={() => toggle(so.id)}
-                                            className="w-5 h-5 rounded border-slate-300 text-green-600 focus:ring-green-500"
-                                        />
-                                        <span className={`text-xs font-medium ${checked[so.id] ? 'text-green-700' : 'text-slate-500'}`}>Done</span>
-                                    </label>
+                                    <span className="shrink-0 inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-600">{sizeLabelFor(so)}</span>
                                 </div>
 
                                 {/* Expected output with highlighted dimensions */}
                                 <div className="flex items-center gap-3 mb-3 pb-3 border-b border-slate-100">
                                     <div className="w-16 shrink-0">
-                                        <ItemVisual colour={so.bagColour || job.colour} type={outRaw || so.model} size="md" />
+                                        <ItemVisual colour={so.bagColour || job.colour} type={outputType} size="md" />
                                     </div>
                                     <div className="min-w-0">
                                         <p className="text-xs font-semibold text-slate-600">Output: {FORM_LABEL[outForm]}</p>
@@ -884,6 +1119,123 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
                         })}
                     </div>
                 )}
+            </div>
+        </div>
+    );
+};
+
+// Output form shown when completing a job. Captures produced weight per output
+// product (per model for DCUT) and, optionally, leftover roll to return. Each
+// product's planned portion goes to PRINTING AREA, surplus to BAGS GODOWN; the
+// leftover roll goes to ROLLS GODOWN. Output codes are resolved on submit, so a
+// missing code surfaces here as an error rather than silently failing.
+const OutputModal = ({ job, updating, onClose, onSubmit }) => {
+    // Output products present in the job, each with its planned weight (sum of the
+    // quantities of the sub-orders that produce it). DCUT splits by bag model.
+    const outputs = (() => {
+        const map = new Map();
+        for (const so of job.subOrders) {
+            const ot = outputTypeFor(job.type, { Model: so.model });
+            if (!map.has(ot)) map.set(ot, { outputType: ot, planned: 0 });
+            map.get(ot).planned += num(so.qty);
+        }
+        return [...map.values()].sort((a, b) => b.planned - a.planned);
+    })();
+
+    const [weights, setWeights] = useState({});
+    const [returnRoll, setReturnRoll] = useState(false);
+    const [rollKg, setRollKg] = useState('');
+    const [err, setErr] = useState('');
+
+    const hasRoll = job.invItems && job.invItems.length > 0;
+    const totalOut = outputs.reduce((s, o) => s + (Number(weights[o.outputType]) || 0), 0);
+    const rollVal = Number(rollKg) || 0;
+    const valid = !updating && totalOut > 0 && (!returnRoll || rollVal > 0);
+
+    const submit = async () => {
+        setErr('');
+        try {
+            await onSubmit({
+                outputs: outputs.map((o) => ({ outputType: o.outputType, planned: o.planned, weight: Number(weights[o.outputType]) || 0 })),
+                remainingRoll: returnRoll ? rollVal : 0
+            });
+        } catch (e) {
+            setErr(e.message || String(e) || 'Failed to complete job.');
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 sm:p-4" onClick={onClose}>
+            <div className="bg-white w-full sm:max-w-md sm:rounded-2xl shadow-xl max-h-[92vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+                <div className="border-b border-slate-200 px-4 py-3 flex items-center justify-between">
+                    <div className="min-w-0">
+                        <h2 className="font-bold text-slate-800">Complete {job.type || 'Job'} #{job.id}</h2>
+                        <p className="text-xs text-slate-500 truncate">Record produced output{outputs.length > 1 ? ' per product' : ''}</p>
+                    </div>
+                    <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1"><X size={20} /></button>
+                </div>
+
+                <div className="p-4 space-y-3 overflow-auto">
+                    {err && (
+                        <div className="p-3 bg-red-50 text-red-700 rounded-lg border border-red-100 flex gap-2 items-start text-sm">
+                            <AlertCircle size={18} className="mt-0.5 shrink-0" />
+                            <p className="break-words">{err}</p>
+                        </div>
+                    )}
+
+                    {outputs.map((o) => {
+                        const output = Number(weights[o.outputType]) || 0;
+                        const surplus = Math.max(0, output - o.planned);
+                        const printing = output - surplus;
+                        return (
+                            <div key={o.outputType} className="rounded-lg border border-slate-200 p-3">
+                                <div className="flex items-center justify-between gap-2 mb-2">
+                                    <span className="text-sm font-semibold text-slate-800">{o.outputType}</span>
+                                    <span className="text-[11px] text-slate-400">{o.planned} kg planned</span>
+                                </div>
+                                <input
+                                    type="number" inputMode="decimal" min="0" step="any"
+                                    value={weights[o.outputType] ?? ''}
+                                    onChange={(e) => setWeights((w) => ({ ...w, [o.outputType]: e.target.value }))}
+                                    placeholder="Output weight (kg)"
+                                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none"
+                                />
+                                {output > 0 && (
+                                    <div className="flex justify-between gap-3 mt-2 text-[11px]">
+                                        <span className="text-slate-500">→ Printing Area <span className="font-semibold text-slate-700">{printing} kg</span></span>
+                                        <span className="text-slate-500">→ Bags Godown <span className={`font-semibold ${surplus > 0 ? 'text-green-700' : 'text-slate-400'}`}>{surplus} kg</span></span>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+
+                    {hasRoll && (
+                        <div className="rounded-lg border border-slate-200 p-3">
+                            <label className="flex items-center gap-2 cursor-pointer select-none">
+                                <input type="checkbox" checked={returnRoll} onChange={(e) => setReturnRoll(e.target.checked)}
+                                    className="w-4 h-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500" />
+                                <span className="text-sm font-medium text-slate-700">Roll left over — return to Rolls Godown</span>
+                            </label>
+                            {returnRoll && (
+                                <input
+                                    type="number" inputMode="decimal" min="0" step="any" value={rollKg}
+                                    onChange={(e) => setRollKg(e.target.value)}
+                                    placeholder="Remaining roll weight (kg)"
+                                    className="mt-2 w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none"
+                                />
+                            )}
+                        </div>
+                    )}
+                </div>
+
+                <div className="border-t border-slate-200 px-4 py-3 flex gap-2 justify-end">
+                    <Button variant="ghost" onClick={onClose} disabled={updating}>Cancel</Button>
+                    <Button variant="primary" onClick={submit} disabled={!valid}
+                        icon={updating ? Loader2 : CheckCircle2}>
+                        Complete Job
+                    </Button>
+                </div>
             </div>
         </div>
     );

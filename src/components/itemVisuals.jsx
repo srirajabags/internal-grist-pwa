@@ -67,6 +67,17 @@ export const ItemVisual = ({ colour, type, name, size = 'md' }) => {
                 </g>
             );
             break;
+        case 'handlebag':
+            shape = (
+                <g stroke={stroke} strokeWidth={sw} strokeLinejoin="round">
+                    <path d="M30 22 L30 58 L70 58 L70 22" fill={fill} />
+                    <path d="M35 24 L35 13 L46 13 L46 24" fill={lighter} />
+                    <path d="M65 24 L65 13 L54 13 L54 24" fill={lighter} />
+                    <path d="M46 24 Q50 29 54 24" fill="none" />
+                    <line x1="30" y1="36" x2="70" y2="36" strokeWidth="1.5" strokeDasharray="3 2" />
+                </g>
+            );
+            break;
         case 'handle':
             shape = (
                 <g stroke={stroke} strokeWidth={sw} strokeLinejoin="round">
