@@ -258,8 +258,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                         Sub_Orders: toRefList(g.fulfilled.map((so) => so.id)),
                         Inventory_Item_Code: g.matchedCodeId || null,
                         Inventory_Items: toRefList(itemIds),
-                        Available_Weight_Kg_: assignedWeight,
-                        Wastage_Weight_Kg_: 0
+                        Available_Weight_Kg_: assignedWeight
                     }
                 };
             });

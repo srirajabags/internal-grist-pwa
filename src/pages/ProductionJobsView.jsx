@@ -469,9 +469,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
 
             const jobFields = {
                 Production_Completed: true,
-                Production_Completed_At: now,
-                Output_Weight_Kg_: totalOutput,
-                Wastage_Weight_Kg_: wastageKg
+                Production_Completed_At: now
             };
             if (!job.started) {
                 jobFields.Production_Started = true;
