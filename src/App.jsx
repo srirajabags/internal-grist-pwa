@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users } from 'lucide-react';
+import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users, Boxes, Warehouse } from 'lucide-react';
 import SqlVisualization from './components/SqlVisualization';
 import DashboardList from './components/DashboardList';
 import DashboardView from './components/DashboardView';
@@ -357,6 +357,22 @@ const HomePage = ({ onNavigate, user, onLogout, impersonateEmail, setImpersonate
       hoverColor: 'hover:bg-orange-700'
     },
     {
+      id: 'production',
+      title: 'Production Jobs',
+      description: 'Track ongoing batches and update individual jobs',
+      icon: Boxes,
+      color: 'bg-amber-600',
+      hoverColor: 'hover:bg-amber-700'
+    },
+    {
+      id: 'inventory',
+      title: 'Inventory',
+      description: 'Track current stock from inventory transactions',
+      icon: Warehouse,
+      color: 'bg-teal-600',
+      hoverColor: 'hover:bg-teal-700'
+    },
+    {
       id: 'telecaller',
       title: 'Telecaller View',
       description: 'Manage telecaller operations and calls',
@@ -473,6 +489,8 @@ import TelecallerView from './pages/TelecallerView';
 import TelecallerCustomerView from './pages/TelecallerCustomerView';
 import SalesmanView from './pages/SalesmanView';
 import SalesmanCustomerView from './pages/SalesmanCustomerView';
+import ProductionJobsView from './pages/ProductionJobsView';
+import InventoryView from './pages/InventoryView';
 
 // Design Confirmation View Component (Placeholder)
 const DesignConfirmationView = ({ onBack, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers }) => {
@@ -2598,6 +2616,30 @@ export default function App() {
           path="/factory"
           element={
             <FactoryView
+              onBack={() => navigate('/')}
+              user={derivedUser}
+              onLogout={handleLogout}
+              getHeaders={getHeaders}
+              getUrl={getUrl}
+            />
+          }
+        />
+        <Route
+          path="/production"
+          element={
+            <ProductionJobsView
+              onBack={() => navigate('/')}
+              user={derivedUser}
+              onLogout={handleLogout}
+              getHeaders={getHeaders}
+              getUrl={getUrl}
+            />
+          }
+        />
+        <Route
+          path="/inventory"
+          element={
+            <InventoryView
               onBack={() => navigate('/')}
               user={derivedUser}
               onLogout={handleLogout}
