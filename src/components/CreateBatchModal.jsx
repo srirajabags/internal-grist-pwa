@@ -12,6 +12,11 @@ const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 const BATCHES_TABLE = 'Factory_Production_Job_Batches';
 const JOBS_TABLE = 'Factory_Production_Jobs';
 const SUB_ORDERS_TABLE = 'Sub_Orders';
+const ACKED_GODOWN_FILTER = `
+                    s.Location IN ('ROLLS GODOWN', 'BAGS GODOWN')
+                    AND s.Incharge_Ack = 1
+`;
+const SUMMARY_BY_ID_TABLE = 'Inventory_Transactions_summary_Incharge_Ack_Item_Code_Item_ID_Location';
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const truthy = (v) => v === true || v === 1 || v === '1' || v === 'true';
@@ -201,9 +206,11 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                         ic.Type AS type, ic.Material AS material, ic.Colour AS colour,
                         ic.GSM AS gsm, ic.Width_Inches_ AS width,
                         s.Available_Weight_Kg_ AS availWeight
-                 FROM Inventory_Transactions_summary_Item_Code_Item_ID s
+                 FROM ${SUMMARY_BY_ID_TABLE} s
                  LEFT JOIN Inventory_Item_Codes ic ON ic.id = s.Item_Code
-                 WHERE s.Available_Weight_Kg_ > 0`
+                 WHERE s.Item_Code != 0
+                    AND ${ACKED_GODOWN_FILTER}
+                    AND s.Available_Weight_Kg_ > 0`
             );
             const inventory = invRows.map((r) => ({
                 itemId: num(r.itemId),

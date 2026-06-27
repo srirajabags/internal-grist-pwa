@@ -18,6 +18,7 @@ const TXN_TABLE = 'Inventory_Transactions';
 const ITEMS_TABLE = 'Inventory_Items';
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
+const roundWeight = (v) => Math.round(num(v) * 1000) / 1000;
 
 // Which output dimension a job type is ticked by when marking it complete, plus
 // the heading shown for that dimension's summary table.
@@ -40,6 +41,18 @@ const parseRefList = (v) => {
     return a.filter((x) => x !== 'L').map(Number).filter(Number.isInteger);
 };
 
+const parseInventoryItemOptions = (v, fallbackIds = []) => {
+    let parsed = v;
+    if (typeof v === 'string') { try { parsed = JSON.parse(v); } catch { parsed = []; } }
+    const options = Array.isArray(parsed)
+        ? parsed
+            .map((item) => ({ id: num(item?.id), itemId: item?.itemId || `Item #${num(item?.id)}` }))
+            .filter((item) => Number.isInteger(item.id) && item.id > 0)
+        : [];
+    if (options.length > 0) return options;
+    return fallbackIds.map((id) => ({ id, itemId: `Item #${id}` }));
+};
+
 // One joined query fetches the whole tree (open batches -> jobs -> sub-orders),
 // plus inventory item details and the sub-order's customer/order. Reference-list
 // columns are stored as JSON, so json_each() expands them for the joins.
@@ -48,7 +61,7 @@ const TREE_SQL = `
     SELECT
         b.id AS batch_id, b.Type AS batch_type, b.Date AS batch_date,
         b.Total_Planned_Weight_Kg_ AS batch_planned_kg,
-        b.Total_Estimated_Wastage_Weight_Kg_ AS batch_wastage_kg,
+        b.Total_Wastage_Weight_Kg_ AS batch_wastage_kg,
         b.Production_Started_At AS batch_started_at,
         b.Production_Completed_At AS batch_completed_at,
         b.Required_Inventory_Collected AS batch_inv_collected,
@@ -58,6 +71,12 @@ const TREE_SQL = `
 
         j.id AS job_id,
         j.Inventory_Item_Code AS job_item_code, j.Inventory_Items AS job_inv_items,
+        (
+            SELECT json_group_array(json_object('id', it.id, 'itemId', it.Item_ID))
+            FROM json_each(CASE WHEN json_valid(j.Inventory_Items) THEN j.Inventory_Items ELSE '[]' END) ji
+            LEFT JOIN Inventory_Items it ON it.id = ji.value
+            WHERE ji.value != 'L'
+        ) AS job_inv_item_options,
         j.Production_Started AS job_started, j.Production_Started_At AS job_started_at,
         j.Production_Completed AS job_completed, j.Production_Completed_At AS job_completed_at,
         j.Planned_Weight_Kg_ AS job_planned_kg, j.Available_Weight_Kg_ AS job_available_kg,
@@ -140,13 +159,15 @@ const groupRows = (rows) => {
         if (f.job_id != null) {
             let job = batch._jobs.get(f.job_id);
             if (!job) {
+                const invItems = parseRefList(f.job_inv_items);
                 job = {
                     id: f.job_id,
                     type: batch.type,   // inferred from the parent batch
                     itemName: f.item_name,                 // readable code (Inventory_Item_Codes)
                     itemCodeId: f.job_item_code,           // Inventory_Item_Code ref (roll code for roll-width jobs, else output code)
                     itemType: f.item_type,                 // output Type (e.g. "DCUT BAG")
-                    invItems: parseRefList(f.job_inv_items), // physical Inventory_Items refs
+                    invItems, // physical Inventory_Items refs
+                    invItemOptions: parseInventoryItemOptions(f.job_inv_item_options, invItems),
                     material: f.item_material,
                     colour: f.item_colour,
                     gsm: f.item_gsm,
@@ -378,6 +399,15 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
             const headers = await getHeaders();
             const now = Date.now() / 1000;
             const txnRecords = [];
+            const remainingRolls = Array.isArray(form.remainingRolls)
+                ? form.remainingRolls
+                : (num(form.remainingRoll) > 0 ? [{ itemId: job.invItems?.[0], weight: form.remainingRoll }] : []);
+            const totalOutput = roundWeight((form.outputs || []).reduce((sum, o) => sum + num(o.weight), 0));
+            const totalReturned = roundWeight(remainingRolls.reduce((sum, r) => sum + num(r.weight), 0));
+            const wastageKg = roundWeight(num(job.availableKg) - totalOutput - totalReturned);
+            if (wastageKg < 0) {
+                throw new Error('Output plus returned roll weight cannot exceed the available job weight.');
+            }
 
             // One or more produced outputs, each crediting its own item code.
             for (const o of form.outputs) {
@@ -407,11 +437,16 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                 }
             }
 
-            // Leftover roll returned to ROLLS GODOWN, credited to the consumed roll.
-            const remaining = num(form.remainingRoll);
-            if (remaining > 0) {
-                const rollItemId = job.invItems && job.invItems.length > 0 ? job.invItems[0] : null;
-                if (!rollItemId) throw new Error('No roll on this job to return the remaining weight against.');
+            // Leftover rolls returned to ROLLS GODOWN, credited to the selected
+            // consumed physical Inventory_Items rows.
+            for (const returnedRoll of remainingRolls) {
+                const remaining = num(returnedRoll.weight);
+                if (remaining <= 0) continue;
+                const rollItemId = num(returnedRoll.itemId);
+                if (!rollItemId) throw new Error('Select an Inventory Item for every returned roll weight.');
+                if (job.invItems?.length && !job.invItems.includes(rollItemId)) {
+                    throw new Error('Returned roll item must belong to this job.');
+                }
                 txnRecords.push({
                     fields: {
                         Item_ID: rollItemId, Production_Job: job.id, Transaction_Type: 'ADD',
@@ -432,7 +467,12 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                 }
             }
 
-            const jobFields = { Production_Completed: true, Production_Completed_At: now };
+            const jobFields = {
+                Production_Completed: true,
+                Production_Completed_At: now,
+                Output_Weight_Kg_: totalOutput,
+                Wastage_Weight_Kg_: wastageKg
+            };
             if (!job.started) {
                 jobFields.Production_Started = true;
                 jobFields.Production_Started_At = job.startedAt || now;
@@ -524,14 +564,21 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
         weightFn: (j) => num(j.availableKg)
     });
 
-    const markInventoryReturned = (batch) => runInventoryAction(batch, {
-        boolField: 'Remaining_Inventory_Returned',
-        atField: 'Inventory_Returned_At',
-        localDone: 'invReturned',
-        localAt: 'invReturnedAt',
-        type: 'ADD',
-        weightFn: (j) => num(j.availableKg) - num(j.plannedKg)
-    });
+    const markInventoryReturned = (batch) => {
+        const allJobsCompleted = batch.jobs.length > 0 && batch.jobs.every((j) => j.completed);
+        if (!allJobsCompleted) {
+            setError('All jobs in the batch must be completed before marking remaining inventory returned.');
+            return;
+        }
+        runInventoryAction(batch, {
+            boolField: 'Remaining_Inventory_Returned',
+            atField: 'Inventory_Returned_At',
+            localDone: 'invReturned',
+            localAt: 'invReturnedAt',
+            type: 'ADD',
+            weightFn: (j) => num(j.availableKg) - num(j.plannedKg)
+        });
+    };
 
     // --- Derived navigation state ---
     const types = [...new Set(batches.map((b) => b.type).filter(Boolean))].sort();
@@ -822,6 +869,7 @@ const Field = ({ label, value }) => (
 const BatchInventory = ({ batch, updating, onCollect, onReturn }) => {
     const collectedAt = formatDateTime(batch.invCollectedAt);
     const returnedAt = formatDateTime(batch.invReturnedAt);
+    const allJobsCompleted = batch.jobs.length > 0 && batch.jobs.every((job) => job.completed);
 
     return (
         <Card className="p-4 mb-3">
@@ -846,6 +894,7 @@ const BatchInventory = ({ batch, updating, onCollect, onReturn }) => {
                     actionLabel="Mark Returned"
                     doneLabel="Returned"
                     updating={updating}
+                    disabled={!allJobsCompleted}
                     onClick={onReturn}
                 />
             </div>
@@ -853,7 +902,7 @@ const BatchInventory = ({ batch, updating, onCollect, onReturn }) => {
     );
 };
 
-const InventoryAction = ({ label, done, at, actionLabel, doneLabel, updating, onClick }) => (
+const InventoryAction = ({ label, done, at, actionLabel, doneLabel, updating, disabled = false, onClick }) => (
     <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
             <p className="text-sm font-medium text-slate-700">{label}</p>
@@ -866,7 +915,7 @@ const InventoryAction = ({ label, done, at, actionLabel, doneLabel, updating, on
                 <CheckCircle2 size={18} /> {doneLabel}
             </span>
         ) : (
-            <Button variant="secondary" className="text-sm shrink-0" onClick={onClick} disabled={updating}
+            <Button variant="secondary" className="text-sm shrink-0" onClick={onClick} disabled={updating || disabled}
                 icon={updating ? Loader2 : Circle}>
                 {actionLabel}
             </Button>
@@ -1144,20 +1193,56 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
 
     const [weights, setWeights] = useState({});
     const [returnRoll, setReturnRoll] = useState(false);
-    const [rollKg, setRollKg] = useState('');
+    const rollOptions = job.invItemOptions?.length
+        ? job.invItemOptions
+        : (job.invItems || []).map((id) => ({ id, itemId: `Item #${id}` }));
+    const emptyReturnRow = () => ({ itemId: rollOptions.length === 1 ? String(rollOptions[0].id) : '', weight: '' });
+    const [rollReturns, setRollReturns] = useState(() => [emptyReturnRow()]);
+    const [wastageAccepted, setWastageAccepted] = useState(false);
     const [err, setErr] = useState('');
 
-    const hasRoll = job.invItems && job.invItems.length > 0;
+    const hasRoll = rollOptions.length > 0;
     const totalOut = outputs.reduce((s, o) => s + (Number(weights[o.outputType]) || 0), 0);
-    const rollVal = Number(rollKg) || 0;
-    const valid = !updating && totalOut > 0 && (!returnRoll || rollVal > 0);
+    const validRollReturns = rollReturns
+        .map((row) => ({ itemId: num(row.itemId), weight: Number(row.weight) || 0 }))
+        .filter((row) => row.itemId > 0 || row.weight > 0);
+    const totalReturned = returnRoll ? roundWeight(validRollReturns.reduce((sum, row) => sum + row.weight, 0)) : 0;
+    const wastageKg = roundWeight(num(job.availableKg) - totalOut - totalReturned);
+    const valid = !updating && totalOut > 0 && (!returnRoll || (
+        validRollReturns.length > 0
+        && validRollReturns.length === rollReturns.length
+        && validRollReturns.every((row) => row.itemId > 0 && row.weight > 0)
+    )) && wastageKg >= 0 && (wastageKg === 0 || wastageAccepted);
+
+    const setRollReturn = (idx, patch) => {
+        setWastageAccepted(false);
+        setRollReturns((rows) => rows.map((row, i) => (i === idx ? { ...row, ...patch } : row)));
+    };
+    const addRollReturn = () => {
+        setWastageAccepted(false);
+        setRollReturns((rows) => [...rows, emptyReturnRow()]);
+    };
+    const removeRollReturn = (idx) => {
+        setWastageAccepted(false);
+        setRollReturns((rows) => rows.length > 1 ? rows.filter((_, i) => i !== idx) : [emptyReturnRow()]);
+    };
 
     const submit = async () => {
         setErr('');
+        if (wastageKg < 0) {
+            setErr('Output plus returned roll weight cannot exceed the available job weight.');
+            return;
+        }
+        if (wastageKg > 0 && !wastageAccepted) {
+            setErr('Confirm the wastage quantity before completing the job.');
+            return;
+        }
         try {
             await onSubmit({
                 outputs: outputs.map((o) => ({ outputType: o.outputType, planned: o.planned, weight: Number(weights[o.outputType]) || 0 })),
-                remainingRoll: returnRoll ? rollVal : 0
+                remainingRolls: returnRoll
+                    ? rollReturns.map((row) => ({ itemId: num(row.itemId), weight: Number(row.weight) || 0 }))
+                    : []
             });
         } catch (e) {
             setErr(e.message || String(e) || 'Failed to complete job.');
@@ -1196,7 +1281,10 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
                                 <input
                                     type="number" inputMode="decimal" min="0" step="any"
                                     value={weights[o.outputType] ?? ''}
-                                    onChange={(e) => setWeights((w) => ({ ...w, [o.outputType]: e.target.value }))}
+                                    onChange={(e) => {
+                                        setWastageAccepted(false);
+                                        setWeights((w) => ({ ...w, [o.outputType]: e.target.value }));
+                                    }}
                                     placeholder="Output weight (kg)"
                                     className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none"
                                 />
@@ -1213,18 +1301,68 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
                     {hasRoll && (
                         <div className="rounded-lg border border-slate-200 p-3">
                             <label className="flex items-center gap-2 cursor-pointer select-none">
-                                <input type="checkbox" checked={returnRoll} onChange={(e) => setReturnRoll(e.target.checked)}
+                                <input type="checkbox" checked={returnRoll} onChange={(e) => {
+                                    setWastageAccepted(false);
+                                    setReturnRoll(e.target.checked);
+                                }}
                                     className="w-4 h-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500" />
                                 <span className="text-sm font-medium text-slate-700">Roll left over — return to Rolls Godown</span>
                             </label>
                             {returnRoll && (
-                                <input
-                                    type="number" inputMode="decimal" min="0" step="any" value={rollKg}
-                                    onChange={(e) => setRollKg(e.target.value)}
-                                    placeholder="Remaining roll weight (kg)"
-                                    className="mt-2 w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none"
-                                />
+                                <div className="mt-3 space-y-2">
+                                    {rollReturns.map((row, idx) => (
+                                        <div key={idx} className="grid grid-cols-[minmax(0,1fr)_7rem_2.25rem] gap-2 items-center">
+                                            <select
+                                                value={row.itemId}
+                                                onChange={(e) => setRollReturn(idx, { itemId: e.target.value })}
+                                                className="min-w-0 w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none text-sm bg-white"
+                                            >
+                                                <option value="">Inventory Item</option>
+                                                {rollOptions.map((item) => (
+                                                    <option key={item.id} value={item.id}>{item.itemId}</option>
+                                                ))}
+                                            </select>
+                                            <input
+                                                type="number" inputMode="decimal" min="0" step="any" value={row.weight}
+                                                onChange={(e) => setRollReturn(idx, { weight: e.target.value })}
+                                                placeholder="Kg"
+                                                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none text-sm"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => removeRollReturn(idx)}
+                                                className="h-9 w-9 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                                                aria-label="Remove returned roll"
+                                            >
+                                                <X size={16} />
+                                            </button>
+                                        </div>
+                                    ))}
+                                    <Button variant="secondary" className="w-full text-sm" onClick={addRollReturn} icon={Plus}>
+                                        Add Roll
+                                    </Button>
+                                </div>
                             )}
+                        </div>
+                    )}
+
+                    {wastageKg > 0 && (
+                        <label className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 cursor-pointer select-none">
+                            <input
+                                type="checkbox"
+                                checked={wastageAccepted}
+                                onChange={(e) => setWastageAccepted(e.target.checked)}
+                                className="mt-0.5 w-4 h-4 rounded border-amber-300 text-amber-600 focus:ring-amber-500"
+                            />
+                            <span className="text-sm text-amber-900">
+                                <span className="font-semibold">{wastageKg} kg</span> will be allocated as wastage in this job.
+                            </span>
+                        </label>
+                    )}
+
+                    {wastageKg < 0 && (
+                        <div className="rounded-lg border border-red-100 bg-red-50 p-3 text-sm text-red-700">
+                            Output plus returned roll weight exceeds available job weight by <span className="font-semibold">{Math.abs(wastageKg)} kg</span>.
                         </div>
                     )}
                 </div>

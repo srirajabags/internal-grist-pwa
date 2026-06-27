@@ -12,9 +12,22 @@ const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 // Grist summary tables that aggregate Inventory_Transactions. Item attributes
 // (Type/Material/Colour/GSM/dimensions/readable code) live on Inventory_Item_Codes;
 // the physical item id (e.g. "ROLL_26-06-2026_1") lives on Inventory_Items.
-const SQL_BY_CODE = `
+const ACKED_GODOWN_FILTER = `
+        s.Location IN ('ROLLS GODOWN', 'BAGS GODOWN')
+        AND s.Incharge_Ack = 1
+`;
+const ACKED_ROLLS_GODOWN_FILTER = `
+        s.Location = 'ROLLS GODOWN'
+        AND s.Incharge_Ack = 1
+`;
+
+const SUMMARY_BY_CODE_TABLE = 'Inventory_Transactions_summary_Incharge_Ack_Item_Code_Location';
+const SUMMARY_BY_ID_TABLE = 'Inventory_Transactions_summary_Incharge_Ack_Item_Code_Item_ID_Location';
+
+const sqlByCode = (summaryTable) => `
     SELECT
         s.Item_Code AS code_ref,
+        s.Location AS location,
         s.Available_Weight_Kg_ AS avail,
         s.Weight_Kg_ AS total,
         s.Available_Count_Bundles_ AS bundles,
@@ -22,16 +35,18 @@ const SQL_BY_CODE = `
         ic.Item_Code AS name, ic.Type AS itype,
         ic.Material AS mat, ic.Colour AS col, ic.GSM AS gsm,
         ic.Width_Inches_ AS w, ic.Height_Inches_ AS h
-    FROM Inventory_Transactions_summary_Item_Code s
+    FROM ${summaryTable} s
     LEFT JOIN Inventory_Item_Codes ic ON ic.id = s.Item_Code
     WHERE s.Item_Code != 0
-    ORDER BY ic.Item_Code
+        AND ${ACKED_GODOWN_FILTER}
+    ORDER BY s.Location, ic.Item_Code
 `;
 
-const SQL_BY_ID = `
+const sqlById = (summaryTable) => `
     SELECT
         it.Item_ID AS iid,
         s.Item_Code AS code_ref,
+        s.Location AS location,
         s.Available_Weight_Kg_ AS avail,
         s.Weight_Kg_ AS total,
         s.Initial_Weight_Kg_ AS initial,
@@ -40,16 +55,18 @@ const SQL_BY_ID = `
         ic.Item_Code AS name,
         ic.Material AS mat, ic.Colour AS col, ic.GSM AS gsm,
         ic.Width_Inches_ AS w, ic.Height_Inches_ AS h
-    FROM Inventory_Transactions_summary_Item_Code_Item_ID s
+    FROM ${summaryTable} s
     LEFT JOIN Inventory_Item_Codes ic ON ic.id = s.Item_Code
     LEFT JOIN Inventory_Items it ON it.id = s.Item_ID
-    WHERE s.Item_Code != 0 AND ic.Type LIKE '%ROLL%'
-    ORDER BY ic.Item_Code, it.Item_ID
+    WHERE s.Item_Code != 0
+        AND ${ACKED_ROLLS_GODOWN_FILTER}
+        AND ic.Type LIKE '%ROLL%'
+    ORDER BY s.Location, ic.Item_Code, it.Item_ID
 `;
 
 const TABS = [
-    { key: 'code', label: 'By Item Code', sql: SQL_BY_CODE },
-    { key: 'id', label: 'Rolls Inventory', sql: SQL_BY_ID }
+    { key: 'code', label: 'By Item Code', sql: sqlByCode(SUMMARY_BY_CODE_TABLE) },
+    { key: 'id', label: 'Rolls Inventory', sql: sqlById(SUMMARY_BY_ID_TABLE) }
 ];
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
@@ -83,9 +100,9 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
         setLoading(true);
         setError(null);
         try {
-            const sql = TABS.find((t) => t.key === activeTab).sql;
             const headers = await getHeaders();
             const url = getUrl(`/api/docs/${DOC_ID}/sql`);
+            const sql = TABS.find((t) => t.key === activeTab).sql;
             const response = await fetch(url, {
                 method: 'POST',
                 headers: { ...headers, 'Content-Type': 'application/json' },
@@ -118,6 +135,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
         const matchTerm = !term
             || (r.name || '').toLowerCase().includes(term)
             || (r.iid || '').toLowerCase().includes(term)
+            || (r.location || '').toLowerCase().includes(term)
             || (r.mat || '').toLowerCase().includes(term)
             || (r.col || '').toLowerCase().includes(term);
         return matchForm && matchTerm;
@@ -257,6 +275,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                                 </div>
 
                                                 <div className="flex flex-wrap justify-center gap-1.5 mt-2">
+                                                    {r.location && <Dim>{r.location}</Dim>}
                                                     {r.w && <Dim>W {r.w}″</Dim>}
                                                     {r.h && <Dim>H {r.h}″</Dim>}
                                                 </div>
@@ -307,6 +326,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                             </div>
 
                                             <div className="flex flex-wrap justify-center gap-1.5 mt-2">
+                                                {r.location && <Dim>{r.location}</Dim>}
                                                 {r.w && <Dim>W {r.w}″</Dim>}
                                                 {r.h && <Dim>H {r.h}″</Dim>}
                                             </div>
