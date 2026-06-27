@@ -10,11 +10,20 @@ import { itemForm, FORM_LABEL, splitJobType } from '../utils/itemForms';
 
 // Grist document holding the factory production tables
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
-const JOBS_TABLE = 'Factory_Production_Job';
+const JOBS_TABLE = 'Factory_Production_Jobs';
 const BATCHES_TABLE = 'Factory_Production_Job_Batches';
 const TXN_TABLE = 'Inventory_Transactions';
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
+
+// Parse a Grist reference-list (stored as JSON like "[1,2]") into integer ids.
+const parseRefList = (v) => {
+    if (!v) return [];
+    let a = v;
+    if (typeof v === 'string') { try { a = JSON.parse(v); } catch { return []; } }
+    if (!Array.isArray(a)) return [];
+    return a.filter((x) => x !== 'L').map(Number).filter(Number.isInteger);
+};
 
 // One joined query fetches the whole tree (open batches -> jobs -> sub-orders),
 // plus inventory item details and the sub-order's customer/order. Reference-list
@@ -33,15 +42,16 @@ const TREE_SQL = `
         b.Inventory_Returned_At AS batch_inv_returned_at,
 
         j.id AS job_id,
-        j.Inventory_Item_ID AS job_item_id, j.Inventory_Item_Code AS job_item_code,
+        j.Inventory_Item_Code AS job_item_code, j.Inventory_Items AS job_inv_items,
         j.Production_Started AS job_started, j.Production_Started_At AS job_started_at,
         j.Production_Completed AS job_completed, j.Production_Completed_At AS job_completed_at,
         j.Planned_Weight_Kg_ AS job_planned_kg, j.Available_Weight_Kg_ AS job_available_kg,
         j.Estimated_Wastage_Weight_Kg_ AS job_wastage_kg, j.Planned_Count_Bundles_ AS job_bundles,
         j.From_Date AS job_from_date, j.To_Date AS job_to_date,
 
-        ii.Material AS item_material, ii.Colour AS item_colour,
-        ii.GSM AS item_gsm, ii.Width_Inches_ AS item_width, ii.Height_Inches_ AS item_height,
+        ic.Item_Code AS item_name, ic.Type AS item_type,
+        ic.Material AS item_material, ic.Colour AS item_colour,
+        ic.GSM AS item_gsm, ic.Width_Inches_ AS item_width, ic.Height_Inches_ AS item_height,
 
         so.id AS so_id,
         so.Quantity AS so_qty, so.Quantity_Type AS so_qty_type,
@@ -56,8 +66,8 @@ const TREE_SQL = `
         so.Sidepatty_Width AS so_sidepatty_width,
         c.Shop_Name AS so_shop, ag.Area_Group AS so_area_group
     FROM Factory_Production_Job_Batches b
-    LEFT JOIN Factory_Production_Job j ON j.id IN (SELECT value FROM json_each(b.Jobs))
-    LEFT JOIN Inventory_Items ii ON ii.id = j.Inventory_Item_Code
+    LEFT JOIN Factory_Production_Jobs j ON j.id IN (SELECT value FROM json_each(b.Jobs))
+    LEFT JOIN Inventory_Item_Codes ic ON ic.id = j.Inventory_Item_Code
     LEFT JOIN Sub_Orders so ON so.id IN (SELECT value FROM json_each(j.Sub_Orders))
     LEFT JOIN Customers c ON c.id = so.Customer
     LEFT JOIN Area_Groups ag ON ag.id = so.Area_Group
@@ -118,8 +128,8 @@ const groupRows = (rows) => {
                 job = {
                     id: f.job_id,
                     type: batch.type,   // inferred from the parent batch
-                    itemId: f.job_item_id,
-                    itemCode: f.job_item_code,
+                    itemName: f.item_name,                 // readable code (Inventory_Item_Codes)
+                    invItems: parseRefList(f.job_inv_items), // physical Inventory_Items refs
                     material: f.item_material,
                     colour: f.item_colour,
                     gsm: f.item_gsm,
@@ -302,14 +312,14 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
             const headers = await getHeaders();
 
             // 1. One transaction per job in the batch.
-            // Weight_Change_Kg_ / Count_Change_Bundle_ are formula columns
-            // (sign derived from Transaction_Type), so we write the magnitude
-            // to the editable Weight_Kg_ column instead.
+            // Weight_Change_Kg_ / Count_Change_Bundle_ are formula columns (sign
+            // derived from Transaction_Type), so we write the magnitude to
+            // Weight_Kg_. Item_Code is also a formula now (derived from Item_ID),
+            // so we only set Item_ID (Ref:Inventory_Items) + Production_Job.
             const txnRecords = batch.jobs.map((j) => ({
                 fields: {
-                    Item_Code: j.itemCode ?? null,   // Reference to Inventory_Items
-                    Item_ID: j.itemId || '',
-                    Production_Job: j.id,             // Reference to Factory_Production_Job
+                    Item_ID: j.invItems && j.invItems.length === 1 ? j.invItems[0] : null,
+                    Production_Job: j.id,             // Reference to Factory_Production_Jobs
                     Transaction_Type: cfg.type,
                     Weight_Kg_: cfg.weightFn(j),
                     Transaction_Time: now
@@ -753,8 +763,7 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
 
                 <div className="mt-1">
                     <DetailRow label="Type" value={job.type || '—'} />
-                    <DetailRow label="Inventory Item Code" value={job.itemCode ?? '—'} />
-                    <DetailRow label="Inventory Item ID" value={job.itemId || '—'} />
+                    <DetailRow label="Inventory Item" value={job.itemName || '—'} />
                     <DetailRow label="Available Weight (Kg)" value={`${job.availableKg ?? 0} kg`} />
                     <DetailRow label="Sub Orders" value={job.subOrders.length} />
                     <DetailRow label="From Date" value={formatDate(job.fromDate)} />

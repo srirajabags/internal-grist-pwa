@@ -9,7 +9,9 @@ import { colourToCss, itemForm, typeName, FORM_LABEL } from '../utils/itemForms'
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 
-// Grist summary tables that aggregate Inventory_Transactions.
+// Grist summary tables that aggregate Inventory_Transactions. Item attributes
+// (Type/Material/Colour/GSM/dimensions/readable code) live on Inventory_Item_Codes;
+// the physical item id (e.g. "ROLL_26-06-2026_1") lives on Inventory_Items.
 const SQL_BY_CODE = `
     SELECT
         s.Item_Code AS code_ref,
@@ -17,31 +19,32 @@ const SQL_BY_CODE = `
         s.Weight_Kg_ AS total,
         s.Available_Count_Bundles_ AS bundles,
         s.count AS cnt,
-        ii.Item_Code AS name, ii.Type AS itype,
-        ii.Material AS mat, ii.Colour AS col, ii.GSM AS gsm,
-        ii.Width_Inches_ AS w, ii.Height_Inches_ AS h
+        ic.Item_Code AS name, ic.Type AS itype,
+        ic.Material AS mat, ic.Colour AS col, ic.GSM AS gsm,
+        ic.Width_Inches_ AS w, ic.Height_Inches_ AS h
     FROM Inventory_Transactions_summary_Item_Code s
-    LEFT JOIN Inventory_Items ii ON ii.id = s.Item_Code
+    LEFT JOIN Inventory_Item_Codes ic ON ic.id = s.Item_Code
     WHERE s.Item_Code != 0
-    ORDER BY ii.Item_Code
+    ORDER BY ic.Item_Code
 `;
 
 const SQL_BY_ID = `
     SELECT
-        s.Item_ID AS iid,
+        it.Item_ID AS iid,
         s.Item_Code AS code_ref,
         s.Available_Weight_Kg_ AS avail,
         s.Weight_Kg_ AS total,
         s.Initial_Weight_Kg_ AS initial,
-        s.Item_Type AS itype,
+        ic.Type AS itype,
         s.count AS cnt,
-        ii.Item_Code AS name,
-        ii.Material AS mat, ii.Colour AS col, ii.GSM AS gsm,
-        ii.Width_Inches_ AS w, ii.Height_Inches_ AS h
+        ic.Item_Code AS name,
+        ic.Material AS mat, ic.Colour AS col, ic.GSM AS gsm,
+        ic.Width_Inches_ AS w, ic.Height_Inches_ AS h
     FROM Inventory_Transactions_summary_Item_Code_Item_ID s
-    LEFT JOIN Inventory_Items ii ON ii.id = s.Item_Code
-    WHERE s.Item_Code != 0 AND ii.Type LIKE '%ROLL%'
-    ORDER BY ii.Item_Code, s.Item_ID
+    LEFT JOIN Inventory_Item_Codes ic ON ic.id = s.Item_Code
+    LEFT JOIN Inventory_Items it ON it.id = s.Item_ID
+    WHERE s.Item_Code != 0 AND ic.Type LIKE '%ROLL%'
+    ORDER BY ic.Item_Code, it.Item_ID
 `;
 
 const TABS = [
