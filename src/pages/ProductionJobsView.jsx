@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import {
     ArrowLeft, Boxes, AlertCircle, Loader2, RefreshCw, Package,
-    PlayCircle, CheckCircle2, Circle, Clock, ChevronRight, Layers, FileText, ArrowRight
+    PlayCircle, CheckCircle2, Circle, Clock, ChevronRight, Layers, FileText, ArrowRight, Plus
 } from 'lucide-react';
 import Card from '../components/Card';
 import Button from '../components/Button';
+import CreateBatchModal from '../components/CreateBatchModal';
 import { ItemVisual, Dim } from '../components/itemVisuals';
 import { itemForm, FORM_LABEL, splitJobType } from '../utils/itemForms';
 
@@ -213,6 +214,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     const [selectedJobId, setSelectedJobId] = useState(null);
     const [updatingJobId, setUpdatingJobId] = useState(null);
     const [updatingBatchId, setUpdatingBatchId] = useState(null);
+    const [showCreate, setShowCreate] = useState(false);
 
     // Fetch the whole tree in a single joined query. `silent` skips the full-page
     // spinner (used after an update to refresh data without flashing the tree).
@@ -416,11 +418,25 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                         <h1 className="font-bold text-slate-800 leading-tight truncate">{headerTitle}</h1>
                         {headerSubtitle && <p className="text-xs text-slate-500 truncate">{headerSubtitle}</p>}
                     </div>
+                    {level === 'batches' && (
+                        <Button variant="primary" onClick={() => setShowCreate(true)} className="!px-2.5 shrink-0 bg-amber-600 hover:bg-amber-700" icon={Plus}>
+                            <span className="hidden sm:inline">Create Batch</span>
+                        </Button>
+                    )}
                     <Button variant="secondary" onClick={() => fetchData()} disabled={loading} className="!px-2.5 shrink-0">
                         <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
                     </Button>
                 </div>
             </header>
+
+            {showCreate && (
+                <CreateBatchModal
+                    getHeaders={getHeaders}
+                    getUrl={getUrl}
+                    onClose={() => setShowCreate(false)}
+                    onCreated={() => { setShowCreate(false); fetchData(); }}
+                />
+            )}
 
             <main className="flex-1 p-3 overflow-auto">
                 <div className="max-w-3xl mx-auto">
