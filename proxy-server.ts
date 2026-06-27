@@ -45,6 +45,58 @@ const rateLimits = new Map<string, { count: number; resetAt: number }>();
 // Token cache to avoid repeated Auth0 calls
 const tokenCache = new Map<string, { userProfile: any; expiresAt: number }>();
 
+const getRecordsTableId = (pathname: string): string | null => {
+    const match = pathname.match(/^\/api\/docs\/[^/]+\/tables\/([^/]+)\/records$/);
+    return match ? decodeURIComponent(match[1]) : null;
+};
+
+const PRODUCTION_WRITE_FIELDS: Record<string, Partial<Record<string, Set<string>>>> = {
+    Factory_Production_Job_Batches: {
+        POST: new Set(['Type', 'Date']),
+        PATCH: new Set([
+            'Required_Inventory_Collected', 'Inventory_Collected_At',
+            'Remaining_Inventory_Returned', 'Inventory_Returned_At'
+        ]),
+    },
+    Factory_Production_Jobs: {
+        POST: new Set([
+            'Factory_Production_Job_Batch', 'Sub_Orders', 'Inventory_Item_Code',
+            'Inventory_Items', 'Available_Weight_Kg_'
+        ]),
+        PATCH: new Set([
+            'Production_Started', 'Production_Started_At',
+            'Production_Completed', 'Production_Completed_At'
+        ]),
+    },
+    Inventory_Items: {
+        POST: new Set(['Item_ID', 'Item_Code']),
+    },
+    Inventory_Transactions: {
+        POST: new Set([
+            'Item_ID', 'Production_Job', 'Transaction_Type',
+            'Weight_Kg_', 'Location', 'Transaction_Time'
+        ]),
+    },
+    Sub_Orders: {
+        PATCH: new Set(['No_Stock_Identified']),
+    },
+};
+
+const bodyHasOnlyAllowedRecordFields = async (request: Request, allowedFields: Set<string>): Promise<boolean> => {
+    try {
+        const body = await request.clone().json();
+        const records = body?.records;
+        if (!Array.isArray(records) || records.length === 0) return false;
+        return records.every((record: any) => {
+            const fields = record?.fields;
+            if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return false;
+            return Object.keys(fields).every((field) => allowedFields.has(field));
+        });
+    } catch {
+        return false;
+    }
+};
+
 // Helper function to decode JWT and extract expiration
 const getTokenExpiration = (token: string): number | null => {
     try {
@@ -217,10 +269,21 @@ export default {
         headers.delete("origin");
         headers.delete("user-agent");
 
-        // Determine which API key to use
-        // Use SQL_KEY for SQL endpoints if available, otherwise use user's regular key
+        // Determine which API key to use. SQL reads and narrowly-scoped
+        // production workflow writes use SQL_KEY; everything else uses the
+        // mapped user's regular Grist key and therefore normal Grist ACLs.
         const isSqlEndpoint = url.pathname.includes('/sql');
-        const apiKeyToUse = (isSqlEndpoint && SQL_KEY) ? SQL_KEY : gristKey;
+        let useSqlKey = !!(isSqlEndpoint && SQL_KEY);
+
+        if (!useSqlKey && SQL_KEY && ['POST', 'PATCH'].includes(request.method)) {
+            const tableId = getRecordsTableId(url.pathname);
+            const allowedFields = tableId ? PRODUCTION_WRITE_FIELDS[tableId]?.[request.method] : null;
+            if (allowedFields && await bodyHasOnlyAllowedRecordFields(request, allowedFields)) {
+                useSqlKey = true;
+            }
+        }
+
+        const apiKeyToUse = useSqlKey ? SQL_KEY : gristKey;
 
         // REPLACE the Auth0 token with the appropriate Grist API Key
         headers.set("Authorization", `Bearer ${apiKeyToUse}`);
