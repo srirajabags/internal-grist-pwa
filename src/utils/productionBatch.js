@@ -101,6 +101,50 @@ export const requiredRollWidth = (batchType, so) => {
     return null;
 };
 
+// --- Quantity normalisation (pieces -> kg) ---
+// Weight-based batches allocate against roll/finished stock measured in kg, but a
+// STITCHING sheet sub-order's Quantity is often a piece COUNT, not kg
+// (Quantity_Type = 'PIECES'). Convert it to kg from the sheet geometry so the
+// numbers are comparable. Mass of one sheet (kg) = L(in) * W(in) * GSM /
+// (1550 * 1000) — 1550 in² = 1 m², so this divisor is the in²->kg constant
+// (the formula's "yards" label is trade shorthand; the dims are inches). Total
+// kg = piece count * per-sheet mass.
+const PIECE_TO_KG_DIVISOR = 1550 * 1000;
+
+const sheetPiecesToKg = (so) => {
+    const dims = parseSheetSize(so.Sheet_Size);
+    const gsm = num(so.Bag_GSM);
+    if (!dims || !gsm) return null;        // geometry missing -> can't convert
+    const [w, h] = dims;
+    return num(so.Quantity) * (w * h * gsm) / PIECE_TO_KG_DIVISOR;
+};
+
+// A STITCHING order quoted in pieces feeds a kg-based batch only after a
+// pieces -> kg conversion, which needs the sheet's GSM.
+export const needsPieceConversion = (batchType, so) =>
+    !isPieceType(batchType) &&
+    norm(so.Model) === 'STITCHING' &&
+    norm(so.Quantity_Type) === 'PIECES';
+
+// True when a sub-order needs the pieces -> kg conversion but can't be converted
+// because its Bag_GSM (or sheet geometry) is missing — surfaced to the operator
+// rather than silently mis-allocated.
+export const cannotConvertQty = (batchType, so) =>
+    needsPieceConversion(batchType, so) && sheetPiecesToKg(so) == null;
+
+// The quantity a sub-order contributes to its group's requirement, in the unit
+// the batch allocates in (bundles for piece-type batches, kg otherwise). A
+// STITCHING order quoted in pieces is converted to kg; everything else is taken
+// as-is.
+export const effectiveQty = (batchType, so) => {
+    if (isPieceType(batchType)) return num(so.Quantity);        // bundles, unchanged
+    if (needsPieceConversion(batchType, so)) {
+        const kg = sheetPiecesToKg(so);
+        if (kg != null) return kg;
+    }
+    return num(so.Quantity);
+};
+
 // --- Qualification: does this sub-order need the chosen output? ---
 // Centralised so the factory's real rules are a one-place edit. A sub-order can
 // satisfy several types (e.g. a STITCHING bag needs a body AND a side-patty).
@@ -226,21 +270,23 @@ const relevantStock = (attrs, inventory, batchType, outputType) => {
 };
 
 // Greedily take from a list of stock rows up to `need`. Returns the picks (with
-// the amount taken) and how much was covered.
-const takeFrom = (stock, need) => {
+// the amount taken and their `source`) and how much was covered. `source` is
+// 'roll' (raw stock that must be produced) or 'finished' (ready output pulled
+// from the godown) so the caller can split production output from finished stock.
+const takeFrom = (stock, need, source) => {
     const picks = [];
     let covered = 0;
     for (const s of stock) {
         if (covered >= need) break;
         const take = Math.min(s.avail, need - covered);
-        if (take > 0) { picks.push({ itemId: s.itemId, codeId: s.codeId, take }); covered += take; }
+        if (take > 0) { picks.push({ itemId: s.itemId, codeId: s.codeId, take, source }); covered += take; }
     }
     return { picks, covered };
 };
 
 // Split sub-orders (oldest first) into the prefix that fits within `capacity`
 // and the remainder that must be postponed.
-const splitByCapacity = (subOrders, capacity) => {
+const splitByCapacity = (batchType, subOrders, capacity) => {
     const sorted = [...subOrders].sort(
         (a, b) => num(a.Factory_Updated_Date) - num(b.Factory_Updated_Date) || a.id - b.id
     );
@@ -248,7 +294,7 @@ const splitByCapacity = (subOrders, capacity) => {
     const postponed = [];
     let used = 0;
     for (const so of sorted) {
-        const qty = num(so.Quantity);
+        const qty = effectiveQty(batchType, so);
         if (used + qty <= capacity + 1e-6) { fulfilled.push(so); used += qty; }
         else postponed.push(so);
     }
@@ -258,25 +304,25 @@ const splitByCapacity = (subOrders, capacity) => {
 // Run the 5-priority ladder for one group. Returns the allocation describing the
 // job to create (if any) and which sub-orders are postponed.
 export const allocateStock = (attrs, subOrders, inventory, batchType, outputType) => {
-    const required = subOrders.reduce((s, so) => s + num(so.Quantity), 0);
+    const required = subOrders.reduce((s, so) => s + effectiveQty(batchType, so), 0);
     const { finished, rolls } = relevantStock(attrs, inventory, batchType, outputType);
     const finishedTotal = finished.reduce((s, r) => s + r.avail, 0);
     const rollsTotal = rolls.reduce((s, r) => s + r.avail, 0);
 
     // Priority 1 — finished/semi stock covers the whole requirement.
     if (finishedTotal >= required && required > 0) {
-        const { picks } = takeFrom(finished, required);
+        const { picks } = takeFrom(finished, required, 'finished');
         return { priority: 1, picks, fulfilledQty: required, fulfilled: subOrders, postponed: [] };
     }
     // Priority 2 — a raw roll (or rolls) covers the whole requirement.
     if (rollsTotal >= required && required > 0) {
-        const { picks } = takeFrom(rolls, required);
+        const { picks } = takeFrom(rolls, required, 'roll');
         return { priority: 2, picks, fulfilledQty: required, fulfilled: subOrders, postponed: [] };
     }
     // Priority 3 — mix: rolls take the major share, finished covers the rest.
     if (rollsTotal > 0 && rollsTotal + finishedTotal >= required && required > 0) {
-        const fromRolls = takeFrom(rolls, required);
-        const fromFinished = takeFrom(finished, required - fromRolls.covered);
+        const fromRolls = takeFrom(rolls, required, 'roll');
+        const fromFinished = takeFrom(finished, required - fromRolls.covered, 'finished');
         return {
             priority: 3,
             picks: [...fromRolls.picks, ...fromFinished.picks],
@@ -288,11 +334,11 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
     // Priority 4 — partial: take everything available, postpone what does not fit.
     const capacity = rollsTotal + finishedTotal;
     if (capacity > 0) {
-        const fromRolls = takeFrom(rolls, capacity);
-        const fromFinished = takeFrom(finished, capacity - fromRolls.covered);
-        const { fulfilled, postponed } = splitByCapacity(subOrders, capacity);
+        const fromRolls = takeFrom(rolls, capacity, 'roll');
+        const fromFinished = takeFrom(finished, capacity - fromRolls.covered, 'finished');
+        const { fulfilled, postponed } = splitByCapacity(batchType, subOrders, capacity);
         if (fulfilled.length > 0) {
-            const fulfilledQty = fulfilled.reduce((s, so) => s + num(so.Quantity), 0);
+            const fulfilledQty = fulfilled.reduce((s, so) => s + effectiveQty(batchType, so), 0);
             return {
                 priority: 4,
                 picks: [...fromRolls.picks, ...fromFinished.picks],
@@ -325,8 +371,12 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
     // genuine requirement no roll width can meet (null) so they can be flagged.
     const usesRollWidth = ROLL_WIDTH_TYPES.has(batchType);
     const unmatched = [];
+    const missingGsm = [];   // STITCHING pieces orders with no Bag_GSM -> can't convert to kg
     const groupable = [];
     for (const so of eligible) {
+        // A pieces-quoted order with no GSM can't be sized in kg; flag it instead
+        // of grouping it with a blank/zero quantity that would skew allocation.
+        if (cannotConvertQty(batchType, so)) { missingGsm.push(so); continue; }
         if (!usesRollWidth) { groupable.push(so); continue; }
         const rw = requiredRollWidth(batchType, so);
         if (rw === 'ignore') continue;
@@ -349,7 +399,7 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
     const stockById = new Map(stock.map((r) => [r.itemId, r]));
 
     const groups = [...byKey.values()]
-        .map((g) => ({ ...g, requiredQty: g.subOrders.reduce((s, so) => s + num(so.Quantity), 0) }))
+        .map((g) => ({ ...g, requiredQty: g.subOrders.reduce((s, so) => s + effectiveQty(batchType, so), 0) }))
         .sort((a, b) => b.requiredQty - a.requiredQty)
         .map((g) => {
             const alloc = allocateStock(g.attrs, g.subOrders, stock, batchType);
@@ -362,22 +412,33 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
             // Roll-width jobs are identified by the roll they consume (one roll code
             // per group), so output codes can be resolved per model at completion.
             const rollCodeId = usesRollWidth ? (alloc.picks.find((p) => p.codeId)?.codeId ?? null) : null;
+            // Split the fulfilled requirement into what is produced from raw rolls
+            // (the planned output) vs. what is pulled ready from finished godown
+            // stock — finished stock is netted off the output to produce.
+            const rollTaken = alloc.picks.reduce((s, p) => s + (p.source === 'roll' ? p.take : 0), 0);
+            const outputQty = Math.min(rollTaken, alloc.fulfilledQty);
+            const finishedQty = Math.max(alloc.fulfilledQty - outputQty, 0);
             return {
                 ...g,
                 rollWidth: usesRollWidth ? num(g.attrs.width) : null,
                 rollCodeId,
                 matchedCodeId: usesRollWidth ? rollCodeId : softMatchItemCode(g.attrs, itemCodes, batchType),
-                ...alloc
+                ...alloc,
+                outputQty,
+                finishedQty
             };
         });
 
     const postponedCount = groups.reduce((s, g) => s + g.postponed.length, 0);
     const totalPlannedQty = groups.reduce((s, g) => s + g.fulfilledQty, 0);
+    const totalFinishedQty = groups.reduce((s, g) => s + g.finishedQty, 0);
+    const totalOutputQty = groups.reduce((s, g) => s + g.outputQty, 0);
     const jobCount = groups.filter((g) => g.fulfilled.length > 0).length;
 
     return {
-        groups, postponedCount, totalPlannedQty, jobCount,
+        groups, postponedCount, totalPlannedQty, totalFinishedQty, totalOutputQty, jobCount,
         isPieces: isPieceType(batchType),
-        unmatched, unmatchedCount: unmatched.length
+        unmatched, unmatchedCount: unmatched.length,
+        missingGsm, missingGsmCount: missingGsm.length
     };
 };

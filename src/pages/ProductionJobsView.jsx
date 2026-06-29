@@ -1,14 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import {
     ArrowLeft, Boxes, AlertCircle, Loader2, RefreshCw, Package,
-    PlayCircle, CheckCircle2, Circle, Clock, ChevronRight, Layers, FileText, ArrowRight, Plus, X
+    PlayCircle, CheckCircle2, Circle, Clock, ChevronRight, Layers, FileText, ArrowRight, Plus, X, Warehouse
 } from 'lucide-react';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import CreateBatchModal from '../components/CreateBatchModal';
 import { ItemVisual, Dim } from '../components/itemVisuals';
 import { itemForm, FORM_LABEL, splitJobType } from '../utils/itemForms';
-import { outputTypeFor, ROLL_WIDTH_TYPES } from '../utils/productionBatch';
+import { outputTypeFor, ROLL_WIDTH_TYPES, effectiveQty } from '../utils/productionBatch';
 
 // Grist document holding the factory production tables
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
@@ -60,7 +60,9 @@ const parseInventoryItemOptions = (v, fallbackIds = []) => {
 const TREE_SQL = `
     SELECT
         b.id AS batch_id, b.Type AS batch_type, b.Date AS batch_date,
-        b.Total_Planned_Weight_Kg_ AS batch_planned_kg,
+        b.Total_Required_Output_Kg_ AS batch_planned_kg,
+        b.Total_Finished_Stock_Kg_ AS batch_finished_kg,
+        b.Total_Planned_Output_Kg_ AS batch_output_kg,
         b.Total_Wastage_Weight_Kg_ AS batch_wastage_kg,
         b.Production_Started_At AS batch_started_at,
         b.Production_Completed_At AS batch_completed_at,
@@ -79,7 +81,8 @@ const TREE_SQL = `
         ) AS job_inv_item_options,
         j.Production_Started AS job_started, j.Production_Started_At AS job_started_at,
         j.Production_Completed AS job_completed, j.Production_Completed_At AS job_completed_at,
-        j.Planned_Weight_Kg_ AS job_planned_kg, j.Available_Weight_Kg_ AS job_available_kg,
+        j.Required_Quantity_Kg_ AS job_planned_kg, j.Available_Weight_Kg_ AS job_available_kg,
+        j.Finished_Stock_Quantity_Kg_ AS job_finished_kg, j.Planned_Output_Quantity_Kg_ AS job_output_kg,
         j.Wastage_Weight_Kg_ AS job_wastage_kg, j.Planned_Count_Bundles_ AS job_bundles,
         j.From_Date AS job_from_date, j.To_Date AS job_to_date,
 
@@ -144,6 +147,8 @@ const groupRows = (rows) => {
                 type: f.batch_type,
                 date: f.batch_date,
                 plannedKg: f.batch_planned_kg,
+                finishedKg: f.batch_finished_kg,
+                outputKg: f.batch_output_kg,
                 wastageKg: f.batch_wastage_kg,
                 startedAt: f.batch_started_at,
                 completedAt: f.batch_completed_at,
@@ -179,6 +184,8 @@ const groupRows = (rows) => {
                     completedAt: f.job_completed_at,
                     plannedKg: f.job_planned_kg,
                     availableKg: f.job_available_kg,
+                    finishedKg: f.job_finished_kg,
+                    outputKg: f.job_output_kg,
                     wastageKg: f.job_wastage_kg,
                     bundles: f.job_bundles,
                     fromDate: f.job_from_date,
@@ -240,6 +247,40 @@ const StatusBadge = ({ started, completed }) => {
         </span>
     );
 };
+
+// Compact kg label: whole numbers as-is, fractions to 1 dp.
+const fmtKg = (v) => num(v).toFixed(2);
+// Piece-counted batch types are tracked in bundles, not kg — no kg split to show.
+const isPieceBatch = (type) => type === 'ROLLS TO SIDEPATTY' || type === 'ROLLS TO HANDLES';
+
+// Stacked bar splitting a quantity into production output (to make) and finished
+// stock pulled from the godown. Returns null when there's nothing to show.
+const QtyBar = ({ output, finished, required }) => {
+    const o = num(output), f = num(finished);
+    const total = o + f > 0 ? o + f : num(required);
+    if (total <= 0) return null;
+    const op = (o / total) * 100, fp = (f / total) * 100;
+    return (
+        <div className="mt-2">
+            <div className="flex h-2 rounded-full overflow-hidden bg-slate-100">
+                {o > 0 && <div style={{ width: `${op}%` }} className="bg-emerald-500" title={`${fmtKg(o)} kg to produce`} />}
+                {f > 0 && <div style={{ width: `${fp}%` }} className="bg-sky-400" title={`${fmtKg(f)} kg from stock`} />}
+            </div>
+            <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[11px]">
+                <span className="text-slate-500">Required <span className="font-semibold text-slate-700">{fmtKg(total)} kg</span></span>
+                <span className="text-emerald-700">● {fmtKg(o)} kg to produce</span>
+                {f > 0 && <span className="text-sky-700">● {fmtKg(f)} kg from stock</span>}
+            </div>
+        </div>
+    );
+};
+
+// Small badge flagging that some quantity is met from finished godown stock.
+const StockPill = ({ kg }) => num(kg) > 0 ? (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium text-sky-700 bg-sky-50 ring-1 ring-sky-200">
+        <Warehouse size={12} /> {fmtKg(kg)} kg from stock
+    </span>
+) : null;
 
 const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     const [batches, setBatches] = useState([]);
@@ -469,7 +510,10 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
 
             const jobFields = {
                 Production_Completed: true,
-                Production_Completed_At: now
+                Production_Completed_At: now,
+                // Operator-entered produced weight; the job's Wastage_Weight_Kg_ formula
+                // derives wastage as Available − Output.
+                Output_Weight_Kg_: totalOutput
             };
             if (!job.started) {
                 jobFields.Production_Started = true;
@@ -703,8 +747,12 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                                     </div>
                                                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2.5 text-xs text-slate-500">
                                                         <span className="flex items-center gap-1"><Package size={13} /> {batch.jobs.length} job{batch.jobs.length !== 1 ? 's' : ''}</span>
-                                                        <span>{batch.plannedKg ?? 0} kg planned</span>
+                                                        <span>{fmtKg(batch.plannedKg ?? 0)} kg required</span>
+                                                        {!isPieceBatch(batch.type) && num(batch.finishedKg) > 0 && <StockPill kg={batch.finishedKg} />}
                                                     </div>
+                                                    {!isPieceBatch(batch.type) && (
+                                                        <QtyBar output={batch.outputKg} finished={batch.finishedKg} required={batch.plannedKg} />
+                                                    )}
                                                     {batch.startedAt && (
                                                         <div className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full">
                                                             <PlayCircle size={12} /> In Progress
@@ -758,9 +806,13 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                                         </div>
                                                         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-xs text-slate-500">
                                                             <span className="flex items-center gap-1"><Layers size={13} /> {job.subOrders.length} sub-order{job.subOrders.length !== 1 ? 's' : ''}</span>
-                                                            <span>{job.plannedKg ?? 0} kg planned</span>
-                                                            <span>{job.availableKg ?? 0} kg available</span>
+                                                            <span>{fmtKg(job.plannedKg ?? 0)} kg required</span>
+                                                            <span>{fmtKg(job.availableKg ?? 0)} kg available</span>
+                                                            {!isPieceBatch(job.type) && num(job.finishedKg) > 0 && <StockPill kg={job.finishedKg} />}
                                                         </div>
+                                                        {!isPieceBatch(job.type) && (
+                                                            <QtyBar output={job.outputKg} finished={job.finishedKg} required={job.plannedKg} />
+                                                        )}
                                                     </button>
 
                                                     <div className="flex gap-2 mt-3 pt-3 border-t border-slate-100">
@@ -995,13 +1047,20 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
 
     const sizeTitle = isDcut ? 'Output (model · size)' : SIZE_TITLE[sizeDim];
 
+    // Quantity in the batch's unit: STITCHING piece counts are converted to kg via
+    // sheet geometry (reusing the batch-creation rule); pieces/weight pass through.
+    const soQty = (so) => effectiveQty(jobType, {
+        Model: so.model, Quantity_Type: so.qtyType, Sheet_Size: so.sheetSize,
+        Bag_GSM: so.bagGsm, Quantity: so.qty
+    });
+
     const sizeGroups = (() => {
         const map = new Map();
         for (const so of job.subOrders) {
             const key = sizeKeyFor(so);
             if (!map.has(key)) map.set(key, { key, label: sizeLabelFor(so), qty: 0, count: 0 });
             const g = map.get(key);
-            g.qty += num(so.qty);
+            g.qty += soQty(so);
             g.count += 1;
         }
         return [...map.values()].sort((a, b) => b.qty - a.qty);
@@ -1036,20 +1095,29 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
                     </div>
                 )}
 
+                {/* Required = production output + finished stock pulled from godown */}
+                {!isPieces && (
+                    <div className="mb-3 pb-3 border-b border-slate-100">
+                        <QtyBar output={job.outputKg} finished={job.finishedKg} required={job.plannedKg} />
+                    </div>
+                )}
+
                 <div className="mt-1">
                     <DetailRow label="Type" value={job.type || '—'} />
                     <DetailRow label="Inventory Item" value={job.itemName || '—'} />
-                    <DetailRow label="Available Weight (Kg)" value={`${job.availableKg ?? 0} kg`} />
+                    <DetailRow label="Available Weight (Kg)" value={`${fmtKg(job.availableKg ?? 0)} kg`} />
                     <DetailRow label="Sub Orders" value={job.subOrders.length} />
                     <DetailRow label="From Date" value={formatDate(job.fromDate)} />
                     <DetailRow label="To Date" value={formatDate(job.toDate)} />
-                    <DetailRow label="Planned Weight (Kg)" value={`${job.plannedKg ?? 0} kg`} />
+                    <DetailRow label="Required Quantity (Kg)" value={`${fmtKg(job.plannedKg ?? 0)} kg`} />
+                    {!isPieces && <DetailRow label="Finished Stock Quantity (Kg)" value={`${fmtKg(job.finishedKg ?? 0)} kg`} />}
+                    {!isPieces && <DetailRow label="Planned Output Quantity (Kg)" value={`${fmtKg(job.outputKg ?? 0)} kg`} />}
                     <DetailRow label="Planned Count (Bundles)" value={job.bundles ?? 0} />
                     <DetailRow label="Production Started" value={job.started ? 'Yes' : 'No'} />
                     <DetailRow label="Production Started At" value={startedAt || '—'} />
                     <DetailRow label="Production Completed" value={job.completed ? 'Yes' : 'No'} />
                     <DetailRow label="Production Completed At" value={completedAt || '—'} />
-                    <DetailRow label="Estimated Wastage Weight (Kg)" value={`${job.wastageKg ?? 0} kg`} />
+                    <DetailRow label="Estimated Wastage Weight (Kg)" value={`${fmtKg(job.wastageKg ?? 0)} kg`} />
                 </div>
 
                 <div className="mt-3 pt-3 border-t border-slate-100">
@@ -1095,7 +1163,7 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
                                     <p className="text-[11px] text-slate-400">{g.count} sub-order{g.count !== 1 ? 's' : ''}</p>
                                 </div>
                                 <div className="flex items-center gap-3 shrink-0">
-                                    <span className="text-sm font-semibold text-slate-700">{num(g.qty)}{isPieces ? '' : ' kg'}</span>
+                                    <span className="text-sm font-semibold text-slate-700">{isPieces ? num(g.qty) : `${fmtKg(g.qty)} kg`}</span>
                                     <input
                                         type="checkbox"
                                         checked={!!checked[g.key]}
@@ -1123,6 +1191,10 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
                         {job.subOrders.map((so) => {
                             const outputType = outputTypeFor(job.type, { Model: so.model });
                             const outForm = itemForm(outputType);
+                            const convKg = soQty(so);
+                            const qtyLabel = (so.qty === null || so.qty === undefined || so.qty === '')
+                                ? '—'
+                                : `${so.qty}${so.qtyType ? ` ${so.qtyType}` : ''}${!isPieces && convKg !== num(so.qty) ? ` (≈ ${fmtKg(convKg)} kg)` : ''}`;
                             return (
                             <Card key={so.id} className={`p-4 ${checked[sizeKeyFor(so)] ? 'ring-1 ring-green-300 bg-green-50/40' : ''}`}>
                                 <div className="flex items-start justify-between gap-2 mb-3">
@@ -1145,7 +1217,7 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
                                 </div>
 
                                 <div className="grid grid-cols-2 gap-3">
-                                    <Field label="Quantity" value={(so.qty === null || so.qty === undefined || so.qty === '') ? '—' : `${so.qty}${so.qtyType ? ` ${so.qtyType}` : ''}`} />
+                                    <Field label="Quantity" value={qtyLabel} />
                                     <Field label="Order Form Date" value={formatDate(so.orderFormDate)} />
                                     <Field label="Factory Updated Date" value={formatDate(so.factoryUpdatedDate)} />
                                     <Field label="Area Group" value={so.areaGroup} />
@@ -1179,14 +1251,29 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
 const OutputModal = ({ job, updating, onClose, onSubmit }) => {
     // Output products present in the job, each with its planned weight (sum of the
     // quantities of the sub-orders that produce it). DCUT splits by bag model.
+    // Planned weight per output, in the batch's unit: STITCHING piece counts are
+    // converted to kg (sheet geometry), matching the rest of the app.
+    const soKg = (so) => effectiveQty(job.type, {
+        Model: so.model, Quantity_Type: so.qtyType, Sheet_Size: so.sheetSize,
+        Bag_GSM: so.bagGsm, Quantity: so.qty
+    });
+    // Each output's planned PRODUCTION target is its required qty minus the share
+    // already met from finished godown stock — i.e. the job's Planned Output, split
+    // across outputs in proportion to their required qty. The printing-vs-godown
+    // split keys off this (not the full Required), so produced surplus is correct.
+    const outRatio = num(job.plannedKg) > 0
+        ? Math.max(num(job.plannedKg) - num(job.finishedKg), 0) / num(job.plannedKg)
+        : 1;
     const outputs = (() => {
         const map = new Map();
         for (const so of job.subOrders) {
             const ot = outputTypeFor(job.type, { Model: so.model });
-            if (!map.has(ot)) map.set(ot, { outputType: ot, planned: 0 });
-            map.get(ot).planned += num(so.qty);
+            if (!map.has(ot)) map.set(ot, { outputType: ot, required: 0 });
+            map.get(ot).required += soKg(so);
         }
-        return [...map.values()].sort((a, b) => b.planned - a.planned);
+        return [...map.values()]
+            .map((o) => ({ ...o, required: roundWeight(o.required), planned: roundWeight(o.required * outRatio) }))
+            .sort((a, b) => b.planned - a.planned);
     })();
 
     const [weights, setWeights] = useState({});
@@ -1274,7 +1361,10 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
                             <div key={o.outputType} className="rounded-lg border border-slate-200 p-3">
                                 <div className="flex items-center justify-between gap-2 mb-2">
                                     <span className="text-sm font-semibold text-slate-800">{o.outputType}</span>
-                                    <span className="text-[11px] text-slate-400">{o.planned} kg planned</span>
+                                    <span className="text-[11px] text-slate-400">
+                                        {fmtKg(o.planned)} kg to produce
+                                        {o.planned < o.required && <span className="text-sky-600"> · {fmtKg(o.required - o.planned)} kg from stock</span>}
+                                    </span>
                                 </div>
                                 <input
                                     type="number" inputMode="decimal" min="0" step="any"
@@ -1288,8 +1378,8 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
                                 />
                                 {output > 0 && (
                                     <div className="flex justify-between gap-3 mt-2 text-[11px]">
-                                        <span className="text-slate-500">→ Printing Area <span className="font-semibold text-slate-700">{printing} kg</span></span>
-                                        <span className="text-slate-500">→ Bags Godown <span className={`font-semibold ${surplus > 0 ? 'text-green-700' : 'text-slate-400'}`}>{surplus} kg</span></span>
+                                        <span className="text-slate-500">→ Printing Area <span className="font-semibold text-slate-700">{fmtKg(printing)} kg</span></span>
+                                        <span className="text-slate-500">→ Bags Godown <span className={`font-semibold ${surplus > 0 ? 'text-green-700' : 'text-slate-400'}`}>{fmtKg(surplus)} kg</span></span>
                                     </div>
                                 )}
                             </div>
@@ -1344,6 +1434,28 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
                         </div>
                     )}
 
+                    {/* Wastage = Available − produced output − returned roll */}
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs space-y-1">
+                        <div className="flex justify-between">
+                            <span className="text-slate-500">Available weight</span>
+                            <span className="font-semibold text-slate-700">{fmtKg(job.availableKg)} kg</span>
+                        </div>
+                        <div className="flex justify-between">
+                            <span className="text-slate-500">− Produced output</span>
+                            <span className="font-medium text-slate-600">{fmtKg(totalOut)} kg</span>
+                        </div>
+                        {returnRoll && (
+                            <div className="flex justify-between">
+                                <span className="text-slate-500">− Returned roll</span>
+                                <span className="font-medium text-slate-600">{fmtKg(totalReturned)} kg</span>
+                            </div>
+                        )}
+                        <div className="flex justify-between border-t border-slate-200 pt-1">
+                            <span className="text-slate-500">= Wastage</span>
+                            <span className={`font-bold ${wastageKg < 0 ? 'text-red-600' : 'text-slate-800'}`}>{fmtKg(wastageKg)} kg</span>
+                        </div>
+                    </div>
+
                     {wastageKg > 0 && (
                         <label className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 cursor-pointer select-none">
                             <input
@@ -1353,14 +1465,14 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
                                 className="mt-0.5 w-4 h-4 rounded border-amber-300 text-amber-600 focus:ring-amber-500"
                             />
                             <span className="text-sm text-amber-900">
-                                <span className="font-semibold">{wastageKg} kg</span> will be allocated as wastage in this job.
+                                <span className="font-semibold">{fmtKg(wastageKg)} kg</span> will be allocated as wastage in this job.
                             </span>
                         </label>
                     )}
 
                     {wastageKg < 0 && (
                         <div className="rounded-lg border border-red-100 bg-red-50 p-3 text-sm text-red-700">
-                            Output plus returned roll weight exceeds available job weight by <span className="font-semibold">{Math.abs(wastageKg)} kg</span>.
+                            Output plus returned roll weight exceeds available job weight by <span className="font-semibold">{fmtKg(Math.abs(wastageKg))} kg</span>.
                         </div>
                     )}
                 </div>
