@@ -134,6 +134,7 @@ const InventoryTable = ({ rows, tab }) => {
                         {isRolls && <th className={th}>Roll #</th>}
                         <th className={th}></th>
                         <th className={th}>Item</th>
+                        <th className={th}>Material</th>
                         <th className={th}>Colour</th>
                         <th className={`${th} text-right`}>GSM</th>
                         <th className={th}>Location</th>
@@ -153,6 +154,7 @@ const InventoryTable = ({ rows, tab }) => {
                                     <div className="w-9"><ItemVisual colour={r.col} type={r.itype} name={r.name} size="sm" /></div>
                                 </td>
                                 <td className={`${td} font-medium text-slate-800`}>{typeName(r.mat, r.itype, r.name)}</td>
+                                <td className={`${td} text-slate-600`}>{r.mat || '—'}</td>
                                 <td className="py-1.5 px-3 text-slate-600 max-w-[150px]"><ColourCell col={r.col} /></td>
                                 <td className={`${td} text-right text-slate-600 tabular-nums`}>{r.gsm || '—'}</td>
                                 <td className={`${td} text-slate-600`}>{r.location || '—'}</td>
@@ -396,6 +398,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                                 </div>
 
                                                 <div className="flex flex-wrap justify-center gap-1 mt-1.5">
+                                                    {r.mat && <Chip>{r.mat}</Chip>}
                                                     {r.gsm && <Chip>{r.gsm} GSM</Chip>}
                                                 </div>
 
