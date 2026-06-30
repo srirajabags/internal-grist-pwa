@@ -120,12 +120,27 @@ const ColourCell = ({ col }) => (
     </span>
 );
 
+// Per-column dropdown filter shown under a table heading. Empty value = no filter.
+const ColFilter = ({ value, options, onChange }) => (
+    <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`mt-1 block w-full max-w-[150px] text-[11px] font-normal normal-case rounded border px-1.5 py-1 outline-none bg-white cursor-pointer ${value ? 'border-teal-400 text-teal-700' : 'border-slate-200 text-slate-500'}`}
+    >
+        <option value="">All</option>
+        {options.map((o) => <option key={o} value={o}>{o}</option>)}
+    </select>
+);
+
 // Compact tabular view of the same rows shown as cards — handy on desktop for
 // scanning many items at once. Horizontally scrollable on narrow screens.
-const InventoryTable = ({ rows, tab }) => {
+const InventoryTable = ({ rows, tab, colFilters, options, onColFilter }) => {
     const isRolls = tab === 'id';
-    const th = 'py-2 px-3 font-semibold whitespace-nowrap';
+    const th = 'py-2 px-3 font-semibold whitespace-nowrap align-top';
     const td = 'py-1.5 px-3 whitespace-nowrap';
+    const filter = (key) => (
+        <ColFilter value={colFilters[key] || ''} options={options[key] || []} onChange={(v) => onColFilter(key, v)} />
+    );
     return (
         <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
             <table className="w-full text-sm">
@@ -134,10 +149,10 @@ const InventoryTable = ({ rows, tab }) => {
                         {isRolls && <th className={th}>Roll #</th>}
                         <th className={th}></th>
                         <th className={th}>Item</th>
-                        <th className={th}>Material</th>
-                        <th className={th}>Colour</th>
-                        <th className={`${th} text-right`}>GSM</th>
-                        <th className={th}>Location</th>
+                        <th className={th}>Material{filter('mat')}</th>
+                        <th className={th}>Colour{filter('col')}</th>
+                        <th className={`${th} text-right`}>GSM{filter('gsm')}</th>
+                        <th className={th}>Location{filter('location')}</th>
                         <th className={`${th} text-right`}>Size (W×H)</th>
                         <th className={`${th} text-right`}>Available</th>
                         {isRolls && <th className={`${th} text-right`}>Initial</th>}
@@ -193,6 +208,8 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     const [showSearch, setShowSearch] = useState(false);
     const [selectedForm, setSelectedForm] = useState('');
     const [view, setView] = useState('grid'); // 'grid' (cards) | 'list' (table)
+    // Per-column dropdown filters for the table view: { mat, col, gsm, location }.
+    const [colFilters, setColFilters] = useState({});
 
     const fetchData = async (activeTab) => {
         setLoading(true);
@@ -232,6 +249,10 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     // sheets) for everything else — each card ranked by its primary quantity.
     const sortVal = (r) =>
         BUNDLE_FORMS.includes(itemForm(r.itype, r.name)) ? num(r.bundles) : rowQty(r).kg;
+    // Column filters apply in the table view only (that's where the controls live).
+    const activeColFilters = view === 'list'
+        ? Object.entries(colFilters).filter(([, v]) => v)
+        : [];
     const filtered = rows
         .filter((r) => {
             const matchForm = !selectedForm || itemForm(r.itype, r.name) === selectedForm;
@@ -241,7 +262,8 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                 || (r.location || '').toLowerCase().includes(term)
                 || (r.mat || '').toLowerCase().includes(term)
                 || (r.col || '').toLowerCase().includes(term);
-            return matchForm && matchTerm;
+            const matchCols = activeColFilters.every(([k, v]) => String(r[k] ?? '') === v);
+            return matchForm && matchTerm && matchCols;
         })
         // Primary: weight (or bundles for piece items), descending. When weight
         // ties — notably at 0 — fall back to bundle count, descending.
@@ -250,6 +272,17 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     // Distinct forms present in the current dataset (for the type filter chips).
     const FORM_ORDER = ['roll', 'sheet', 'dcut', 'wcut', 'sidepatty', 'bottompatty', 'handle', 'box'];
     const presentForms = FORM_ORDER.filter((f) => rows.some((r) => itemForm(r.itype, r.name) === f));
+
+    // Distinct values per filterable column, drawn from the full tab dataset so
+    // every value stays selectable regardless of the current filters.
+    const distinctVals = (key) => [...new Set(
+        rows.map((r) => r[key]).filter((v) => v !== null && v !== undefined && String(v).trim() !== '')
+    )].sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }));
+    const colOptions = {
+        mat: distinctVals('mat'), col: distinctVals('col'),
+        gsm: distinctVals('gsm'), location: distinctVals('location')
+    };
+    const setColFilter = (key, val) => setColFilters((f) => ({ ...f, [key]: val }));
 
     const totalAvailable = filtered.reduce((sum, r) => sum + rowQty(r).kg, 0);
 
@@ -320,7 +353,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                         {TABS.map((t) => (
                             <button
                                 key={t.key}
-                                onClick={() => { setTab(t.key); setSelectedForm(''); }}
+                                onClick={() => { setTab(t.key); setSelectedForm(''); setColFilters({}); }}
                                 className={`flex-1 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${tab === t.key
                                     ? 'bg-teal-50 text-teal-700 ring-1 ring-teal-200'
                                     : 'text-slate-600 hover:bg-slate-50'
@@ -356,6 +389,25 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                         </div>
                     )}
 
+                    {/* Active column-filter chips — always visible in table view so a
+                        zero-result filter combo can still be cleared. */}
+                    {!loading && activeColFilters.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1.5 mb-3">
+                            {activeColFilters.map(([k, v]) => (
+                                <button
+                                    key={k}
+                                    onClick={() => setColFilter(k, '')}
+                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium bg-teal-50 text-teal-700 border border-teal-200 hover:bg-teal-100"
+                                >
+                                    {v} <X size={11} />
+                                </button>
+                            ))}
+                            <button onClick={() => setColFilters({})} className="text-[11px] text-slate-500 hover:text-slate-700 underline px-1">
+                                Clear all
+                            </button>
+                        </div>
+                    )}
+
                     {loading ? (
                         <div className="flex flex-col items-center justify-center h-64 text-slate-400">
                             <Loader2 size={36} className="animate-spin mb-3 text-teal-600" />
@@ -379,7 +431,10 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                             </div>
 
                             {view === 'list' ? (
-                                <InventoryTable rows={filtered} tab={tab} />
+                                <InventoryTable
+                                    rows={filtered} tab={tab}
+                                    colFilters={colFilters} options={colOptions} onColFilter={setColFilter}
+                                />
                             ) : tab === 'code' ? (
                                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                                     {filtered.map((r, idx) => {
