@@ -49,21 +49,24 @@ export const ItemVisual = ({ colour, type, name, size = 'md' }) => {
             );
             break;
         case 'sidepatty':
+            // Side-gusset strip: a single flat, tall, narrow cut piece with stitch
+            // lines along the long edges where it is sewn to the bag body.
             shape = (
                 <g stroke={stroke} strokeWidth={sw} strokeLinejoin="round">
-                    <path d="M30 14 L42 20 L42 56 L30 50 Z" fill={fill} />
-                    <path d="M42 20 L54 14 L54 50 L42 56 Z" fill={accent} />
-                    <path d="M54 14 L66 20 L66 56 L54 50 Z" fill={fill} />
-                    <path d="M66 20 L78 14 L78 50 L66 56 Z" fill={accent} />
+                    <rect x="40" y="8" width="20" height="48" rx="1.5" fill={fill} />
+                    <line x1="44" y1="10.5" x2="44" y2="53.5" strokeWidth="1" strokeDasharray="2 2.5" />
+                    <line x1="56" y1="10.5" x2="56" y2="53.5" strokeWidth="1" strokeDasharray="2 2.5" />
                 </g>
             );
             break;
         case 'bottompatty':
+            // Bottom-gusset strip: a single flat, wider, shorter cut piece with
+            // stitch lines along the long edges where it is sewn on.
             shape = (
                 <g stroke={stroke} strokeWidth={sw} strokeLinejoin="round">
-                    <path d="M24 30 L52 18 L84 30 L56 42 Z" fill={lighter} />
-                    <path d="M24 30 L24 48 L56 60 L56 42 Z" fill={fill} />
-                    <path d="M56 42 L56 60 L84 48 L84 30 Z" fill={accent} />
+                    <rect x="16" y="24" width="68" height="16" rx="1.5" fill={fill} />
+                    <line x1="18.5" y1="28" x2="81.5" y2="28" strokeWidth="1" strokeDasharray="2 2.5" />
+                    <line x1="18.5" y1="36" x2="81.5" y2="36" strokeWidth="1" strokeDasharray="2 2.5" />
                 </g>
             );
             break;

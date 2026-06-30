@@ -70,6 +70,10 @@ const TABS = [
 ];
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
+const fmtKg = (v) => num(v).toFixed(2);
+
+// Pieces (patty / handle) are counted primarily in bundles, weight secondary.
+const BUNDLE_FORMS = ['sidepatty', 'bottompatty', 'handle'];
 
 const Chip = ({ children }) => (
     <span className="inline-flex px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-600">{children}</span>
@@ -130,16 +134,24 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     }, [tab]);
 
     const term = search.trim().toLowerCase();
-    const filtered = rows.filter((r) => {
-        const matchForm = !selectedForm || itemForm(r.itype, r.name) === selectedForm;
-        const matchTerm = !term
-            || (r.name || '').toLowerCase().includes(term)
-            || (r.iid || '').toLowerCase().includes(term)
-            || (r.location || '').toLowerCase().includes(term)
-            || (r.mat || '').toLowerCase().includes(term)
-            || (r.col || '').toLowerCase().includes(term);
-        return matchForm && matchTerm;
-    });
+    // Sort key: bundle count for piece items, available weight for everything
+    // else — so each card is ranked by its own primary quantity, descending.
+    const sortVal = (r) =>
+        BUNDLE_FORMS.includes(itemForm(r.itype, r.name)) ? num(r.bundles) : num(r.avail);
+    const filtered = rows
+        .filter((r) => {
+            const matchForm = !selectedForm || itemForm(r.itype, r.name) === selectedForm;
+            const matchTerm = !term
+                || (r.name || '').toLowerCase().includes(term)
+                || (r.iid || '').toLowerCase().includes(term)
+                || (r.location || '').toLowerCase().includes(term)
+                || (r.mat || '').toLowerCase().includes(term)
+                || (r.col || '').toLowerCase().includes(term);
+            return matchForm && matchTerm;
+        })
+        // Primary: weight (or bundles for piece items), descending. When weight
+        // ties — notably at 0 — fall back to bundle count, descending.
+        .sort((a, b) => (sortVal(b) - sortVal(a)) || (num(b.bundles) - num(a.bundles)));
 
     // Distinct forms present in the current dataset (for the type filter chips).
     const FORM_ORDER = ['roll', 'sheet', 'dcut', 'wcut', 'sidepatty', 'bottompatty', 'handle', 'box'];
@@ -248,15 +260,14 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                     {filtered.length} item{filtered.length !== 1 ? 's' : ''}
                                 </p>
                                 <p className="text-xs text-slate-500">
-                                    Total available: <span className="font-semibold text-slate-700">{totalAvailable} kg</span>
+                                    Total available: <span className="font-semibold text-slate-700">{fmtKg(totalAvailable)} kg</span>
                                 </p>
                             </div>
 
                             {tab === 'code' ? (
                                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                                     {filtered.map((r, idx) => {
-                                        // Pieces (patty / handle) are counted primarily in bundles, weight secondary.
-                                        const bundlesPrimary = ['sidepatty', 'bottompatty', 'handle'].includes(itemForm(r.itype, r.name));
+                                        const bundlesPrimary = BUNDLE_FORMS.includes(itemForm(r.itype, r.name));
                                         return (
                                             <Card key={`${r.code_ref}-${idx}`} className="p-3 flex flex-col">
                                                 <ItemVisual colour={r.col} type={r.itype} name={r.name} />
@@ -285,11 +296,11 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                                         <>
                                                             <span className="text-xl font-bold text-teal-700">{num(r.bundles)}</span>
                                                             <span className="text-xs text-slate-400"> bundles</span>
-                                                            <p className="text-[11px] text-slate-400 mt-0.5">{num(r.avail)} kg · {num(r.cnt)} txn{num(r.cnt) !== 1 ? 's' : ''}</p>
+                                                            <p className="text-[11px] text-slate-400 mt-0.5">{fmtKg(r.avail)} kg · {num(r.cnt)} txn{num(r.cnt) !== 1 ? 's' : ''}</p>
                                                         </>
                                                     ) : (
                                                         <>
-                                                            <span className="text-xl font-bold text-teal-700">{num(r.avail)}</span>
+                                                            <span className="text-xl font-bold text-teal-700">{fmtKg(r.avail)}</span>
                                                             <span className="text-xs text-slate-400"> kg available</span>
                                                             <p className="text-[11px] text-slate-400 mt-0.5">{num(r.bundles)} bundles · {num(r.cnt)} txn{num(r.cnt) !== 1 ? 's' : ''}</p>
                                                         </>
@@ -332,9 +343,9 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                             </div>
 
                                             <div className="mt-3 pt-2 border-t border-slate-100 text-center">
-                                                <span className="text-xl font-bold text-teal-700">{num(r.avail)}</span>
+                                                <span className="text-xl font-bold text-teal-700">{fmtKg(r.avail)}</span>
                                                 <span className="text-xs text-slate-400"> kg available</span>
-                                                <p className="text-[11px] text-slate-400 mt-0.5">Initial {num(r.initial)} kg · {num(r.cnt)} txn{num(r.cnt) !== 1 ? 's' : ''}</p>
+                                                <p className="text-[11px] text-slate-400 mt-0.5">Initial {fmtKg(r.initial)} kg · {num(r.cnt)} txn{num(r.cnt) !== 1 ? 's' : ''}</p>
                                             </div>
                                         </Card>
                                     ))}

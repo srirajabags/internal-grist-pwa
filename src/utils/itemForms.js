@@ -8,12 +8,54 @@ export const COLOUR_MAP = {
     ORANGE: '#f97316', YELLOW: '#facc15', GOLD: '#D4AF37', GREEN: '#22c55e',
     'DARK GREEN': '#15803d', BLUE: '#3b82f6', 'SKY BLUE': '#7dd3fc', NAVY: '#1e3a8a',
     'NAVY BLUE': '#1e3a8a', PURPLE: '#a855f7', VIOLET: '#8b5cf6', BROWN: '#92400e',
-    TAN: '#d2b48c', RANI: '#d6336c', FIRROZI: '#06b6d4', FIROZI: '#06b6d4'
+    TAN: '#d2b48c', RANI: '#d6336c', FIRROZI: '#06b6d4', FIROZI: '#06b6d4',
+    // Non-woven fabric shades added with the Inventory_Item_Codes expansion.
+    'BISCUIT IVORY': '#E8D7AE', 'LEMON IVORY': '#F6F2C5', 'LEMON YELLOW': '#EDE03A',
+    'GOLDEN YELLOW': '#F2B100', BREEZE: '#AEDDEC', 'DARK BREEZE': '#4F9DBC',
+    'MAROON RED': '#7B1E22', 'PARROT GREEN': '#5DB82B', 'RELIANCE GREEN': '#2F9E44',
+    'ROYAL BLUE': '#2C4FC4'
 };
 
-export const colourToCss = (name) => COLOUR_MAP[(name || '').toUpperCase().trim()] || '#cbd5e1';
+// Single-word colour names, used to fuzzy-match multi-word colour strings.
+const COLOUR_WORDS = Object.keys(COLOUR_MAP).filter((k) => !k.includes(' '));
 
-// Lighten (amt > 0) or darken (amt < 0) a hex colour. Returns an rgb() string.
+// Deterministic pleasant hex from an arbitrary string — gives each unrecognised
+// colour a stable, distinct tint instead of a generic grey.
+const hashColour = (name) => {
+    let h = 0;
+    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+    const hue = h % 360;
+    const sat = 58 + (h >> 9) % 22;   // 58–80%
+    const lig = 60 + (h >> 17) % 14;  // 60–74%
+    const s = sat / 100, l = lig / 100;
+    const a = s * Math.min(l, 1 - l);
+    const f = (n) => {
+        const k = (n + hue / 30) % 12;
+        const v = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+        return Math.round(255 * v).toString(16).padStart(2, '0');
+    };
+    return `#${f(0)}${f(8)}${f(4)}`;
+};
+
+// Resolve a colour name to a hex string. Falls back to a fuzzy word match
+// (e.g. "ROYAL BLUE" → BLUE) and finally a stable hashed tint, never grey —
+// except for empty/missing colours.
+export const colourToCss = (name) => {
+    const key = (name || '').toUpperCase().trim();
+    if (!key) return '#cbd5e1';
+    if (COLOUR_MAP[key]) return COLOUR_MAP[key];
+    const word = COLOUR_WORDS.find((w) => new RegExp(`\\b${w}\\b`).test(key));
+    if (word) {
+        let base = COLOUR_MAP[word];
+        if (/\bDARK\b/.test(key)) base = shade(base, -0.28);
+        else if (/\bLIGHT\b/.test(key)) base = shade(base, 0.32);
+        return base;
+    }
+    return hashColour(key);
+};
+
+// Lighten (amt > 0) or darken (amt < 0) a hex colour. Returns a hex string so
+// the result can be re-shaded (used for stroke/accent tints of an item colour).
 export const shade = (hex, amt) => {
     let c = String(hex).replace('#', '');
     if (c.length === 3) c = c.split('').map((x) => x + x).join('');
@@ -21,7 +63,8 @@ export const shade = (hex, amt) => {
     if (isNaN(n)) return hex;
     const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
     const adj = (v) => Math.round(amt >= 0 ? v + (255 - v) * amt : v * (1 + amt));
-    return `rgb(${adj(r)}, ${adj(g)}, ${adj(b)})`;
+    const toHex = (v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0');
+    return `#${toHex(adj(r))}${toHex(adj(g))}${toHex(adj(b))}`;
 };
 
 export const materialLabel = (mat) => {
