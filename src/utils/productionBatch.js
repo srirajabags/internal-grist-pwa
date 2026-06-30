@@ -3,12 +3,13 @@
 // to read, tweak and test in isolation. The CreateBatchModal feeds this module
 // plain rows fetched from Grist and renders whatever `buildPlan` returns.
 
-// The five batch types, mirrored from Factory_Production_Job_Batches.Type metadata.
+// The batch types offered in the Create-Batch flow, mirrored from
+// Factory_Production_Job_Batches.Type metadata. ROLLS TO UCUT and ROLLS TO WCUT
+// are parked for now — their OUTPUT_TYPE / qualification rules stay defined below
+// so they can be re-added here without further changes.
 export const BATCH_TYPES = [
     'ROLLS TO SHEETS',
     'ROLLS TO DCUT',
-    'ROLLS TO UCUT',
-    'ROLLS TO WCUT',
     'ROLLS TO SIDEPATTY',
     'ROLLS TO HANDLES'
 ];

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-    X, Loader2, AlertCircle, CheckCircle2, ChevronRight, ChevronLeft,
+    X, Loader2, AlertCircle, CheckCircle2, ChevronRight, ChevronLeft, ChevronDown,
     Search, Layers, Package, CalendarDays, ClipboardCheck, Maximize2
 } from 'lucide-react';
 import Button from './Button';
@@ -107,7 +107,9 @@ const Step = ({ n, label, active, done }) => (
 
 const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
     const [step, setStep] = useState('setup'); // setup | review | confirm | writing | done
-    const [batchTypes, setBatchTypes] = useState([]); // one or more types to build at once
+    // Default to building every type — the from-date is the only real input; the
+    // type picker stays as an optional override to narrow the run.
+    const [batchTypes, setBatchTypes] = useState([...BATCH_TYPES]);
     const [startDate, setStartDate] = useState(HARD_START_DATE);
     const [availableDates, setAvailableDates] = useState([]);
 
@@ -236,7 +238,11 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                  FROM Sub_Orders so
                  LEFT JOIN Customers c ON c.id = so.Customer
                  LEFT JOIN Orders o ON o.id = so."Order"
-                 WHERE so.Status = 'UPDATED TO FACTORY' AND so.Factory_Updated_Date >= ?`,
+                 WHERE so.Status = 'UPDATED TO FACTORY' AND so.Factory_Updated_Date >= ?
+                   -- Only non-woven / BOPP-laminated for now; PLASTIC and
+                   -- BIO-DEGRADABLE aren't handled yet. MISPRINT models are skipped.
+                   AND so.Material IN ('NON-WOVEN', 'BOPP LAMINATED')
+                   AND so.Model != 'MISPRINT'`,
                 [dateToEpoch(startDate)]
             );
 
@@ -413,37 +419,6 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                     {step === 'setup' && (
                         <div className="space-y-5">
                             <div>
-                                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
-                                    Batch Type{batchTypes.length > 1 ? `s · ${batchTypes.length} selected` : ''}
-                                </p>
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                    {BATCH_TYPES.map((t) => {
-                                        const on = batchTypes.includes(t);
-                                        return (
-                                            <button
-                                                key={t}
-                                                onClick={() => toggleType(t)}
-                                                className={`text-left px-3.5 py-2.5 rounded-xl border text-sm font-medium transition-colors flex items-start gap-2 ${on
-                                                    ? 'bg-amber-600 text-white border-amber-600'
-                                                    : 'bg-white text-slate-700 border-slate-200 hover:border-amber-300'}`}
-                                            >
-                                                <span className={`mt-0.5 shrink-0 w-4 h-4 rounded border flex items-center justify-center ${on ? 'bg-white/20 border-white' : 'border-slate-300'}`}>
-                                                    {on && <CheckCircle2 size={12} className="text-white" />}
-                                                </span>
-                                                <span className="min-w-0">
-                                                    {t}
-                                                    <span className={`block text-[11px] mt-0.5 ${on ? 'text-amber-100' : 'text-slate-400'}`}>
-                                                        Output: {OUTPUT_TYPE[t]}
-                                                    </span>
-                                                </span>
-                                            </button>
-                                        );
-                                    })}
-                                </div>
-                                <p className="text-[11px] text-slate-400 mt-1.5">Pick one or more — a batch is created per type.</p>
-                            </div>
-
-                            <div>
                                 <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
                                     <CalendarDays size={14} /> Include sub-orders from
                                 </p>
@@ -471,8 +446,39 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                                 )}
                                 <p className="text-[11px] text-slate-400 mt-1.5">
                                     Pulls UPDATED-TO-FACTORY sub-orders from this date with no matching job yet
-                                    (including previously postponed ones).
+                                    (including previously postponed ones). Every batch type is built by default.
                                 </p>
+                            </div>
+
+                            <div>
+                                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                                    Batch Types{batchTypes.length !== BATCH_TYPES.length ? ` · ${batchTypes.length} of ${BATCH_TYPES.length}` : ''}
+                                </p>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    {BATCH_TYPES.map((t) => {
+                                        const on = batchTypes.includes(t);
+                                        return (
+                                            <button
+                                                key={t}
+                                                onClick={() => toggleType(t)}
+                                                className={`text-left px-3.5 py-2.5 rounded-xl border text-sm font-medium transition-colors flex items-start gap-2 ${on
+                                                    ? 'bg-amber-600 text-white border-amber-600'
+                                                    : 'bg-white text-slate-700 border-slate-200 hover:border-amber-300'}`}
+                                            >
+                                                <span className={`mt-0.5 shrink-0 w-4 h-4 rounded border flex items-center justify-center ${on ? 'bg-white/20 border-white' : 'border-slate-300'}`}>
+                                                    {on && <CheckCircle2 size={12} className="text-white" />}
+                                                </span>
+                                                <span className="min-w-0">
+                                                    {t}
+                                                    <span className={`block text-[11px] mt-0.5 ${on ? 'text-amber-100' : 'text-slate-400'}`}>
+                                                        Output: {OUTPUT_TYPE[t]}
+                                                    </span>
+                                                </span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                                <p className="text-[11px] text-slate-400 mt-1.5">All types on by default — deselect any you want to skip. A batch is created per type.</p>
                             </div>
 
                             <Button
@@ -709,20 +715,30 @@ const QtyBar = ({ output, finished, unit = ' kg' }) => {
 };
 
 // Section divider naming a batch type, used when several are built at once.
-const TypeHeader = ({ batchType }) => (
-    <div className="flex items-baseline gap-2 border-b border-slate-200 pb-1.5 pt-1">
+// Clickable: toggles the collapsed details below it (summary stats stay visible).
+const TypeHeader = ({ batchType, open, onToggle }) => (
+    <button
+        type="button"
+        onClick={onToggle}
+        className="w-full flex items-center gap-2 border-b border-slate-200 pb-1.5 pt-1 text-left"
+    >
+        {open
+            ? <ChevronDown size={14} className="text-slate-400 shrink-0" />
+            : <ChevronRight size={14} className="text-slate-400 shrink-0" />}
         <span className="text-sm font-bold text-slate-800">{batchType}</span>
         <span className="text-[11px] text-slate-400">→ {OUTPUT_TYPE[batchType]}</span>
-    </div>
+        <span className="ml-auto text-[11px] text-slate-400">{open ? 'Hide' : 'Details'}</span>
+    </button>
 );
 
 // One chosen type's grouped sub-orders (review step).
 const ReviewSection = ({ batchType, plan, onViewForm }) => {
+    const [open, setOpen] = useState(false);
     const unit = plan.isPieces ? '' : ' kg';
     const subOrders = plan.groups.reduce((s, g) => s + g.subOrders.length, 0);
     return (
         <div className="space-y-2">
-            <TypeHeader batchType={batchType} />
+            <TypeHeader batchType={batchType} open={open} onToggle={() => setOpen((o) => !o)} />
             <div className="flex flex-wrap gap-2 text-sm">
                 <Stat label="Groups" value={plan.groups.length} />
                 <Stat label="Sub-orders" value={subOrders} />
@@ -731,39 +747,44 @@ const ReviewSection = ({ batchType, plan, onViewForm }) => {
                 {plan.unmatchedCount > 0 && <Stat label="No roll width" value={plan.unmatchedCount} tone="red" />}
                 {plan.missingGsmCount > 0 && <Stat label="No GSM" value={plan.missingGsmCount} tone="red" />}
             </div>
-            {plan.groups.length === 0 ? (
-                <Empty label="No qualifying sub-orders for this type and date." />
-            ) : plan.groups.map((g) => (
-                <div key={g.key} className="bg-white rounded-xl border border-slate-200 p-3">
-                    <div className="flex items-start justify-between gap-2 mb-2">
-                        <div className="min-w-0">
-                            <p className="font-semibold text-slate-800 text-sm break-words">{attrText(g.attrs)}</p>
-                            {g.rollWidth ? <div className="mt-1"><RollBadge width={g.rollWidth} /></div> : null}
-                            <p className="text-[11px] text-slate-400 mt-1">
-                                {g.matchedCodeId ? `Item code #${g.matchedCodeId}` : 'No matching item code'}
-                            </p>
+            {open && (
+                <>
+                    {plan.groups.length === 0 ? (
+                        <Empty label="No qualifying sub-orders for this type and date." />
+                    ) : plan.groups.map((g) => (
+                        <div key={g.key} className="bg-white rounded-xl border border-slate-200 p-3">
+                            <div className="flex items-start justify-between gap-2 mb-2">
+                                <div className="min-w-0">
+                                    <p className="font-semibold text-slate-800 text-sm break-words">{attrText(g.attrs)}</p>
+                                    {g.rollWidth ? <div className="mt-1"><RollBadge width={g.rollWidth} /></div> : null}
+                                    <p className="text-[11px] text-slate-400 mt-1">
+                                        {g.matchedCodeId ? `Item code #${g.matchedCodeId}` : 'No matching item code'}
+                                    </p>
+                                </div>
+                                <span className="text-xs font-semibold text-slate-600 shrink-0 whitespace-nowrap">{fmtQty(g.requiredQty, plan.isPieces)}{unit}</span>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                                {g.subOrders.map((so) => (
+                                    <SubOrderPill key={so.id} so={so} batchType={batchType} unit={unit} onViewForm={onViewForm} />
+                                ))}
+                            </div>
                         </div>
-                        <span className="text-xs font-semibold text-slate-600 shrink-0 whitespace-nowrap">{fmtQty(g.requiredQty, plan.isPieces)}{unit}</span>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                        {g.subOrders.map((so) => (
-                            <SubOrderPill key={so.id} so={so} batchType={batchType} unit={unit} onViewForm={onViewForm} />
-                        ))}
-                    </div>
-                </div>
-            ))}
-            <UnmatchedPanel subOrders={plan.unmatched} batchType={batchType} unit={unit} onViewForm={onViewForm} />
-            <MissingGsmPanel subOrders={plan.missingGsm} batchType={batchType} unit={unit} onViewForm={onViewForm} />
+                    ))}
+                    <UnmatchedPanel subOrders={plan.unmatched} batchType={batchType} unit={unit} onViewForm={onViewForm} />
+                    <MissingGsmPanel subOrders={plan.missingGsm} batchType={batchType} unit={unit} onViewForm={onViewForm} />
+                </>
+            )}
         </div>
     );
 };
 
 // One chosen type's allocation summary (confirm step).
 const ConfirmSection = ({ batchType, plan, onViewForm }) => {
+    const [open, setOpen] = useState(false);
     const unit = plan.isPieces ? '' : ' kg';
     return (
         <div className="space-y-2">
-            <TypeHeader batchType={batchType} />
+            <TypeHeader batchType={batchType} open={open} onToggle={() => setOpen((o) => !o)} />
             <div className="flex flex-wrap gap-2 text-sm">
                 <Stat label="Jobs" value={plan.jobCount} />
                 <Stat label={`Planned${plan.isPieces ? ' (pcs)' : ' kg'}`} value={fmtQty(plan.totalPlannedQty, plan.isPieces)} />
@@ -773,34 +794,38 @@ const ConfirmSection = ({ batchType, plan, onViewForm }) => {
                 {plan.unmatchedCount > 0 && <Stat label="No roll width" value={plan.unmatchedCount} tone="red" />}
                 {plan.missingGsmCount > 0 && <Stat label="No GSM" value={plan.missingGsmCount} tone="red" />}
             </div>
-            {plan.groups.map((g) => (
-                <div key={g.key} className="bg-white rounded-xl border border-slate-200 p-3">
-                    <div className="flex items-start justify-between gap-2 mb-1.5">
-                        <div className="min-w-0">
-                            <p className="font-semibold text-slate-800 text-sm break-words">{attrText(g.attrs)}</p>
-                            {g.rollWidth ? <div className="mt-1"><RollBadge width={g.rollWidth} /></div> : null}
+            {open && (
+                <>
+                    {plan.groups.map((g) => (
+                        <div key={g.key} className="bg-white rounded-xl border border-slate-200 p-3">
+                            <div className="flex items-start justify-between gap-2 mb-1.5">
+                                <div className="min-w-0">
+                                    <p className="font-semibold text-slate-800 text-sm break-words">{attrText(g.attrs)}</p>
+                                    {g.rollWidth ? <div className="mt-1"><RollBadge width={g.rollWidth} /></div> : null}
+                                </div>
+                                <PriorityBadge priority={g.priority} />
+                            </div>
+                            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+                                <span>Required {fmtQty(g.requiredQty, plan.isPieces)}{unit}</span>
+                                <span>Fulfilled {fmtQty(g.fulfilledQty, plan.isPieces)}{unit}</span>
+                                {g.picks.length > 0 && (
+                                    <span className="flex items-center gap-1">
+                                        <Package size={12} /> {[...new Set(g.picks.map((p) => p.itemId))].length} stock item(s)
+                                    </span>
+                                )}
+                            </div>
+                            {!plan.isPieces && <QtyBar output={g.outputQty} finished={g.finishedQty} />}
+                            {g.postponed.length > 0 && (
+                                <p className="mt-1.5 text-[11px] text-amber-700 bg-amber-50 rounded px-2 py-1">
+                                    {g.postponed.length} sub-order(s) postponed → No_Stock_Identified
+                                </p>
+                            )}
                         </div>
-                        <PriorityBadge priority={g.priority} />
-                    </div>
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
-                        <span>Required {fmtQty(g.requiredQty, plan.isPieces)}{unit}</span>
-                        <span>Fulfilled {fmtQty(g.fulfilledQty, plan.isPieces)}{unit}</span>
-                        {g.picks.length > 0 && (
-                            <span className="flex items-center gap-1">
-                                <Package size={12} /> {[...new Set(g.picks.map((p) => p.itemId))].length} stock item(s)
-                            </span>
-                        )}
-                    </div>
-                    {!plan.isPieces && <QtyBar output={g.outputQty} finished={g.finishedQty} />}
-                    {g.postponed.length > 0 && (
-                        <p className="mt-1.5 text-[11px] text-amber-700 bg-amber-50 rounded px-2 py-1">
-                            {g.postponed.length} sub-order(s) postponed → No_Stock_Identified
-                        </p>
-                    )}
-                </div>
-            ))}
-            <UnmatchedPanel subOrders={plan.unmatched} batchType={batchType} unit={unit} onViewForm={onViewForm} />
-            <MissingGsmPanel subOrders={plan.missingGsm} batchType={batchType} unit={unit} onViewForm={onViewForm} />
+                    ))}
+                    <UnmatchedPanel subOrders={plan.unmatched} batchType={batchType} unit={unit} onViewForm={onViewForm} />
+                    <MissingGsmPanel subOrders={plan.missingGsm} batchType={batchType} unit={unit} onViewForm={onViewForm} />
+                </>
+            )}
         </div>
     );
 };
