@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
-    ArrowLeft, Warehouse, AlertCircle, Loader2, RefreshCw, Search, X, Package
+    ArrowLeft, Warehouse, AlertCircle, Loader2, RefreshCw, Search, X, Package,
+    LayoutGrid, List
 } from 'lucide-react';
 import Card from '../components/Card';
 import Button from '../components/Button';
@@ -75,6 +76,27 @@ const fmtKg = (v) => num(v).toFixed(2);
 // Pieces (patty / handle) are counted primarily in bundles, weight secondary.
 const BUNDLE_FORMS = ['sidepatty', 'bottompatty', 'handle'];
 
+// Sheets are stored as a sheet COUNT (Available_Count_Bundles_), not kg — their
+// recorded weight is 0. Derive kg from geometry the same way create-batch does:
+// one sheet (kg) = W(in) * H(in) * GSM / (1550 * 1000), since 1550 in² = 1 m².
+const PIECE_TO_KG_DIVISOR = 1550 * 1000;
+const sheetKg = (r) => {
+    const w = num(r.w), h = num(r.h), gsm = num(r.gsm), n = num(r.bundles);
+    if (!w || !h || !gsm) return 0;            // geometry missing -> can't convert
+    return n * w * h * gsm / PIECE_TO_KG_DIVISOR;
+};
+
+// Primary/secondary quantity for a row, by physical form. Sheets are counted in
+// sheets (kg derived), pieces in bundles (kg recorded), everything else in kg.
+const rowQty = (r) => {
+    const form = itemForm(r.itype, r.name);
+    if (form === 'sheet')
+        return { countPrimary: true, count: num(r.bundles), countUnit: 'sheets', kg: sheetKg(r) };
+    if (BUNDLE_FORMS.includes(form))
+        return { countPrimary: true, count: num(r.bundles), countUnit: 'bundles', kg: num(r.avail) };
+    return { countPrimary: false, count: num(r.bundles), countUnit: 'bundles', kg: num(r.avail) };
+};
+
 const Chip = ({ children }) => (
     <span className="inline-flex px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-600">{children}</span>
 );
@@ -91,6 +113,75 @@ const FormChip = ({ label, active, onClick }) => (
     </button>
 );
 
+const ColourCell = ({ col }) => (
+    <span className="inline-flex items-center gap-1.5 min-w-0">
+        <span className="w-3 h-3 rounded-full border border-slate-300 shrink-0" style={{ background: colourToCss(col) }} />
+        <span className="truncate">{col || '—'}</span>
+    </span>
+);
+
+// Compact tabular view of the same rows shown as cards — handy on desktop for
+// scanning many items at once. Horizontally scrollable on narrow screens.
+const InventoryTable = ({ rows, tab }) => {
+    const isRolls = tab === 'id';
+    const th = 'py-2 px-3 font-semibold whitespace-nowrap';
+    const td = 'py-1.5 px-3 whitespace-nowrap';
+    return (
+        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+            <table className="w-full text-sm">
+                <thead>
+                    <tr className="text-left text-[11px] uppercase tracking-wider text-slate-500 bg-slate-50 border-b border-slate-200">
+                        {isRolls && <th className={th}>Roll #</th>}
+                        <th className={th}></th>
+                        <th className={th}>Item</th>
+                        <th className={th}>Colour</th>
+                        <th className={`${th} text-right`}>GSM</th>
+                        <th className={th}>Location</th>
+                        <th className={`${th} text-right`}>Size (W×H)</th>
+                        <th className={`${th} text-right`}>Available</th>
+                        {isRolls && <th className={`${th} text-right`}>Initial</th>}
+                        <th className={`${th} text-right`}>Txns</th>
+                    </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                    {rows.map((r, idx) => {
+                        const q = rowQty(r);
+                        return (
+                            <tr key={`${r.code_ref}-${r.iid ?? idx}`} className="hover:bg-slate-50">
+                                {isRolls && <td className={`${td} font-bold text-teal-800`}>#{r.iid || '—'}</td>}
+                                <td className="py-1 px-2">
+                                    <div className="w-9"><ItemVisual colour={r.col} type={r.itype} name={r.name} size="sm" /></div>
+                                </td>
+                                <td className={`${td} font-medium text-slate-800`}>{typeName(r.mat, r.itype, r.name)}</td>
+                                <td className="py-1.5 px-3 text-slate-600 max-w-[150px]"><ColourCell col={r.col} /></td>
+                                <td className={`${td} text-right text-slate-600 tabular-nums`}>{r.gsm || '—'}</td>
+                                <td className={`${td} text-slate-600`}>{r.location || '—'}</td>
+                                <td className={`${td} text-right text-slate-600 tabular-nums`}>
+                                    {(r.w || r.h) ? `${r.w || '—'}″ × ${r.h || '—'}″` : '—'}
+                                </td>
+                                <td className={`${td} text-right`}>
+                                    <span className="font-bold text-teal-700 tabular-nums">
+                                        {q.countPrimary
+                                            ? <>{q.count}<span className="text-xs font-normal text-slate-400"> {q.countUnit}</span></>
+                                            : <>{fmtKg(q.kg)}<span className="text-xs font-normal text-slate-400"> kg</span></>}
+                                    </span>
+                                    {!isRolls && (
+                                        <div className="text-[11px] text-slate-400 tabular-nums">
+                                            {q.countPrimary ? `${fmtKg(q.kg)} kg` : `${q.count} ${q.countUnit}`}
+                                        </div>
+                                    )}
+                                </td>
+                                {isRolls && <td className={`${td} text-right text-slate-500 tabular-nums`}>{fmtKg(r.initial)} kg</td>}
+                                <td className={`${td} text-right text-slate-500 tabular-nums`}>{num(r.cnt)}</td>
+                            </tr>
+                        );
+                    })}
+                </tbody>
+            </table>
+        </div>
+    );
+};
+
 const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     const [tab, setTab] = useState('code');
     const [rows, setRows] = useState([]);
@@ -99,6 +190,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     const [search, setSearch] = useState('');
     const [showSearch, setShowSearch] = useState(false);
     const [selectedForm, setSelectedForm] = useState('');
+    const [view, setView] = useState('grid'); // 'grid' (cards) | 'list' (table)
 
     const fetchData = async (activeTab) => {
         setLoading(true);
@@ -134,10 +226,10 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     }, [tab]);
 
     const term = search.trim().toLowerCase();
-    // Sort key: bundle count for piece items, available weight for everything
-    // else — so each card is ranked by its own primary quantity, descending.
+    // Sort key: bundle count for piece items, available weight (computed for
+    // sheets) for everything else — each card ranked by its primary quantity.
     const sortVal = (r) =>
-        BUNDLE_FORMS.includes(itemForm(r.itype, r.name)) ? num(r.bundles) : num(r.avail);
+        BUNDLE_FORMS.includes(itemForm(r.itype, r.name)) ? num(r.bundles) : rowQty(r).kg;
     const filtered = rows
         .filter((r) => {
             const matchForm = !selectedForm || itemForm(r.itype, r.name) === selectedForm;
@@ -157,12 +249,15 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     const FORM_ORDER = ['roll', 'sheet', 'dcut', 'wcut', 'sidepatty', 'bottompatty', 'handle', 'box'];
     const presentForms = FORM_ORDER.filter((f) => rows.some((r) => itemForm(r.itype, r.name) === f));
 
-    const totalAvailable = filtered.reduce((sum, r) => sum + num(r.avail), 0);
+    const totalAvailable = filtered.reduce((sum, r) => sum + rowQty(r).kg, 0);
+
+    // List/table view benefits from extra width on desktop.
+    const wrap = view === 'list' ? 'max-w-6xl' : 'max-w-3xl';
 
     return (
         <div className="min-h-screen bg-slate-50 flex flex-col">
             <header className="bg-white border-b border-slate-200 sticky top-0 z-10 px-3 py-2.5">
-                <div className="max-w-3xl mx-auto flex flex-col gap-2.5">
+                <div className={`${wrap} mx-auto flex flex-col gap-2.5`}>
                     <div className="flex items-center gap-2">
                         <Button variant="ghost" onClick={onBack} className="!px-2 shrink-0">
                             <ArrowLeft size={20} />
@@ -173,6 +268,23 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                         <div className="min-w-0 flex-1">
                             <h1 className="font-bold text-slate-800 leading-tight truncate">Inventory</h1>
                             <p className="text-xs text-slate-500 truncate">Current stock from transactions</p>
+                        </div>
+                        {/* Card / table view toggle — desktop only */}
+                        <div className="hidden md:inline-flex rounded-lg border border-slate-200 overflow-hidden shrink-0">
+                            <button
+                                onClick={() => setView('grid')}
+                                title="Card view"
+                                className={`px-2.5 py-1.5 transition-colors ${view === 'grid' ? 'bg-teal-50 text-teal-700' : 'text-slate-500 hover:bg-slate-50'}`}
+                            >
+                                <LayoutGrid size={18} />
+                            </button>
+                            <button
+                                onClick={() => setView('list')}
+                                title="Table view"
+                                className={`px-2.5 py-1.5 border-l border-slate-200 transition-colors ${view === 'list' ? 'bg-teal-50 text-teal-700' : 'text-slate-500 hover:bg-slate-50'}`}
+                            >
+                                <List size={18} />
+                            </button>
                         </div>
                         <Button variant="secondary" onClick={() => setShowSearch((s) => !s)} className="!px-2.5 shrink-0">
                             <Search size={18} />
@@ -220,7 +332,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
             </header>
 
             <main className="flex-1 p-3 overflow-auto">
-                <div className="max-w-3xl mx-auto">
+                <div className={`${wrap} mx-auto`}>
                     {error && (
                         <div className="mb-3 p-3 bg-red-50 text-red-700 rounded-lg border border-red-100 flex gap-2 items-start">
                             <AlertCircle size={18} className="mt-0.5 shrink-0" />
@@ -264,10 +376,12 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                 </p>
                             </div>
 
-                            {tab === 'code' ? (
+                            {view === 'list' ? (
+                                <InventoryTable rows={filtered} tab={tab} />
+                            ) : tab === 'code' ? (
                                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                                     {filtered.map((r, idx) => {
-                                        const bundlesPrimary = BUNDLE_FORMS.includes(itemForm(r.itype, r.name));
+                                        const q = rowQty(r);
                                         return (
                                             <Card key={`${r.code_ref}-${idx}`} className="p-3 flex flex-col">
                                                 <ItemVisual colour={r.col} type={r.itype} name={r.name} />
@@ -292,17 +406,17 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                                 </div>
 
                                                 <div className="mt-3 pt-2 border-t border-slate-100 text-center">
-                                                    {bundlesPrimary ? (
+                                                    {q.countPrimary ? (
                                                         <>
-                                                            <span className="text-xl font-bold text-teal-700">{num(r.bundles)}</span>
-                                                            <span className="text-xs text-slate-400"> bundles</span>
-                                                            <p className="text-[11px] text-slate-400 mt-0.5">{fmtKg(r.avail)} kg · {num(r.cnt)} txn{num(r.cnt) !== 1 ? 's' : ''}</p>
+                                                            <span className="text-xl font-bold text-teal-700">{q.count}</span>
+                                                            <span className="text-xs text-slate-400"> {q.countUnit}</span>
+                                                            <p className="text-[11px] text-slate-400 mt-0.5">{fmtKg(q.kg)} kg · {num(r.cnt)} txn{num(r.cnt) !== 1 ? 's' : ''}</p>
                                                         </>
                                                     ) : (
                                                         <>
-                                                            <span className="text-xl font-bold text-teal-700">{fmtKg(r.avail)}</span>
+                                                            <span className="text-xl font-bold text-teal-700">{fmtKg(q.kg)}</span>
                                                             <span className="text-xs text-slate-400"> kg available</span>
-                                                            <p className="text-[11px] text-slate-400 mt-0.5">{num(r.bundles)} bundles · {num(r.cnt)} txn{num(r.cnt) !== 1 ? 's' : ''}</p>
+                                                            <p className="text-[11px] text-slate-400 mt-0.5">{q.count} {q.countUnit} · {num(r.cnt)} txn{num(r.cnt) !== 1 ? 's' : ''}</p>
                                                         </>
                                                     )}
                                                 </div>
