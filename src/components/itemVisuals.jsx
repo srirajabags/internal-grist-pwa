@@ -71,16 +71,18 @@ export const ItemVisual = ({ colour, type, name, size = 'md' }) => {
             );
             break;
         case 'handlebag':
+            // Soft loop-handle bag: a rectangular body with a single flexible loop
+            // handle welded to the reinforced top hem, leaving a hand opening.
             shape = (
                 <g stroke={stroke} strokeWidth={sw} strokeLinejoin="round">
-                    <path d="M30 22 L30 58 L70 58 L70 22" fill={fill} />
-                    <path d="M35 24 L35 13 L46 13 L46 24" fill={lighter} />
-                    <path d="M65 24 L65 13 L54 13 L54 24" fill={lighter} />
-                    <path d="M46 24 Q50 29 54 24" fill="none" />
-                    <line x1="30" y1="36" x2="70" y2="36" strokeWidth="1.5" strokeDasharray="3 2" />
+                    <path d="M40 26 C 37 6 63 6 60 26 L55.5 26 C 56.5 15 43.5 15 44.5 26 Z"
+                        fill={accent} strokeLinecap="round" />
+                    <rect x="28" y="24" width="44" height="34" rx="2" fill={fill} />
+                    <rect x="28" y="24" width="44" height="6" rx="2" fill={lighter} />
                 </g>
             );
             break;
+        case 'pressinghandle':
         case 'handle':
             shape = (
                 <g stroke={stroke} strokeWidth={sw} strokeLinejoin="round">

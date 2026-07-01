@@ -11,7 +11,8 @@ export const BATCH_TYPES = [
     'ROLLS TO SHEETS',
     'ROLLS TO DCUT',
     'ROLLS TO SIDEPATTY',
-    'ROLLS TO HANDLES'
+    'ROLLS TO HANDLES',
+    'ROLLS TO PRESSING HANDLES'
 ];
 
 // Only sub-orders updated to the factory on/after this date are ever considered,
@@ -26,13 +27,14 @@ export const OUTPUT_TYPE = {
     'ROLLS TO UCUT': 'UCUT BAG',
     'ROLLS TO WCUT': 'WCUT BAG',
     'ROLLS TO SIDEPATTY': 'SIDEPATTY',
-    'ROLLS TO HANDLES': 'HANDLE'
+    'ROLLS TO HANDLES': 'HANDLE',
+    'ROLLS TO PRESSING HANDLES': 'PRESSING HANDLE'
 };
 
 // Sub-order Roll_Material -> Inventory_Item_Codes.Material. Plastic variants have
 // no item codes yet, so they intentionally fall through (soft-match returns null).
 export const MATERIAL_MAP = {
-    'NW REGULAR': 'NW NORMAL',
+    'NW REGULAR': 'NW REGULAR',
     'NW VIRGIN': 'NW VIRGIN',
     'NW BOPP': 'NW BOPP'
 };
@@ -44,7 +46,9 @@ const isSet = (v) => v !== null && v !== undefined && String(v).trim() !== '';
 // Types counted in bundles/pieces rather than kg (mirrors the Grist
 // Planned_Count_Bundles_ formula).
 const isPieceType = (batchType) =>
-    batchType === 'ROLLS TO SIDEPATTY' || batchType === 'ROLLS TO HANDLES';
+    batchType === 'ROLLS TO SIDEPATTY' ||
+    batchType === 'ROLLS TO HANDLES' ||
+    batchType === 'ROLLS TO PRESSING HANDLES';
 
 // --- Roll-width matching ---
 // Some batch types are produced by cutting a roll of a fixed width. A sub-order's
@@ -133,12 +137,50 @@ export const needsPieceConversion = (batchType, so) =>
 export const cannotConvertQty = (batchType, so) =>
     needsPieceConversion(batchType, so) && sheetPiecesToKg(so) == null;
 
-// The quantity a sub-order contributes to its group's requirement, in the unit
-// the batch allocates in (bundles for piece-type batches, kg otherwise). A
-// STITCHING order quoted in pieces is converted to kg; everything else is taken
-// as-is.
+// --- Piece-batch quantities: bags → finished pieces → bundles ---
+// Handles/side-patty/bottom-patty are produced per finished bag and stocked in
+// fixed-size bundles, so a piece sub-order's requirement is (bags * pieces-per-bag)
+// / bundle-size. Every bag takes 2 handles and exactly one gusset — a side patty,
+// or a bottom patty when the side patty is PRINTED (never both, always 1 per bag).
+export const BUNDLE_SIZE = {
+    'ROLLS TO HANDLES': 100,
+    'ROLLS TO PRESSING HANDLES': 100,
+    'ROLLS TO SIDEPATTY': 50
+};
+const PIECES_PER_BAG = {
+    'ROLLS TO HANDLES': 2,
+    'ROLLS TO PRESSING HANDLES': 2,
+    'ROLLS TO SIDEPATTY': 1
+};
+
+// Number of finished bags a piece-type sub-order covers. HANDLE-model orders quote
+// the total cloth weight (kg); back the count out from one bag's flat-cloth mass —
+// the piece is Bag_Width × (Bag_Height*2 + 2)″ (the HANDLE-bag layout, matching the
+// +2″ roll-width allowance). Everything else quotes the bag-piece count directly.
+// Returns null when a weight order lacks the geometry to size it.
+const bagPieces = (so) => {
+    if (norm(so.Model) === 'HANDLE') {
+        const w = num(so.Bag_Width), h = num(so.Bag_Height), gsm = num(so.Bag_GSM);
+        if (!w || !h || !gsm) return null;
+        const massPerPiece = (w * (h * 2 + 2) * gsm) / PIECE_TO_KG_DIVISOR;
+        return massPerPiece > 0 ? num(so.Quantity) / massPerPiece : null;
+    }
+    return num(so.Quantity);
+};
+
+// A piece-type order that can't be sized (a weight order missing bag geometry).
+export const cannotSizePieces = (batchType, so) =>
+    isPieceType(batchType) && bagPieces(so) == null;
+
+// The quantity a sub-order contributes to its group's requirement, in the unit the
+// batch allocates in (bundles for piece-type batches, kg otherwise). A STITCHING
+// sheet order quoted in pieces is converted to kg; everything else as-is.
 export const effectiveQty = (batchType, so) => {
-    if (isPieceType(batchType)) return num(so.Quantity);        // bundles, unchanged
+    if (isPieceType(batchType)) {
+        const bags = bagPieces(so);
+        if (bags == null) return 0;   // un-sizable -> flagged, contributes nothing
+        return (bags * PIECES_PER_BAG[batchType]) / BUNDLE_SIZE[batchType];
+    }
     if (needsPieceConversion(batchType, so)) {
         const kg = sheetPiecesToKg(so);
         if (kg != null) return kg;
@@ -155,9 +197,12 @@ export const typeNeedsSubOrder = (batchType, so) => {
         case 'ROLLS TO DCUT': return model === 'DCUT' || model === 'HANDLE';
         case 'ROLLS TO UCUT': return model === 'UCUT';
         case 'ROLLS TO HANDLES': return model === 'STITCHING';
+        case 'ROLLS TO PRESSING HANDLES': return model === 'HANDLE';
         case 'ROLLS TO SHEETS': return model === 'STITCHING' || model === 'PLAIN';
+        // ROLLS TO SIDEPATTY makes the bag's single gusset: a side patty, or a
+        // bottom patty when the side patty is PRINTED. Either way needs a width.
         case 'ROLLS TO SIDEPATTY':
-            return isSet(so.Sidepatty_Width) || isSet(so.Sidepatty_Colour);
+            return isSet(so.Sidepatty_Width);
         default: return false;
     }
 };
@@ -182,12 +227,15 @@ export const groupAttrs = (batchType, so) => {
             width: so.Sidepatty_Width || ''
         };
     }
-    if (batchType === 'ROLLS TO HANDLES') {
+    // Both handle types are fixed-spec: NW REGULAR, 90 GSM rolls, 2″ wide. Only the
+    // length differs — normal handle 13″, pressing handle 14.5″ — and colour varies.
+    if (batchType === 'ROLLS TO HANDLES' || batchType === 'ROLLS TO PRESSING HANDLES') {
         return {
             material: 'NW REGULAR',
-            colour: so.Sidepatty_Colour || so.Handle_Colour,
-            gsm: '110',
-            width: '2'
+            colour: so.Handle_Colour || so.Sidepatty_Colour || '',
+            gsm: '90',
+            width: '2',
+            height: batchType === 'ROLLS TO PRESSING HANDLES' ? '14.5' : '13'
         };
     }
     // Roll-width types group by the required roll width, not the bag/sheet size, so
@@ -211,10 +259,14 @@ export const groupAttrs = (batchType, so) => {
 
 // The output item Type a sub-order produces. Most batch types have a single
 // output, but a ROLLS TO DCUT batch yields DCUT BAG or HANDLE BAG by bag model.
-export const outputTypeFor = (batchType, so) =>
-    batchType === 'ROLLS TO DCUT'
-        ? (norm(so.Model) === 'HANDLE' ? 'HANDLE BAG' : 'DCUT BAG')
-        : OUTPUT_TYPE[batchType];
+export const outputTypeFor = (batchType, so) => {
+    if (batchType === 'ROLLS TO DCUT') return norm(so.Model) === 'HANDLE' ? 'HANDLE BAG' : 'DCUT BAG';
+    // A ROLLS TO SIDEPATTY job yields a bottom patty when the side patty is PRINTED,
+    // otherwise a side patty (one gusset per bag). PRINTED / non-PRINTED orders land
+    // in separate groups, so each job is homogeneous.
+    if (batchType === 'ROLLS TO SIDEPATTY') return norm(so.Sidepatty_Colour) === 'PRINTED' ? 'BOTTOMPATTY' : 'SIDEPATTY';
+    return OUTPUT_TYPE[batchType];
+};
 
 // Group key: roll-width batches group purely by material + roll width + colour +
 // gsm, so every output (e.g. DCUT and HANDLE bags) cuttable from the same roll
@@ -377,7 +429,7 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
     for (const so of eligible) {
         // A pieces-quoted order with no GSM can't be sized in kg; flag it instead
         // of grouping it with a blank/zero quantity that would skew allocation.
-        if (cannotConvertQty(batchType, so)) { missingGsm.push(so); continue; }
+        if (cannotConvertQty(batchType, so) || cannotSizePieces(batchType, so)) { missingGsm.push(so); continue; }
         if (!usesRollWidth) { groupable.push(so); continue; }
         const rw = requiredRollWidth(batchType, so);
         if (rw === 'ignore') continue;
@@ -423,7 +475,8 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
                 ...g,
                 rollWidth: usesRollWidth ? num(g.attrs.width) : null,
                 rollCodeId,
-                matchedCodeId: usesRollWidth ? rollCodeId : softMatchItemCode(g.attrs, itemCodes, batchType),
+                matchedCodeId: usesRollWidth ? rollCodeId
+                    : softMatchItemCode(g.attrs, itemCodes, batchType, outputTypeFor(batchType, g.subOrders[0])),
                 ...alloc,
                 outputQty,
                 finishedQty

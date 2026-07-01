@@ -6,7 +6,7 @@ import {
 import Button from './Button';
 import {
     BATCH_TYPES, HARD_START_DATE, OUTPUT_TYPE, PRIORITY_LABEL, buildPlan,
-    effectiveQty, needsPieceConversion, cannotConvertQty
+    effectiveQty, needsPieceConversion, cannotConvertQty, cannotSizePieces, BUNDLE_SIZE
 } from '../utils/productionBatch';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
@@ -588,14 +588,20 @@ const RollBadge = ({ width }) => width ? (
     </span>
 ) : null;
 
-// Quantity label for a sub-order. STITCHING orders quoted in pieces show both the
-// piece count and the converted kg (the unit allocation actually uses); when GSM
-// is missing the kg can't be sized so it shows "?".
+// Quantity label for a sub-order, showing the order input and the unit allocation
+// actually uses. Piece-type batches (handles / patty) allocate in bundles: HANDLE
+// orders are quoted in kg, the rest in pieces, and un-sizable orders show "?".
+// STITCHING sheet orders show their piece count and the converted kg.
 const qtyLabel = (batchType, so, unit) => {
-    const pieces = num(so.Quantity);
-    if (!needsPieceConversion(batchType, so)) return `${pieces}${unit}`;
-    if (cannotConvertQty(batchType, so)) return `${pieces} pcs · ? kg`;
-    return `${pieces} pcs · ${effectiveQty(batchType, so).toFixed(2)} kg`;
+    const qty = num(so.Quantity);
+    if (BUNDLE_SIZE[batchType] != null) {
+        const input = String(so.Model || '').trim().toUpperCase() === 'HANDLE' ? `${qty} kg` : `${qty} pcs`;
+        if (cannotSizePieces(batchType, so)) return `${input} · ? bundles`;
+        return `${input} · ${effectiveQty(batchType, so).toFixed(2)} bundles`;
+    }
+    if (!needsPieceConversion(batchType, so)) return `${qty}${unit}`;
+    if (cannotConvertQty(batchType, so)) return `${qty} pcs · ? kg`;
+    return `${qty} pcs · ${effectiveQty(batchType, so).toFixed(2)} kg`;
 };
 
 const SubOrderPill = ({ so, batchType, unit, tone = 'slate', onViewForm }) => {
@@ -734,7 +740,7 @@ const TypeHeader = ({ batchType, open, onToggle }) => (
 // One chosen type's grouped sub-orders (review step).
 const ReviewSection = ({ batchType, plan, onViewForm }) => {
     const [open, setOpen] = useState(false);
-    const unit = plan.isPieces ? '' : ' kg';
+    const unit = plan.isPieces ? ' bundles' : ' kg';
     const subOrders = plan.groups.reduce((s, g) => s + g.subOrders.length, 0);
     return (
         <div className="space-y-2">
@@ -781,13 +787,13 @@ const ReviewSection = ({ batchType, plan, onViewForm }) => {
 // One chosen type's allocation summary (confirm step).
 const ConfirmSection = ({ batchType, plan, onViewForm }) => {
     const [open, setOpen] = useState(false);
-    const unit = plan.isPieces ? '' : ' kg';
+    const unit = plan.isPieces ? ' bundles' : ' kg';
     return (
         <div className="space-y-2">
             <TypeHeader batchType={batchType} open={open} onToggle={() => setOpen((o) => !o)} />
             <div className="flex flex-wrap gap-2 text-sm">
                 <Stat label="Jobs" value={plan.jobCount} />
-                <Stat label={`Planned${plan.isPieces ? ' (pcs)' : ' kg'}`} value={fmtQty(plan.totalPlannedQty, plan.isPieces)} />
+                <Stat label={`Planned${plan.isPieces ? ' (bundles)' : ' kg'}`} value={fmtQty(plan.totalPlannedQty, plan.isPieces)} />
                 {!plan.isPieces && plan.totalFinishedQty > 0 && <Stat label="Output kg" value={fmtKg(plan.totalOutputQty)} tone="green" />}
                 {!plan.isPieces && plan.totalFinishedQty > 0 && <Stat label="From stock kg" value={fmtKg(plan.totalFinishedQty)} tone="sky" />}
                 <Stat label="Postponed" value={plan.postponedCount} tone={plan.postponedCount ? 'amber' : 'slate'} />

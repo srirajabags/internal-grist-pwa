@@ -270,7 +270,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
         .sort((a, b) => (sortVal(b) - sortVal(a)) || (num(b.bundles) - num(a.bundles)));
 
     // Distinct forms present in the current dataset (for the type filter chips).
-    const FORM_ORDER = ['roll', 'sheet', 'dcut', 'wcut', 'sidepatty', 'bottompatty', 'handle', 'box'];
+    const FORM_ORDER = ['roll', 'sheet', 'dcut', 'wcut', 'handlebag', 'sidepatty', 'bottompatty', 'handle', 'pressinghandle', 'box'];
     const presentForms = FORM_ORDER.filter((f) => rows.some((r) => itemForm(r.itype, r.name) === f));
 
     // Distinct values per filterable column, drawn from the full tab dataset so
