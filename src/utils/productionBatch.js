@@ -44,9 +44,9 @@ const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const isSet = (v) => v !== null && v !== undefined && String(v).trim() !== '';
 
 // Types counted in bundles/pieces rather than kg (mirrors the Grist
-// Planned_Count_Bundles_ formula).
+// Planned_Count_Bundles_ formula). Side/bottom patty are cut from raw rolls and
+// allocated in kg (see below), so only the handle types are piece-counted.
 const isPieceType = (batchType) =>
-    batchType === 'ROLLS TO SIDEPATTY' ||
     batchType === 'ROLLS TO HANDLES' ||
     batchType === 'ROLLS TO PRESSING HANDLES';
 
@@ -57,6 +57,45 @@ const isPieceType = (batchType) =>
 const ROLL_WIDTHS_SHEETS = [13, 15, 16, 17, 19];
 const ROLL_WIDTHS_DCUT = [27, 32, 36, 42, 45];   // DCUT-model bags
 const ROLL_WIDTHS_DCUT_HANDLE = [36, 38, 42];    // HANDLE-model bags (in a DCUT batch)
+const ROLL_WIDTHS_SIDEPATTY = [8, 10, 12];       // side-patty strips
+const ROLL_WIDTHS_BOTTOMPATTY = [13, 17, 18];    // bottom-patty strips (PRINTED)
+
+// Largest roll width in `widths` that is an exact whole-number multiple of the
+// patty strip width (so the roll cuts into strips with no width waste); null when
+// none qualifies.
+const exactMultipleRollWidth = (stripWidth, widths) => {
+    if (!(stripWidth > 0)) return null;
+    const multiples = widths.filter((w) => {
+        const n = w / stripWidth;
+        return n >= 1 && Math.abs(n - Math.round(n)) < 1e-6;
+    });
+    return multiples.length ? Math.max(...multiples) : null;
+};
+
+// Side/bottom patty geometry for a sub-order, or null when required info is
+// missing (so the caller can flag it). A PRINTED side patty is really a bottom
+// patty: 0.5″ narrower, length = bag width, 110 GSM, cut from the bottom-patty
+// roll set. A plain side patty uses its given width, a length that wraps the bag
+// (width + 2×(height+1)), its own GSM, and the side-patty roll set.
+export const pattyDims = (so) => {
+    const sw = num(so.Sidepatty_Width);
+    if (!sw) return null;                                   // no strip width -> flag
+    const bw = num(so.Bag_Width);
+    if (norm(so.Sidepatty_Colour) === 'PRINTED') {
+        if (!bw) return null;                              // need bag width for length
+        return { kind: 'BOTTOMPATTY', width: sw - 0.5, length: bw, gsm: '110', rolls: ROLL_WIDTHS_BOTTOMPATTY };
+    }
+    const bh = num(so.Bag_Height), gsm = num(so.Sidepatty_GSM);
+    if (!bw || !bh || !gsm) return null;                  // need bag dims + GSM
+    return { kind: 'SIDEPATTY', width: sw, length: bw + (bh + 1) * 2, gsm: String(gsm), rolls: ROLL_WIDTHS_SIDEPATTY };
+};
+
+// The roll width a patty sub-order needs (exact multiple of its strip width), or
+// null when its info is missing or no roll width in the set is an exact multiple.
+export const pattyRollWidth = (so) => {
+    const d = pattyDims(so);
+    return d ? exactMultipleRollWidth(d.width, d.rolls) : null;
+};
 
 // Batch types whose sub-orders are grouped — and matched to rolls — by roll width
 // rather than by output size. One job then represents one physical roll width.
@@ -124,10 +163,12 @@ const sheetPiecesToKg = (so) => {
     return num(so.Quantity) * (w * h * gsm) / PIECE_TO_KG_DIVISOR;
 };
 
-// A STITCHING order quoted in pieces feeds a kg-based batch only after a
-// pieces -> kg conversion, which needs the sheet's GSM.
+// A STITCHING order quoted in pieces feeds a kg-based sheet batch only after a
+// pieces -> kg conversion from sheet geometry. Side/bottom patty are kg-based too
+// but convert from their own strip geometry (pattyKg), so they're excluded here.
 export const needsPieceConversion = (batchType, so) =>
     !isPieceType(batchType) &&
+    batchType !== 'ROLLS TO SIDEPATTY' &&
     norm(so.Model) === 'STITCHING' &&
     norm(so.Quantity_Type) === 'PIECES';
 
@@ -138,19 +179,15 @@ export const cannotConvertQty = (batchType, so) =>
     needsPieceConversion(batchType, so) && sheetPiecesToKg(so) == null;
 
 // --- Piece-batch quantities: bags → finished pieces → bundles ---
-// Handles/side-patty/bottom-patty are produced per finished bag and stocked in
-// fixed-size bundles, so a piece sub-order's requirement is (bags * pieces-per-bag)
-// / bundle-size. Every bag takes 2 handles and exactly one gusset — a side patty,
-// or a bottom patty when the side patty is PRINTED (never both, always 1 per bag).
+// Handles are produced per finished bag and stocked in fixed-size bundles, so a
+// handle sub-order's requirement is (bags * 2) / bundle-size.
 export const BUNDLE_SIZE = {
     'ROLLS TO HANDLES': 100,
-    'ROLLS TO PRESSING HANDLES': 100,
-    'ROLLS TO SIDEPATTY': 50
+    'ROLLS TO PRESSING HANDLES': 100
 };
 const PIECES_PER_BAG = {
     'ROLLS TO HANDLES': 2,
-    'ROLLS TO PRESSING HANDLES': 2,
-    'ROLLS TO SIDEPATTY': 1
+    'ROLLS TO PRESSING HANDLES': 2
 };
 
 // Number of finished bags a piece-type sub-order covers. HANDLE-model orders quote
@@ -168,19 +205,35 @@ const bagPieces = (so) => {
     return num(so.Quantity);
 };
 
-// A piece-type order that can't be sized (a weight order missing bag geometry).
+// A handle order that can't be sized (a weight order missing bag geometry).
 export const cannotSizePieces = (batchType, so) =>
     isPieceType(batchType) && bagPieces(so) == null;
 
+// A patty order missing the info needed to size it (strip width, bag dims, GSM).
+export const cannotSizePatty = (batchType, so) =>
+    batchType === 'ROLLS TO SIDEPATTY' && pattyDims(so) == null;
+
+// Kg of roll a patty sub-order consumes: one gusset per bag, each strip weighing
+// width × length × GSM / 1,550,000 kg. A roll of the chosen multiple width cuts
+// into whole strips with no width waste, so roll kg needed == total strip kg.
+const pattyKg = (so) => {
+    const d = pattyDims(so);
+    const bags = bagPieces(so);
+    if (!d || bags == null) return 0;
+    return bags * (d.width * d.length * num(d.gsm)) / PIECE_TO_KG_DIVISOR;
+};
+
 // The quantity a sub-order contributes to its group's requirement, in the unit the
-// batch allocates in (bundles for piece-type batches, kg otherwise). A STITCHING
-// sheet order quoted in pieces is converted to kg; everything else as-is.
+// batch allocates in (bundles for handle batches, kg otherwise). Side/bottom patty
+// convert their strip geometry to kg; a STITCHING sheet order quoted in pieces is
+// converted to kg; everything else as-is.
 export const effectiveQty = (batchType, so) => {
     if (isPieceType(batchType)) {
         const bags = bagPieces(so);
         if (bags == null) return 0;   // un-sizable -> flagged, contributes nothing
         return (bags * PIECES_PER_BAG[batchType]) / BUNDLE_SIZE[batchType];
     }
+    if (batchType === 'ROLLS TO SIDEPATTY') return pattyKg(so);
     if (needsPieceConversion(batchType, so)) {
         const kg = sheetPiecesToKg(so);
         if (kg != null) return kg;
@@ -212,19 +265,17 @@ export const typeNeedsSubOrder = (batchType, so) => {
 // fields. Material always comes from Roll_Material.
 export const groupAttrs = (batchType, so) => {
     if (batchType === 'ROLLS TO SIDEPATTY') {
-        if (so.Sidepatty_Colour == 'PRINTED') {
-            return {
-                material: 'NW REGULAR',
-                colour: so.Handle_Colour || '',
-                gsm: '110',
-                width: (Number(so.Sidepatty_Width) - 0.5).toFixed(2) || ''
-            };
-        }
+        // Group / output identity is the finished patty (its strip width + GSM +
+        // colour). `rollWidth` is the raw roll the job cuts from (a multiple of the
+        // strip width) — matched against stock separately from the output width.
+        const d = pattyDims(so);
+        const printed = norm(so.Sidepatty_Colour) === 'PRINTED';
         return {
             material: 'NW REGULAR',
-            colour: so.Sidepatty_Colour || '',
-            gsm: so.Sidepatty_GSM || '',
-            width: so.Sidepatty_Width || ''
+            colour: (printed ? so.Handle_Colour : so.Sidepatty_Colour) || '',
+            gsm: d ? d.gsm : (printed ? '110' : (so.Sidepatty_GSM || '')),
+            width: d ? String(d.width) : '',
+            rollWidth: d ? String(exactMultipleRollWidth(d.width, d.rolls) ?? '') : ''
         };
     }
     // Both handle types are fixed-spec: NW REGULAR, 90 GSM rolls, 2″ wide. Only the
@@ -297,25 +348,27 @@ export const softMatchItemCode = (attrs, itemCodes, batchType, outputType) => {
 // material, colour, gsm, width, availWeight, availBundles }.
 const relevantStock = (attrs, inventory, batchType, outputType) => {
     const wantMat = MATERIAL_MAP[norm(attrs.material)] || null;
-    const matchAttrs = (r, requireWidth) =>
+    const matchCore = (r) =>
         (wantMat ? norm(r.material) === norm(wantMat) : false) &&
         norm(r.colour) === norm(attrs.colour) &&
-        norm(r.gsm) === norm(attrs.gsm) &&
-        (!requireWidth || norm(r.width) === norm(attrs.width));
+        norm(r.gsm) === norm(attrs.gsm);
+    const matchAttrs = (r, width) => matchCore(r) && (width == null || norm(r.width) === norm(width));
 
     const availOf = (r) => (isPieceType(batchType) ? num(r.availBundles) : num(r.availWeight));
     const outType = norm(outputType || OUTPUT_TYPE[batchType]);
 
-    // Finished stock must match width too (a 16" sheet ≠ a 32" sheet). For
-    // roll-width types the group's width IS the roll width, so rolls must match it
-    // exactly; for other types rolls are wide and get cut down, so width is free.
+    // Finished stock must match the output width too (a 16" sheet ≠ a 32" sheet).
+    // Rolls: roll-width types match the group width (which IS the roll width);
+    // side/bottom patty match a separate roll width (a multiple of the strip width)
+    // carried on attrs.rollWidth; other types cut down wide rolls, so width is free.
     const requireRollWidth = ROLL_WIDTH_TYPES.has(batchType);
+    const rollWidthWanted = isSet(attrs.rollWidth) ? attrs.rollWidth : (requireRollWidth ? attrs.width : null);
     const finished = inventory
-        .filter((r) => norm(r.type) === outType && matchAttrs(r, true) && availOf(r) > 0)
+        .filter((r) => norm(r.type) === outType && matchAttrs(r, attrs.width) && availOf(r) > 0)
         .map((r) => ({ ...r, avail: availOf(r) }))
         .sort((a, b) => b.avail - a.avail);
     const rolls = inventory
-        .filter((r) => norm(r.type) === 'ROLL' && matchAttrs(r, requireRollWidth) && availOf(r) > 0)
+        .filter((r) => norm(r.type) === 'ROLL' && matchAttrs(r, rollWidthWanted) && availOf(r) > 0)
         .map((r) => ({ ...r, avail: availOf(r) }))
         .sort((a, b) => b.avail - a.avail);
 
@@ -427,9 +480,16 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
     const missingGsm = [];   // STITCHING pieces orders with no Bag_GSM -> can't convert to kg
     const groupable = [];
     for (const so of eligible) {
-        // A pieces-quoted order with no GSM can't be sized in kg; flag it instead
-        // of grouping it with a blank/zero quantity that would skew allocation.
-        if (cannotConvertQty(batchType, so) || cannotSizePieces(batchType, so)) { missingGsm.push(so); continue; }
+        // A pieces-quoted order with no GSM (or a patty missing strip width / bag
+        // dims / GSM) can't be sized; flag it rather than grouping a zero quantity.
+        if (cannotConvertQty(batchType, so) || cannotSizePieces(batchType, so) || cannotSizePatty(batchType, so)) { missingGsm.push(so); continue; }
+        // Side/bottom patty need a roll width that is an exact multiple of the strip
+        // width; flag orders no fixed roll width can satisfy.
+        if (batchType === 'ROLLS TO SIDEPATTY') {
+            if (pattyRollWidth(so) == null) { unmatched.push(so); continue; }
+            groupable.push(so);
+            continue;
+        }
         if (!usesRollWidth) { groupable.push(so); continue; }
         const rw = requiredRollWidth(batchType, so);
         if (rw === 'ignore') continue;

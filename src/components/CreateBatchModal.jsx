@@ -6,7 +6,7 @@ import {
 import Button from './Button';
 import {
     BATCH_TYPES, HARD_START_DATE, OUTPUT_TYPE, PRIORITY_LABEL, buildPlan,
-    effectiveQty, needsPieceConversion, cannotConvertQty, cannotSizePieces, BUNDLE_SIZE
+    effectiveQty, needsPieceConversion, cannotConvertQty, cannotSizePieces, cannotSizePatty, BUNDLE_SIZE
 } from '../utils/productionBatch';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
@@ -599,6 +599,10 @@ const qtyLabel = (batchType, so, unit) => {
         if (cannotSizePieces(batchType, so)) return `${input} · ? bundles`;
         return `${input} · ${effectiveQty(batchType, so).toFixed(2)} bundles`;
     }
+    if (batchType === 'ROLLS TO SIDEPATTY') {
+        if (cannotSizePatty(batchType, so)) return `${qty} pcs · ? kg`;
+        return `${qty} pcs · ${effectiveQty(batchType, so).toFixed(2)} kg`;
+    }
     if (!needsPieceConversion(batchType, so)) return `${qty}${unit}`;
     if (cannotConvertQty(batchType, so)) return `${qty} pcs · ? kg`;
     return `${qty} pcs · ${effectiveQty(batchType, so).toFixed(2)} kg`;
@@ -660,13 +664,13 @@ const UnmatchedPanel = ({ subOrders, batchType, unit, onViewForm }) => (
     />
 );
 
-// STITCHING orders quoted in pieces that have no Bag_GSM, so their weight in kg
-// can't be computed for allocation.
+// Orders that can't be sized: STITCHING pieces with no Bag_GSM, un-sizable HANDLE
+// weight orders, or side/bottom patty missing strip width / bag dims / GSM.
 const MissingGsmPanel = ({ subOrders, batchType, unit, onViewForm }) => (
     <FlaggedPanel
         subOrders={subOrders} batchType={batchType} unit={unit} onViewForm={onViewForm}
-        title="missing GSM — can't convert pieces to kg"
-        detail="These pieces-quoted orders have no Bag_GSM, so their weight can't be sized. Add the GSM and re-run. They are left out of every job."
+        title="missing info — can't size the order"
+        detail="These orders are missing data needed to size them (GSM, bag dimensions, or patty width). Add the missing info and re-run. They are left out of every job."
     />
 );
 
@@ -751,7 +755,7 @@ const ReviewSection = ({ batchType, plan, onViewForm }) => {
                 <Stat label="Jobs" value={plan.jobCount} />
                 <Stat label="Postponed" value={plan.postponedCount} tone={plan.postponedCount ? 'amber' : 'slate'} />
                 {plan.unmatchedCount > 0 && <Stat label="No roll width" value={plan.unmatchedCount} tone="red" />}
-                {plan.missingGsmCount > 0 && <Stat label="No GSM" value={plan.missingGsmCount} tone="red" />}
+                {plan.missingGsmCount > 0 && <Stat label="Missing info" value={plan.missingGsmCount} tone="red" />}
             </div>
             {open && (
                 <>
@@ -798,7 +802,7 @@ const ConfirmSection = ({ batchType, plan, onViewForm }) => {
                 {!plan.isPieces && plan.totalFinishedQty > 0 && <Stat label="From stock kg" value={fmtKg(plan.totalFinishedQty)} tone="sky" />}
                 <Stat label="Postponed" value={plan.postponedCount} tone={plan.postponedCount ? 'amber' : 'slate'} />
                 {plan.unmatchedCount > 0 && <Stat label="No roll width" value={plan.unmatchedCount} tone="red" />}
-                {plan.missingGsmCount > 0 && <Stat label="No GSM" value={plan.missingGsmCount} tone="red" />}
+                {plan.missingGsmCount > 0 && <Stat label="Missing info" value={plan.missingGsmCount} tone="red" />}
             </div>
             {open && (
                 <>

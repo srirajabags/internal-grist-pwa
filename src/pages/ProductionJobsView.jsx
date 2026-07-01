@@ -711,7 +711,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                             {level === 'batches' && (
                                 <>
                                     {/* Job type filter */}
-                                    <div className="-mx-3 px-3 mb-3 overflow-x-auto">
+                                    <div className="-mx-3 px-3 mb-3 overflow-x-auto no-scrollbar">
                                         <div className="flex gap-2 w-max">
                                             <TypeChip label="All Types" active={selectedType === ''} onClick={() => setSelectedType('')} />
                                             {types.map((t) => (
@@ -1030,9 +1030,9 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
     const jobType = (job.type || '').trim().toUpperCase();
     const sizeDim = SIZE_DIM[jobType] || 'bag';
     const isDcut = jobType === 'ROLLS TO DCUT';
-    // Sidepatty/handle outputs are counted in bundles; everything else in kg.
-    const isPieces = jobType === 'ROLLS TO SIDEPATTY' || jobType === 'ROLLS TO HANDLES'
-        || jobType === 'ROLLS TO PRESSING HANDLES';
+    // Handle outputs are counted in bundles; everything else (incl. side/bottom
+    // patty, which is cut from rolls) in kg.
+    const isPieces = jobType === 'ROLLS TO HANDLES' || jobType === 'ROLLS TO PRESSING HANDLES';
     const cell = (v) => (v === null || v === undefined || v === '' || typeof v === 'object') ? '—' : v;
     const sizeKeyFor = (so) => {
         if (sizeDim === 'sheet') return String(cell(so.sheetSize));
@@ -1053,7 +1053,8 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
     // sheet geometry (reusing the batch-creation rule); pieces/weight pass through.
     const soQty = (so) => effectiveQty(jobType, {
         Model: so.model, Quantity_Type: so.qtyType, Sheet_Size: so.sheetSize,
-        Bag_GSM: so.bagGsm, Bag_Width: so.bagW, Bag_Height: so.bagH, Quantity: so.qty
+        Bag_GSM: so.bagGsm, Bag_Width: so.bagW, Bag_Height: so.bagH, Quantity: so.qty,
+        Sidepatty_Width: so.sidepattyWidth, Sidepatty_GSM: so.sidepattyGsm, Sidepatty_Colour: so.sidepattyColour
     });
 
     const sizeGroups = (() => {
@@ -1257,7 +1258,8 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
     // converted to kg (sheet geometry), matching the rest of the app.
     const soKg = (so) => effectiveQty(job.type, {
         Model: so.model, Quantity_Type: so.qtyType, Sheet_Size: so.sheetSize,
-        Bag_GSM: so.bagGsm, Bag_Width: so.bagW, Bag_Height: so.bagH, Quantity: so.qty
+        Bag_GSM: so.bagGsm, Bag_Width: so.bagW, Bag_Height: so.bagH, Quantity: so.qty,
+        Sidepatty_Width: so.sidepattyWidth, Sidepatty_GSM: so.sidepattyGsm, Sidepatty_Colour: so.sidepattyColour
     });
     // Each output's planned PRODUCTION target is its required qty minus the share
     // already met from finished godown stock — i.e. the job's Planned Output, split

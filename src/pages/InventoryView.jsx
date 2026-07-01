@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
     ArrowLeft, Warehouse, AlertCircle, Loader2, RefreshCw, Search, X, Package,
-    LayoutGrid, List
+    LayoutGrid, List, ChevronDown
 } from 'lucide-react';
 import Card from '../components/Card';
 import Button from '../components/Button';
@@ -72,29 +72,47 @@ const TABS = [
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const fmtKg = (v) => num(v).toFixed(2);
+// Size (W×H) shown in the table and used as the size filter's value.
+const sizeLabel = (r) => (r.w || r.h) ? `${r.w || '—'}″ × ${r.h || '—'}″` : '—';
 
-// Pieces (patty / handle) are counted primarily in bundles, weight secondary.
-const BUNDLE_FORMS = ['sidepatty', 'bottompatty', 'handle'];
+// Production always plans in kg, so kg is the lead denomination everywhere. Godown
+// stock, though, is booked by hand in either weight or count; a count-only line is
+// converted to kg via piece geometry. Sheets are counted as individual sheets;
+// patty/handle in bundles of a fixed piece count.
+const PIECES_PER_BUNDLE = { sidepatty: 50, bottompatty: 50, handle: 100, pressinghandle: 100 };
 
-// Sheets are stored as a sheet COUNT (Available_Count_Bundles_), not kg — their
-// recorded weight is 0. Derive kg from geometry the same way create-batch does:
-// one sheet (kg) = W(in) * H(in) * GSM / (1550 * 1000), since 1550 in² = 1 m².
+// One sheet/piece (kg) = W(in) * H(in) * GSM / (1550 * 1000), since 1550 in² = 1 m².
 const PIECE_TO_KG_DIVISOR = 1550 * 1000;
-const sheetKg = (r) => {
-    const w = num(r.w), h = num(r.h), gsm = num(r.gsm), n = num(r.bundles);
-    if (!w || !h || !gsm) return 0;            // geometry missing -> can't convert
-    return n * w * h * gsm / PIECE_TO_KG_DIVISOR;
+const pieceKg = (r) => {
+    const w = num(r.w), h = num(r.h), gsm = num(r.gsm);
+    return (w && h && gsm) ? w * h * gsm / PIECE_TO_KG_DIVISOR : 0;   // 0 -> geometry missing
 };
 
-// Primary/secondary quantity for a row, by physical form. Sheets are counted in
-// sheets (kg derived), pieces in bundles (kg recorded), everything else in kg.
+// kg implied by a count-booked line: sheets store a sheet count, patty/handle a
+// bundle count (× pieces-per-bundle). 0 when geometry is missing.
+const countToKg = (r, form) => {
+    const per = pieceKg(r);
+    if (!per) return 0;
+    if (form === 'sheet') return num(r.bundles) * per;
+    const ppb = PIECES_PER_BUNDLE[form];
+    return ppb ? num(r.bundles) * ppb * per : 0;
+};
+
+// Quantity for a row, always led by kg. Booked weight wins; a count-only line is
+// converted to kg from geometry (`derived`), so kg stays the lead denomination.
+// The native count is kept as a secondary readout.
 const rowQty = (r) => {
     const form = itemForm(r.itype, r.name);
-    if (form === 'sheet')
-        return { countPrimary: true, count: num(r.bundles), countUnit: 'sheets', kg: sheetKg(r) };
-    if (BUNDLE_FORMS.includes(form))
-        return { countPrimary: true, count: num(r.bundles), countUnit: 'bundles', kg: num(r.avail) };
-    return { countPrimary: false, count: num(r.bundles), countUnit: 'bundles', kg: num(r.avail) };
+    const recorded = num(r.avail);
+    const count = num(r.bundles);
+    const kg = recorded > 0 ? recorded : countToKg(r, form);
+    return {
+        kg,
+        count,
+        countUnit: form === 'sheet' ? 'sheets' : 'bundles',
+        derived: recorded <= 0 && kg > 0,
+        hasCount: count > 0
+    };
 };
 
 const Chip = ({ children }) => (
@@ -120,26 +138,61 @@ const ColourCell = ({ col }) => (
     </span>
 );
 
-// Per-column dropdown filter shown under a table heading. Empty value = no filter.
-const ColFilter = ({ value, options, onChange }) => (
-    <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className={`mt-1 block w-full max-w-[150px] text-[11px] font-normal normal-case rounded border px-1.5 py-1 outline-none bg-white cursor-pointer ${value ? 'border-teal-400 text-teal-700' : 'border-slate-200 text-slate-500'}`}
-    >
-        <option value="">All</option>
-        {options.map((o) => <option key={o} value={o}>{o}</option>)}
-    </select>
-);
+// Per-column multi-select filter shown under a table heading. `values` is the list
+// of selected options (empty = no filter); the popover toggles each option.
+const ColFilter = ({ values, options, onToggle, onClear }) => {
+    const [open, setOpen] = useState(false);
+    const ref = useRef(null);
+    useEffect(() => {
+        if (!open) return;
+        const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+        document.addEventListener('mousedown', onDown);
+        return () => document.removeEventListener('mousedown', onDown);
+    }, [open]);
+    const count = values.length;
+    const label = count === 0 ? 'All' : count === 1 ? values[0] : `${count} selected`;
+    return (
+        <div ref={ref} className="relative mt-1 font-normal normal-case max-w-[150px]">
+            <button
+                type="button"
+                onClick={() => setOpen((o) => !o)}
+                className={`w-full text-[11px] rounded border px-1.5 py-1 flex items-center justify-between gap-1 bg-white cursor-pointer ${count ? 'border-teal-400 text-teal-700' : 'border-slate-200 text-slate-500'}`}
+            >
+                <span className="truncate">{label}</span>
+                <ChevronDown size={12} className="shrink-0" />
+            </button>
+            {open && (
+                <div className="absolute z-20 mt-1 min-w-full w-max max-w-[220px] max-h-64 overflow-auto rounded-lg border border-slate-200 bg-white shadow-lg py-1">
+                    {count > 0 && (
+                        <button type="button" onClick={onClear} className="w-full text-left px-2.5 py-1 text-[11px] text-slate-500 hover:bg-slate-50">
+                            Clear ({count})
+                        </button>
+                    )}
+                    {options.map((o) => (
+                        <label key={o} className="flex items-center gap-2 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-50 cursor-pointer">
+                            <input type="checkbox" checked={values.includes(o)} onChange={() => onToggle(o)} className="accent-teal-600 shrink-0" />
+                            <span className="truncate">{o}</span>
+                        </label>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+};
 
 // Compact tabular view of the same rows shown as cards — handy on desktop for
 // scanning many items at once. Horizontally scrollable on narrow screens.
-const InventoryTable = ({ rows, tab, colFilters, options, onColFilter }) => {
+const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClear }) => {
     const isRolls = tab === 'id';
     const th = 'py-2 px-3 font-semibold whitespace-nowrap align-top';
     const td = 'py-1.5 px-3 whitespace-nowrap';
     const filter = (key) => (
-        <ColFilter value={colFilters[key] || ''} options={options[key] || []} onChange={(v) => onColFilter(key, v)} />
+        <ColFilter
+            values={colFilters[key] || []}
+            options={options[key] || []}
+            onToggle={(v) => onColToggle(key, v)}
+            onClear={() => onColClear(key)}
+        />
     );
     return (
         <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
@@ -153,7 +206,7 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColFilter }) => {
                         <th className={th}>Colour{filter('col')}</th>
                         <th className={`${th} text-right`}>GSM{filter('gsm')}</th>
                         <th className={th}>Location{filter('location')}</th>
-                        <th className={`${th} text-right`}>Size (W×H)</th>
+                        <th className={`${th} text-right`}>Size (W×H){filter('size')}</th>
                         <th className={`${th} text-right`}>Available</th>
                         {isRolls && <th className={`${th} text-right`}>Initial</th>}
                         <th className={`${th} text-right`}>Txns</th>
@@ -174,18 +227,15 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColFilter }) => {
                                 <td className={`${td} text-right text-slate-600 tabular-nums`}>{r.gsm || '—'}</td>
                                 <td className={`${td} text-slate-600`}>{r.location || '—'}</td>
                                 <td className={`${td} text-right text-slate-600 tabular-nums`}>
-                                    {(r.w || r.h) ? `${r.w || '—'}″ × ${r.h || '—'}″` : '—'}
+                                    {sizeLabel(r)}
                                 </td>
                                 <td className={`${td} text-right`}>
-                                    <span className="font-bold text-teal-700 tabular-nums">
-                                        {q.countPrimary
-                                            ? <>{q.count}<span className="text-xs font-normal text-slate-400"> {q.countUnit}</span></>
-                                            : <>{fmtKg(q.kg)}<span className="text-xs font-normal text-slate-400"> kg</span></>}
+                                    <span className="font-bold text-teal-700 tabular-nums" title={q.derived ? 'Converted from count' : undefined}>
+                                        {q.derived && <span className="font-normal text-slate-400">≈ </span>}
+                                        {fmtKg(q.kg)}<span className="text-xs font-normal text-slate-400"> kg</span>
                                     </span>
-                                    {!isRolls && (
-                                        <div className="text-[11px] text-slate-400 tabular-nums">
-                                            {q.countPrimary ? `${fmtKg(q.kg)} kg` : `${q.count} ${q.countUnit}`}
-                                        </div>
+                                    {!isRolls && q.hasCount && (
+                                        <div className="text-[11px] text-slate-400 tabular-nums">{q.count} {q.countUnit}</div>
                                     )}
                                 </td>
                                 {isRolls && <td className={`${td} text-right text-slate-500 tabular-nums`}>{fmtKg(r.initial)} kg</td>}
@@ -245,26 +295,30 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     }, [tab]);
 
     const term = search.trim().toLowerCase();
-    // Sort key: bundle count for piece items, available weight (computed for
-    // sheets) for everything else — each card ranked by its primary quantity.
-    const sortVal = (r) =>
-        BUNDLE_FORMS.includes(itemForm(r.itype, r.name)) ? num(r.bundles) : rowQty(r).kg;
+    // Rank every row by its lead denomination, kg (derived from count where the line
+    // was booked only as a count).
+    const sortVal = (r) => rowQty(r).kg;
     // Column filters apply in the table view only (that's where the controls live).
+    // Each column holds a list of selected values (OR within a column, AND across).
     const activeColFilters = view === 'list'
-        ? Object.entries(colFilters).filter(([, v]) => v)
+        ? Object.entries(colFilters).filter(([, v]) => Array.isArray(v) && v.length)
         : [];
+    const colValue = (r, k) => (k === 'size' ? sizeLabel(r) : String(r[k] ?? ''));
+    const matchForm = (r) => !selectedForm || itemForm(r.itype, r.name) === selectedForm;
+    const matchTerm = (r) => !term
+        || (r.name || '').toLowerCase().includes(term)
+        || (r.iid || '').toLowerCase().includes(term)
+        || (r.location || '').toLowerCase().includes(term)
+        || (r.mat || '').toLowerCase().includes(term)
+        || (r.col || '').toLowerCase().includes(term);
+    // A row passes the current search/form and every active column filter — except,
+    // optionally, one column (so that column's own dropdown can still offer all of
+    // its values consistent with the *other* filters).
+    const passes = (r, exceptKey) => matchForm(r) && matchTerm(r)
+        && activeColFilters.every(([k, vals]) => k === exceptKey || vals.includes(colValue(r, k)));
+
     const filtered = rows
-        .filter((r) => {
-            const matchForm = !selectedForm || itemForm(r.itype, r.name) === selectedForm;
-            const matchTerm = !term
-                || (r.name || '').toLowerCase().includes(term)
-                || (r.iid || '').toLowerCase().includes(term)
-                || (r.location || '').toLowerCase().includes(term)
-                || (r.mat || '').toLowerCase().includes(term)
-                || (r.col || '').toLowerCase().includes(term);
-            const matchCols = activeColFilters.every(([k, v]) => String(r[k] ?? '') === v);
-            return matchForm && matchTerm && matchCols;
-        })
+        .filter((r) => passes(r, null))
         // Primary: weight (or bundles for piece items), descending. When weight
         // ties — notably at 0 — fall back to bundle count, descending.
         .sort((a, b) => (sortVal(b) - sortVal(a)) || (num(b.bundles) - num(a.bundles)));
@@ -273,16 +327,21 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     const FORM_ORDER = ['roll', 'sheet', 'dcut', 'wcut', 'handlebag', 'sidepatty', 'bottompatty', 'handle', 'pressinghandle', 'box'];
     const presentForms = FORM_ORDER.filter((f) => rows.some((r) => itemForm(r.itype, r.name) === f));
 
-    // Distinct values per filterable column, drawn from the full tab dataset so
-    // every value stays selectable regardless of the current filters.
+    // Each column's options are the values present in rows passing the OTHER active
+    // filters — so dropdowns only ever offer selections that yield results.
     const distinctVals = (key) => [...new Set(
-        rows.map((r) => r[key]).filter((v) => v !== null && v !== undefined && String(v).trim() !== '')
-    )].sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }));
+        rows.filter((r) => passes(r, key)).map((r) => colValue(r, key)).filter((v) => v !== '' && v !== '—')
+    )].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     const colOptions = {
         mat: distinctVals('mat'), col: distinctVals('col'),
-        gsm: distinctVals('gsm'), location: distinctVals('location')
+        gsm: distinctVals('gsm'), location: distinctVals('location'), size: distinctVals('size')
     };
-    const setColFilter = (key, val) => setColFilters((f) => ({ ...f, [key]: val }));
+    // Toggle a value in a column's selection; clear empties the whole column.
+    const toggleColFilter = (key, val) => setColFilters((f) => {
+        const cur = f[key] || [];
+        return { ...f, [key]: cur.includes(val) ? cur.filter((x) => x !== val) : [...cur, val] };
+    });
+    const clearColFilter = (key) => setColFilters((f) => ({ ...f, [key]: [] }));
 
     const totalAvailable = filtered.reduce((sum, r) => sum + rowQty(r).kg, 0);
 
@@ -304,8 +363,8 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                             <h1 className="font-bold text-slate-800 leading-tight truncate">Inventory</h1>
                             <p className="text-xs text-slate-500 truncate">Current stock from transactions</p>
                         </div>
-                        {/* Card / table view toggle — desktop only */}
-                        <div className="hidden md:inline-flex rounded-lg border border-slate-200 overflow-hidden shrink-0">
+                        {/* Card / table view toggle */}
+                        <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden shrink-0">
                             <button
                                 onClick={() => setView('grid')}
                                 title="Card view"
@@ -379,7 +438,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                     )}
 
                     {!loading && rows.length > 0 && presentForms.length > 1 && (
-                        <div className="-mx-3 px-3 mb-3 overflow-x-auto">
+                        <div className="-mx-3 px-3 mb-3 overflow-x-auto no-scrollbar">
                             <div className="flex gap-2 w-max">
                                 <FormChip label="All Types" active={selectedForm === ''} onClick={() => setSelectedForm('')} />
                                 {presentForms.map((f) => (
@@ -393,15 +452,15 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                         zero-result filter combo can still be cleared. */}
                     {!loading && activeColFilters.length > 0 && (
                         <div className="flex flex-wrap items-center gap-1.5 mb-3">
-                            {activeColFilters.map(([k, v]) => (
+                            {activeColFilters.flatMap(([k, vals]) => vals.map((v) => (
                                 <button
-                                    key={k}
-                                    onClick={() => setColFilter(k, '')}
+                                    key={`${k}:${v}`}
+                                    onClick={() => toggleColFilter(k, v)}
                                     className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium bg-teal-50 text-teal-700 border border-teal-200 hover:bg-teal-100"
                                 >
                                     {v} <X size={11} />
                                 </button>
-                            ))}
+                            )))}
                             <button onClick={() => setColFilters({})} className="text-[11px] text-slate-500 hover:text-slate-700 underline px-1">
                                 Clear all
                             </button>
@@ -433,7 +492,8 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                             {view === 'list' ? (
                                 <InventoryTable
                                     rows={filtered} tab={tab}
-                                    colFilters={colFilters} options={colOptions} onColFilter={setColFilter}
+                                    colFilters={colFilters} options={colOptions}
+                                    onColToggle={toggleColFilter} onColClear={clearColFilter}
                                 />
                             ) : tab === 'code' ? (
                                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -464,19 +524,14 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                                 </div>
 
                                                 <div className="mt-3 pt-2 border-t border-slate-100 text-center">
-                                                    {q.countPrimary ? (
-                                                        <>
-                                                            <span className="text-xl font-bold text-teal-700">{q.count}</span>
-                                                            <span className="text-xs text-slate-400"> {q.countUnit}</span>
-                                                            <p className="text-[11px] text-slate-400 mt-0.5">{fmtKg(q.kg)} kg · {num(r.cnt)} txn{num(r.cnt) !== 1 ? 's' : ''}</p>
-                                                        </>
-                                                    ) : (
-                                                        <>
-                                                            <span className="text-xl font-bold text-teal-700">{fmtKg(q.kg)}</span>
-                                                            <span className="text-xs text-slate-400"> kg available</span>
-                                                            <p className="text-[11px] text-slate-400 mt-0.5">{q.count} {q.countUnit} · {num(r.cnt)} txn{num(r.cnt) !== 1 ? 's' : ''}</p>
-                                                        </>
-                                                    )}
+                                                    <span className="text-xl font-bold text-teal-700" title={q.derived ? 'Converted from count' : undefined}>
+                                                        {q.derived && <span className="text-base font-normal text-slate-400">≈ </span>}
+                                                        {fmtKg(q.kg)}
+                                                    </span>
+                                                    <span className="text-xs text-slate-400"> kg available</span>
+                                                    <p className="text-[11px] text-slate-400 mt-0.5">
+                                                        {q.hasCount ? `${q.count} ${q.countUnit} · ` : ''}{num(r.cnt)} txn{num(r.cnt) !== 1 ? 's' : ''}
+                                                    </p>
                                                 </div>
                                             </Card>
                                         );

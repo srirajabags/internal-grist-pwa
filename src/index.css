@@ -1,1 +1,11 @@
 @import "tailwindcss";
+
+/* Hide the native scrollbar while keeping scroll — used on horizontally scrolling
+   chip/tab rows so mobile doesn't render an ugly scrollbar track under them. */
+.no-scrollbar {
+    -ms-overflow-style: none;   /* IE / old Edge */
+    scrollbar-width: none;      /* Firefox */
+}
+.no-scrollbar::-webkit-scrollbar {
+    display: none;              /* Chrome / Safari */
+}
