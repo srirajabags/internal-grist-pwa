@@ -38,6 +38,16 @@ export const ItemVisual = ({ colour, type, name, size = 'md' }) => {
                 </g>
             );
             break;
+        case 'ucut':
+            // U-cut bag: the handle is a U-shaped notch cut out of the top edge,
+            // leaving a strap on either side (vs the D-cut's punched hole).
+            shape = (
+                <g stroke={stroke} strokeWidth={sw} strokeLinejoin="round">
+                    <path d="M32 10 L41 10 L41 17 Q50 26 59 17 L59 10 L68 10 L68 56 L32 56 Z" fill={fill} />
+                    <line x1="32" y1="30" x2="68" y2="30" strokeWidth="1.5" strokeDasharray="3 2" />
+                </g>
+            );
+            break;
         case 'wcut':
             shape = (
                 <g stroke={stroke} strokeWidth={sw} strokeLinejoin="round" fill={fill}>

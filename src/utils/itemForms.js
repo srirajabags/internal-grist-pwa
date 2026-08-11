@@ -81,6 +81,7 @@ export const itemForm = (type, name) => {
     if (/PRESSING.*HANDLE|HANDLE.*PRESSING/.test(s)) return 'pressinghandle';
     if (/HANDLE/.test(s)) return 'handle';
     if (/W.?CUT|VEST/.test(s)) return 'wcut';
+    if (/U.?CUT/.test(s)) return 'ucut';
     if (/D.?CUT/.test(s)) return 'dcut';
     if (/SIDE.?(PATTY|GUSSET)|SIDEPATTY/.test(s)) return 'sidepatty';
     if (/BOTTOM.?(PATTY|GUSSET)/.test(s)) return 'bottompatty';
@@ -91,7 +92,7 @@ export const itemForm = (type, name) => {
 };
 
 export const FORM_LABEL = {
-    roll: 'Roll', sheet: 'Sheet', dcut: 'D-Cut Bag', wcut: 'W-Cut Bag',
+    roll: 'Roll', sheet: 'Sheet', dcut: 'D-Cut Bag', ucut: 'U-Cut Bag', wcut: 'W-Cut Bag',
     sidepatty: 'Side Patty', bottompatty: 'Bottom Patty', handle: 'Handle',
     pressinghandle: 'Pressing Handle', handlebag: 'Handle Bag', box: 'Item'
 };

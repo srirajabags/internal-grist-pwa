@@ -74,6 +74,12 @@ const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const fmtKg = (v) => num(v).toFixed(2);
 // Size (W×H) shown in the table and used as the size filter's value.
 const sizeLabel = (r) => (r.w || r.h) ? `${r.w || '—'}″ × ${r.h || '—'}″` : '—';
+// Columns whose filter value is computed rather than read straight off the row —
+// keyed so the filter always offers exactly what the cell displays.
+const DERIVED_COL = {
+    size: sizeLabel,
+    item: (r) => typeName(r.mat, r.itype, r.name)
+};
 
 // Production always plans in kg, so kg is the lead denomination everywhere. Godown
 // stock, though, is booked by hand in either weight or count; a count-only line is
@@ -114,6 +120,24 @@ const rowQty = (r) => {
         hasCount: count > 0
     };
 };
+
+// Piece readout for the summary totals: sheets are counted individually, patty
+// and handle in bundles. A line booked only by weight is converted back to a
+// count from piece geometry (`derived`), so the totals cover every row they can.
+const COUNT_UNIT = {
+    sheet: 'sheets', sidepatty: 'bundles', bottompatty: 'bundles',
+    handle: 'bundles', pressinghandle: 'bundles'
+};
+const rowCount = (r) => {
+    const form = itemForm(r.itype, r.name);
+    const unit = COUNT_UNIT[form];
+    if (!unit) return null;
+    const q = rowQty(r);
+    if (q.hasCount) return { unit, count: q.count, derived: false };
+    const perUnit = pieceKg(r) * (form === 'sheet' ? 1 : PIECES_PER_BUNDLE[form]);
+    return (perUnit > 0 && q.kg > 0) ? { unit, count: q.kg / perUnit, derived: true } : null;
+};
+const fmtCount = (v) => Math.round(v).toLocaleString();
 
 const Chip = ({ children }) => (
     <span className="inline-flex px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-600">{children}</span>
@@ -201,7 +225,7 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
                     <tr className="text-left text-[11px] uppercase tracking-wider text-slate-500 bg-slate-50 border-b border-slate-200">
                         {isRolls && <th className={th}>Roll #</th>}
                         <th className={th}></th>
-                        <th className={th}>Item</th>
+                        <th className={th}>Item{filter('item')}</th>
                         <th className={th}>Material{filter('mat')}</th>
                         <th className={th}>Colour{filter('col')}</th>
                         <th className={`${th} text-right`}>GSM{filter('gsm')}</th>
@@ -303,7 +327,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     const activeColFilters = view === 'list'
         ? Object.entries(colFilters).filter(([, v]) => Array.isArray(v) && v.length)
         : [];
-    const colValue = (r, k) => (k === 'size' ? sizeLabel(r) : String(r[k] ?? ''));
+    const colValue = (r, k) => (DERIVED_COL[k] ? DERIVED_COL[k](r) : String(r[k] ?? ''));
     const matchForm = (r) => !selectedForm || itemForm(r.itype, r.name) === selectedForm;
     const matchTerm = (r) => !term
         || (r.name || '').toLowerCase().includes(term)
@@ -324,7 +348,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
         .sort((a, b) => (sortVal(b) - sortVal(a)) || (num(b.bundles) - num(a.bundles)));
 
     // Distinct forms present in the current dataset (for the type filter chips).
-    const FORM_ORDER = ['roll', 'sheet', 'dcut', 'wcut', 'handlebag', 'sidepatty', 'bottompatty', 'handle', 'pressinghandle', 'box'];
+    const FORM_ORDER = ['roll', 'sheet', 'dcut', 'ucut', 'wcut', 'handlebag', 'sidepatty', 'bottompatty', 'handle', 'pressinghandle', 'box'];
     const presentForms = FORM_ORDER.filter((f) => rows.some((r) => itemForm(r.itype, r.name) === f));
 
     // Each column's options are the values present in rows passing the OTHER active
@@ -333,7 +357,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
         rows.filter((r) => passes(r, key)).map((r) => colValue(r, key)).filter((v) => v !== '' && v !== '—')
     )].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     const colOptions = {
-        mat: distinctVals('mat'), col: distinctVals('col'),
+        item: distinctVals('item'), mat: distinctVals('mat'), col: distinctVals('col'),
         gsm: distinctVals('gsm'), location: distinctVals('location'), size: distinctVals('size')
     };
     // Toggle a value in a column's selection; clear empties the whole column.
@@ -344,6 +368,16 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     const clearColFilter = (key) => setColFilters((f) => ({ ...f, [key]: [] }));
 
     const totalAvailable = filtered.reduce((sum, r) => sum + rowQty(r).kg, 0);
+    // Piece totals shown next to the kg total, one per unit (sheets, bundles).
+    // A unit is marked derived when any contributing line's count came from kg.
+    const countTotals = filtered.reduce((acc, r) => {
+        const c = rowCount(r);
+        if (!c) return acc;
+        const t = acc[c.unit] || (acc[c.unit] = { count: 0, derived: false });
+        t.count += c.count;
+        if (c.derived) t.derived = true;
+        return acc;
+    }, {});
 
     // List/table view benefits from extra width on desktop.
     const wrap = view === 'list' ? 'max-w-6xl' : 'max-w-3xl';
@@ -480,12 +514,24 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                         </div>
                     ) : (
                         <>
-                            <div className="flex items-center justify-between mb-2 px-1">
+                            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 mb-2 px-1">
                                 <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
                                     {filtered.length} item{filtered.length !== 1 ? 's' : ''}
                                 </p>
                                 <p className="text-xs text-slate-500">
                                     Total available: <span className="font-semibold text-slate-700">{fmtKg(totalAvailable)} kg</span>
+                                    {['sheets', 'bundles'].map((u) => countTotals[u] && (
+                                        <span key={u}>
+                                            {' · '}
+                                            <span
+                                                className="font-semibold text-slate-700"
+                                                title={countTotals[u].derived ? 'Includes counts converted from weight' : undefined}
+                                            >
+                                                {countTotals[u].derived && <span className="font-normal text-slate-400">≈ </span>}
+                                                {fmtCount(countTotals[u].count)} {u}
+                                            </span>
+                                        </span>
+                                    ))}
                                 </p>
                             </div>
 
