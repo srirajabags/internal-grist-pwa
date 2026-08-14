@@ -9,12 +9,16 @@ const HEIGHT_CLASS = { sm: 'h-10', md: 'h-16', lg: 'h-20' };
 
 // SVG illustration for a form, tinted with the item colour.
 export const ItemVisual = ({ colour, type, name, size = 'md' }) => {
-    const base = colourToCss(colour);
+    const form = itemForm(type, name);
+    // Model-number sheets carry the model code in the colour field — a customer
+    // picks either a colour or a model, never both — and the stock itself is
+    // always white. Tint from that, or colourToCss would hash "F8" into an
+    // arbitrary hue and imply a colour the sheet does not have.
+    const base = colourToCss(form === 'modelsheet' ? 'WHITE' : colour);
     const fill = base;
     const stroke = shade(base, -0.45);
     const accent = shade(base, -0.16);
     const lighter = shade(base, 0.28);
-    const form = itemForm(type, name);
     const sw = 2;
 
     let shape;
@@ -26,6 +30,32 @@ export const ItemVisual = ({ colour, type, name, size = 'md' }) => {
                         const y = 20 + i * 8;
                         return <path key={i} d={`M22 ${y} L60 ${y - 8} L84 ${y} L46 ${y + 8} Z`} fill={i % 2 ? lighter : fill} />;
                     })}
+                </g>
+            );
+            break;
+        case 'bottompattysheet':
+            // The sheet bottom patties are cut from: a stacked pair of flat sheets
+            // with the cut lines that divide the top one into patty strips.
+            shape = (
+                <g stroke={stroke} strokeWidth={sw} strokeLinejoin="round">
+                    <rect x="28" y="8" width="56" height="38" rx="2" fill={lighter} />
+                    <rect x="16" y="18" width="56" height="38" rx="2" fill={fill} />
+                    {[27, 37, 47].map((y) => (
+                        <line key={y} x1="16" y1={y} x2="72" y2={y} strokeWidth="1" strokeDasharray="2 2.5" />
+                    ))}
+                </g>
+            );
+            break;
+        case 'modelsheet':
+            // Same stacked sheets, marked with the printed model-number block that
+            // is what distinguishes one model sheet from another.
+            shape = (
+                <g stroke={stroke} strokeWidth={sw} strokeLinejoin="round">
+                    <rect x="28" y="8" width="56" height="38" rx="2" fill={lighter} />
+                    <rect x="16" y="18" width="56" height="38" rx="2" fill={fill} />
+                    <rect x="30" y="28" width="28" height="18" rx="2" fill={lighter} strokeWidth="1.4" />
+                    <line x1="35" y1="34" x2="53" y2="34" strokeWidth="1.4" strokeLinecap="round" />
+                    <line x1="35" y1="40" x2="46" y2="40" strokeWidth="1.4" strokeLinecap="round" />
                 </g>
             );
             break;
@@ -94,7 +124,8 @@ export const ItemVisual = ({ colour, type, name, size = 'md' }) => {
             );
             break;
         case 'pressinghandle':
-        case 'handle':
+        case 'manualhandle':
+        case 'readymadehandle':
             shape = (
                 <g stroke={stroke} strokeWidth={sw} strokeLinejoin="round">
                     <rect x="14" y="27" width="72" height="11" rx="3" fill={fill} />

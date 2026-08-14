@@ -70,6 +70,12 @@ const TABS = [
     { key: 'id', label: 'Rolls Inventory', sql: sqlById(SUMMARY_BY_ID_TABLE) }
 ];
 
+// The table wants room for ten columns, so desktop opens on it and narrower
+// screens open on cards — using the same 1024px desktop breakpoint as
+// useDeviceType. This seeds the initial view only; once the user picks one from
+// the header toggle, their choice stands for the rest of the session.
+const defaultView = () => (window.matchMedia('(min-width: 1024px)').matches ? 'list' : 'grid');
+
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const fmtKg = (v) => num(v).toFixed(2);
 // Size (W×H) shown in the table and used as the size filter's value.
@@ -85,7 +91,14 @@ const DERIVED_COL = {
 // stock, though, is booked by hand in either weight or count; a count-only line is
 // converted to kg via piece geometry. Sheets are counted as individual sheets;
 // patty/handle in bundles of a fixed piece count.
-const PIECES_PER_BUNDLE = { sidepatty: 50, bottompatty: 50, handle: 100, pressinghandle: 100 };
+const PIECES_PER_BUNDLE = {
+    sidepatty: 50, bottompatty: 50,
+    manualhandle: 100, readymadehandle: 100, pressinghandle: 100
+};
+// Forms booked one sheet at a time, so their count needs no bundle multiplier.
+// Bottom-patty and model-number sheets belong here, not with the patties they
+// are cut into — booking them per bundle would overstate stock 50-fold.
+const SHEET_FORMS = new Set(['sheet', 'bottompattysheet', 'modelsheet']);
 
 // One sheet/piece (kg) = W(in) * H(in) * GSM / (1550 * 1000), since 1550 in² = 1 m².
 const PIECE_TO_KG_DIVISOR = 1550 * 1000;
@@ -99,7 +112,7 @@ const pieceKg = (r) => {
 const countToKg = (r, form) => {
     const per = pieceKg(r);
     if (!per) return 0;
-    if (form === 'sheet') return num(r.bundles) * per;
+    if (SHEET_FORMS.has(form)) return num(r.bundles) * per;
     const ppb = PIECES_PER_BUNDLE[form];
     return ppb ? num(r.bundles) * ppb * per : 0;
 };
@@ -115,7 +128,7 @@ const rowQty = (r) => {
     return {
         kg,
         count,
-        countUnit: form === 'sheet' ? 'sheets' : 'bundles',
+        countUnit: SHEET_FORMS.has(form) ? 'sheets' : 'bundles',
         derived: recorded <= 0 && kg > 0,
         hasCount: count > 0
     };
@@ -125,8 +138,9 @@ const rowQty = (r) => {
 // and handle in bundles. A line booked only by weight is converted back to a
 // count from piece geometry (`derived`), so the totals cover every row they can.
 const COUNT_UNIT = {
-    sheet: 'sheets', sidepatty: 'bundles', bottompatty: 'bundles',
-    handle: 'bundles', pressinghandle: 'bundles'
+    sheet: 'sheets', bottompattysheet: 'sheets', modelsheet: 'sheets',
+    sidepatty: 'bundles', bottompatty: 'bundles',
+    manualhandle: 'bundles', readymadehandle: 'bundles', pressinghandle: 'bundles'
 };
 const rowCount = (r) => {
     const form = itemForm(r.itype, r.name);
@@ -134,7 +148,7 @@ const rowCount = (r) => {
     if (!unit) return null;
     const q = rowQty(r);
     if (q.hasCount) return { unit, count: q.count, derived: false };
-    const perUnit = pieceKg(r) * (form === 'sheet' ? 1 : PIECES_PER_BUNDLE[form]);
+    const perUnit = pieceKg(r) * (SHEET_FORMS.has(form) ? 1 : PIECES_PER_BUNDLE[form]);
     return (perUnit > 0 && q.kg > 0) ? { unit, count: q.kg / perUnit, derived: true } : null;
 };
 const fmtCount = (v) => Math.round(v).toLocaleString();
@@ -155,12 +169,21 @@ const FormChip = ({ label, active, onClick }) => (
     </button>
 );
 
-const ColourCell = ({ col }) => (
+// An item is specified by either a colour or a model number, and both live in the
+// same `Colour` field — so model-number stock renders as a code badge rather than
+// a meaningless colour swatch.
+const isModelCode = (r) => itemForm(r.itype, r.name) === 'modelsheet';
+
+const ColourCell = ({ col, asModel }) => (asModel ? (
+    <span className="inline-flex px-1.5 py-0.5 rounded text-[11px] font-bold tracking-wide bg-slate-100 text-slate-700">
+        {col || '—'}
+    </span>
+) : (
     <span className="inline-flex items-center gap-1.5 min-w-0">
         <span className="w-3 h-3 rounded-full border border-slate-300 shrink-0" style={{ background: colourToCss(col) }} />
         <span className="truncate">{col || '—'}</span>
     </span>
-);
+));
 
 // Per-column multi-select filter shown under a table heading. `values` is the list
 // of selected options (empty = no filter); the popover toggles each option.
@@ -227,7 +250,7 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
                         <th className={th}></th>
                         <th className={th}>Item{filter('item')}</th>
                         <th className={th}>Material{filter('mat')}</th>
-                        <th className={th}>Colour{filter('col')}</th>
+                        <th className={th}>Colour / Model{filter('col')}</th>
                         <th className={`${th} text-right`}>GSM{filter('gsm')}</th>
                         <th className={th}>Location{filter('location')}</th>
                         <th className={`${th} text-right`}>Size (W×H){filter('size')}</th>
@@ -247,7 +270,7 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
                                 </td>
                                 <td className={`${td} font-medium text-slate-800`}>{typeName(r.mat, r.itype, r.name)}</td>
                                 <td className={`${td} text-slate-600`}>{r.mat || '—'}</td>
-                                <td className="py-1.5 px-3 text-slate-600 max-w-[150px]"><ColourCell col={r.col} /></td>
+                                <td className="py-1.5 px-3 text-slate-600 max-w-[150px]"><ColourCell col={r.col} asModel={isModelCode(r)} /></td>
                                 <td className={`${td} text-right text-slate-600 tabular-nums`}>{r.gsm || '—'}</td>
                                 <td className={`${td} text-slate-600`}>{r.location || '—'}</td>
                                 <td className={`${td} text-right text-slate-600 tabular-nums`}>
@@ -281,7 +304,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     const [search, setSearch] = useState('');
     const [showSearch, setShowSearch] = useState(false);
     const [selectedForm, setSelectedForm] = useState('');
-    const [view, setView] = useState('grid'); // 'grid' (cards) | 'list' (table)
+    const [view, setView] = useState(defaultView); // 'grid' (cards) | 'list' (table)
     // Per-column dropdown filters for the table view: { mat, col, gsm, location }.
     const [colFilters, setColFilters] = useState({});
 
@@ -348,7 +371,9 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
         .sort((a, b) => (sortVal(b) - sortVal(a)) || (num(b.bundles) - num(a.bundles)));
 
     // Distinct forms present in the current dataset (for the type filter chips).
-    const FORM_ORDER = ['roll', 'sheet', 'dcut', 'ucut', 'wcut', 'handlebag', 'sidepatty', 'bottompatty', 'handle', 'pressinghandle', 'box'];
+    const FORM_ORDER = ['roll', 'sheet', 'modelsheet', 'bottompattysheet', 'dcut', 'ucut', 'wcut',
+        'handlebag', 'sidepatty', 'bottompatty', 'manualhandle', 'readymadehandle',
+        'pressinghandle', 'box'];
     const presentForms = FORM_ORDER.filter((f) => rows.some((r) => itemForm(r.itype, r.name) === f));
 
     // Each column's options are the values present in rows passing the OTHER active
@@ -554,8 +579,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                                 </p>
 
                                                 <div className="flex items-center justify-center gap-1.5 mt-1 text-[11px] text-slate-500">
-                                                    <span className="w-3 h-3 rounded-full border border-slate-300 shrink-0" style={{ background: colourToCss(r.col) }} />
-                                                    <span className="truncate">{r.col || '—'}</span>
+                                                    <ColourCell col={r.col} asModel={isModelCode(r)} />
                                                 </div>
 
                                                 <div className="flex flex-wrap justify-center gap-1 mt-1.5">

@@ -79,10 +79,21 @@ export const itemForm = (type, name) => {
     const s = `${type || ''} ${name || ''}`.toUpperCase();
     if (/HANDLE.*BAG|BAG.*HANDLE/.test(s)) return 'handlebag';
     if (/PRESSING.*HANDLE|HANDLE.*PRESSING/.test(s)) return 'pressinghandle';
-    if (/HANDLE/.test(s)) return 'handle';
+    // Manual (2x26) and readymade (2x13) handles are the only handle types there
+    // are — the old catch-all `HANDLE` type is gone from the catalogue. A bare
+    // "HANDLE" now only reaches here from a production job type (ROLLS TO
+    // HANDLES), and what the factory makes in-house is the manual handle;
+    // readymade ones are bought in.
+    if (/READYMADE.?HANDLE/.test(s)) return 'readymadehandle';
+    if (/HANDLE/.test(s)) return 'manualhandle';
     if (/W.?CUT|VEST/.test(s)) return 'wcut';
     if (/U.?CUT/.test(s)) return 'ucut';
     if (/D.?CUT/.test(s)) return 'dcut';
+    // The sheets that bottom patties / model-number bags are cut from. Both are
+    // counted in sheets, so they must be matched ahead of the patty rule below
+    // (which counts in bundles of 50) and ahead of the generic sheet rule.
+    if (/BOTTOM.?(PATTY|GUSSET).?SHEET/.test(s)) return 'bottompattysheet';
+    if (/MODEL.?(NUMBER|NO\.?).?SHEET/.test(s)) return 'modelsheet';
     if (/SIDE.?(PATTY|GUSSET)|SIDEPATTY/.test(s)) return 'sidepatty';
     if (/BOTTOM.?(PATTY|GUSSET)/.test(s)) return 'bottompatty';
     if (/SHEET/.test(s)) return 'sheet';
@@ -93,8 +104,10 @@ export const itemForm = (type, name) => {
 
 export const FORM_LABEL = {
     roll: 'Roll', sheet: 'Sheet', dcut: 'D-Cut Bag', ucut: 'U-Cut Bag', wcut: 'W-Cut Bag',
-    sidepatty: 'Side Patty', bottompatty: 'Bottom Patty', handle: 'Handle',
-    pressinghandle: 'Pressing Handle', handlebag: 'Handle Bag', box: 'Item'
+    sidepatty: 'Side Patty', bottompatty: 'Bottom Patty',
+    pressinghandle: 'Pressing Handle', handlebag: 'Handle Bag',
+    bottompattysheet: 'Bottom Patty Sheet', modelsheet: 'Model No. Sheet',
+    manualhandle: 'Manual Handle', readymadehandle: 'Readymade Handle', box: 'Item'
 };
 
 export const typeName = (mat, type, name) =>
