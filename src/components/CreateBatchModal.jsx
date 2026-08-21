@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
     X, Loader2, AlertCircle, CheckCircle2, ChevronRight, ChevronLeft, ChevronDown,
-    Search, Layers, Package, CalendarDays, ClipboardCheck, Maximize2
+    Search, Layers, Package, CalendarDays, ClipboardCheck, Maximize2, Download
 } from 'lucide-react';
 import Button from './Button';
 import {
@@ -111,12 +111,17 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
     // type picker stays as an optional override to narrow the run.
     const [batchTypes, setBatchTypes] = useState([...BATCH_TYPES]);
     const [startDate, setStartDate] = useState(HARD_START_DATE);
+    // Empty = open-ended (everything from the start date onwards).
+    const [endDate, setEndDate] = useState('');
     const [availableDates, setAvailableDates] = useState([]);
 
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
     const [plans, setPlans] = useState([]); // [{ batchType, plan }] — one per chosen type
+    const [codeNames, setCodeNames] = useState(new Map()); // item-code id -> readable code
     const [createdCount, setCreatedCount] = useState(0);
+    // Last guard before anything is written to Grist.
+    const [confirmOpen, setConfirmOpen] = useState(false);
 
     const toggleType = (t) =>
         setBatchTypes((prev) => prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]);
@@ -215,10 +220,15 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
     }, []);
 
     const findSubOrders = async () => {
+        if (endDate && endDate < startDate) {
+            setError('The "to" date cannot be earlier than the "from" date.');
+            return;
+        }
         setLoading(true);
         setError(null);
         try {
-            // 1. Candidate sub-orders: updated to factory on/after the start date.
+            // 1. Candidate sub-orders: updated to factory within the chosen date
+            //    range (inclusive both ends; no "to" date means open-ended).
             //    Already-postponed (No_Stock_Identified) ones are kept on purpose —
             //    inventory may have changed since they were postponed.
             const subOrders = await runSql(
@@ -239,11 +249,14 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                  LEFT JOIN Customers c ON c.id = so.Customer
                  LEFT JOIN Orders o ON o.id = so."Order"
                  WHERE so.Status = 'UPDATED TO FACTORY' AND so.Factory_Updated_Date >= ?
+                   ${endDate ? 'AND so.Factory_Updated_Date <= ?' : ''}
                    -- Only non-woven / BOPP-laminated for now; PLASTIC and
                    -- BIO-DEGRADABLE aren't handled yet. MISPRINT models are skipped.
                    AND so.Material IN ('NON-WOVEN', 'BOPP LAMINATED')
                    AND so.Model != 'MISPRINT'`,
-                [dateToEpoch(startDate)]
+                endDate
+                    ? [dateToEpoch(startDate), dateToEpoch(endDate)]
+                    : [dateToEpoch(startDate)]
             );
 
             // 2. Map every existing job -> its batch type so we can drop sub-orders
@@ -261,9 +274,11 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
 
             // 3. Inventory item codes + available stock per physical item.
             const itemCodes = await runSql(
-                `SELECT id, Type, Material, Colour, GSM, Width_Inches_, Height_Inches_
+                `SELECT id, Item_Code, Type, Material, Colour, GSM, Width_Inches_, Height_Inches_
                  FROM Inventory_Item_Codes`
             );
+            // Readable code per item-code id — the job name shown in ProductionJobsView.
+            setCodeNames(new Map(itemCodes.map((ic) => [num(ic.id), ic.Item_Code])));
             const invRows = await runSql(
                 `SELECT s.Item_ID AS itemId, s.Item_Code AS codeId,
                         ic.Type AS type, ic.Material AS material, ic.Colour AS colour,
@@ -314,6 +329,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
     };
 
     const confirmCreate = async () => {
+        setConfirmOpen(false);
         setStep('writing');
         setError(null);
         try {
@@ -381,9 +397,18 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
         }
     };
 
+    // The whole review as a spreadsheet: one row per sub-order, carrying its group,
+    // job and allocation details — including the flagged ones left out of every job.
+    const exportCsv = () => {
+        const range = endDate ? `${startDate}_to_${endDate}` : `from_${startDate}`;
+        downloadCsv(`production-batch-review_${range}.csv`, CSV_HEADERS, buildCsvRows(plans, codeNames));
+    };
+
     // Roll-up across all plans for the header/footer summaries.
     const totalJobs = plans.reduce((s, p) => s + p.plan.jobCount, 0);
     const hasGroups = plans.some((p) => p.plan.groups.length > 0);
+    const batchesToCreate = plans.filter((p) => p.plan.jobCount > 0);
+    const totalPostponed = plans.reduce((s, p) => s + p.plan.postponedCount, 0);
 
     return (
         <>
@@ -422,19 +447,44 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                                 <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
                                     <CalendarDays size={14} /> Include sub-orders from
                                 </p>
-                                <input
-                                    type="date"
-                                    value={startDate}
-                                    min={HARD_START_DATE}
-                                    onChange={(e) => setStartDate(e.target.value)}
-                                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none bg-white"
-                                />
+                                <div className="grid grid-cols-2 gap-2">
+                                    <label className="block">
+                                        <span className="block text-[11px] text-slate-500 mb-1">From</span>
+                                        <input
+                                            type="date"
+                                            value={startDate}
+                                            min={HARD_START_DATE}
+                                            max={endDate || undefined}
+                                            onChange={(e) => setStartDate(e.target.value)}
+                                            className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none bg-white"
+                                        />
+                                    </label>
+                                    <div>
+                                        <div className="text-[11px] text-slate-500 mb-1 flex items-center gap-1">
+                                            <span>To</span>
+                                            {endDate
+                                                ? <button onClick={() => setEndDate('')} className="text-amber-700 hover:underline">· clear</button>
+                                                : <span className="text-slate-400">· optional</span>}
+                                        </div>
+                                        <input
+                                            type="date"
+                                            value={endDate}
+                                            min={startDate || HARD_START_DATE}
+                                            onChange={(e) => setEndDate(e.target.value)}
+                                            className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none bg-white"
+                                        />
+                                    </div>
+                                </div>
                                 {availableDates.length > 0 && (
                                     <div className="-mx-1 mt-2 flex gap-1.5 overflow-x-auto pb-1">
                                         {availableDates.slice(0, 12).map((d) => (
                                             <button
                                                 key={d}
-                                                onClick={() => setStartDate(d)}
+                                                onClick={() => {
+                                                    setStartDate(d);
+                                                    // Keep the range valid when jumping past the current "to".
+                                                    if (endDate && endDate < d) setEndDate(d);
+                                                }}
                                                 className={`px-2.5 py-1 rounded-full text-xs whitespace-nowrap border transition-colors ${startDate === d
                                                     ? 'bg-amber-100 text-amber-800 border-amber-300'
                                                     : 'bg-white text-slate-500 border-slate-200 hover:border-amber-300'}`}
@@ -445,8 +495,8 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                                     </div>
                                 )}
                                 <p className="text-[11px] text-slate-400 mt-1.5">
-                                    Pulls UPDATED-TO-FACTORY sub-orders from this date with no matching job yet
-                                    (including previously postponed ones). Every batch type is built by default.
+                                    Pulls UPDATED-TO-FACTORY sub-orders {endDate ? `between ${startDate} and ${endDate} (both included)` : 'from this date onwards'} with
+                                    no matching job yet (including previously postponed ones). Every batch type is built by default.
                                 </p>
                             </div>
 
@@ -528,6 +578,9 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                     {step === 'review' && (
                         <>
                             <Button variant="ghost" icon={ChevronLeft} onClick={() => { setStep('setup'); setPlans([]); }}>Back</Button>
+                            <Button variant="ghost" icon={Download} disabled={plans.length === 0} onClick={exportCsv}>
+                                <span className="hidden sm:inline">Download </span>CSV
+                            </Button>
                             <Button
                                 variant="primary" className="bg-amber-600 hover:bg-amber-700"
                                 icon={ChevronRight} disabled={!hasGroups}
@@ -540,12 +593,15 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                     {step === 'confirm' && (
                         <>
                             <Button variant="ghost" icon={ChevronLeft} onClick={() => setStep('review')}>Back</Button>
+                            <Button variant="ghost" icon={Download} disabled={plans.length === 0} onClick={exportCsv}>
+                                <span className="hidden sm:inline">Download </span>CSV
+                            </Button>
                             <Button
-                                variant="primary" className="bg-green-600 hover:bg-green-700"
+                                variant="primary" className="bg-green-600 hover:bg-green-700 shrink-0 whitespace-nowrap"
                                 icon={ClipboardCheck} disabled={totalJobs === 0}
-                                onClick={confirmCreate}
+                                onClick={() => setConfirmOpen(true)}
                             >
-                                Confirm &amp; Create ({totalJobs} job{totalJobs !== 1 ? 's' : ''})
+                                <span className="hidden sm:inline">Confirm &amp; </span>Create ({totalJobs} job{totalJobs !== 1 ? 's' : ''})
                             </Button>
                         </>
                     )}
@@ -564,6 +620,15 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                 </div>
             </div>
         </div>
+        {confirmOpen && (
+            <ConfirmCreateDialog
+                batches={batchesToCreate}
+                totalJobs={totalJobs}
+                totalPostponed={totalPostponed}
+                onCancel={() => setConfirmOpen(false)}
+                onConfirm={confirmCreate}
+            />
+        )}
         {(loadingPreview || previewImage) && (
             <ImagePreviewModal src={previewImage} loading={loadingPreview && !previewImage} onClose={closePreview} />
         )}
@@ -606,6 +671,97 @@ const qtyLabel = (batchType, so, unit) => {
     if (!needsPieceConversion(batchType, so)) return `${qty}${unit}`;
     if (cannotConvertQty(batchType, so)) return `${qty} pcs · ? kg`;
     return `${qty} pcs · ${effectiveQty(batchType, so).toFixed(2)} kg`;
+};
+
+// --- CSV export of the review (one row per sub-order, with its group, job and
+// allocation details — everything the review/confirm screens show) ---
+const CSV_HEADERS = [
+    'Batch Type', 'Output Type', 'Job Name', 'Job Item Code ID',
+    'Group', 'Group Material', 'Group Colour', 'Group GSM', 'Group Width (in)', 'Roll Width (in)',
+    'Unit', 'Group Required', 'Group Fulfilled', 'Group To Produce', 'Group From Stock',
+    'Priority', 'Priority Label', 'Stock Items', 'Allocation Detail', 'Group Postponed Count',
+    'Sub-Order Status', 'Sub-Order ID', 'Order ID', 'Shop', 'Model', 'Roll Material',
+    'Bag Colour', 'Bag GSM', 'Bag Width', 'Bag Height', 'Sheet Size',
+    'Sidepatty Colour', 'Sidepatty GSM', 'Sidepatty Width', 'Handle Colour',
+    'Size Label', 'Size', 'Quantity', 'Quantity Type', 'Planned Quantity',
+    'Order Form Date', 'Factory Updated Date', 'Previously No-Stock Flagged'
+];
+
+// The sub-order half of a row — shared by grouped and flagged sub-orders.
+const csvSubOrderCells = (so, batchType, unit, status) => {
+    const size = sizeText(batchType, so);
+    return [
+        status, so.id, so.Order_ID ?? '', so.Shop || '', so.Model || '', so.Roll_Material || '',
+        so.Bag_Colour || '', so.Bag_GSM || '', so.Bag_Width || '', so.Bag_Height || '', so.Sheet_Size || '',
+        so.Sidepatty_Colour || '', so.Sidepatty_GSM || '', so.Sidepatty_Width || '', so.Handle_Colour || '',
+        size.label, size.value, so.Quantity ?? '', so.Quantity_Type || '',
+        qtyLabel(batchType, so, unit), dateText(so.Order_Form_Date), dateText(so.Factory_Updated_Date),
+        truthy(so.No_Stock_Identified) ? 'Yes' : 'No'
+    ];
+};
+
+// Blank group/job/allocation cells (everything after Batch Type + Output Type),
+// for sub-orders that never reached a group.
+const CSV_EMPTY_GROUP_CELLS = new Array(18).fill('');
+
+const buildCsvRows = (plans, codeNames) => {
+    const rows = [];
+    for (const { batchType, plan } of plans) {
+        const unit = plan.isPieces ? ' bundles' : ' kg';
+        const unitLabel = plan.isPieces ? 'bundles' : 'kg';
+        for (const g of plan.groups) {
+            const fulfilledIds = new Set(g.fulfilled.map((so) => so.id));
+            const itemIds = [...new Set(g.picks.map((p) => p.itemId))];
+            const allocation = g.picks
+                .map((p) => `#${p.itemId} ${p.source} ${fmtQty(p.take, plan.isPieces)}${unitLabel}`)
+                .join(' | ');
+            const groupCells = [
+                batchType, OUTPUT_TYPE[batchType] || '',
+                (g.matchedCodeId && codeNames.get(num(g.matchedCodeId))) || '',
+                g.matchedCodeId || '',
+                attrText(g.attrs), g.attrs.material || '', g.attrs.colour || '', g.attrs.gsm || '',
+                g.attrs.width || '', g.rollWidth || '',
+                unitLabel, fmtQty(g.requiredQty, plan.isPieces), fmtQty(g.fulfilledQty, plan.isPieces),
+                plan.isPieces ? '' : fmtKg(g.outputQty), plan.isPieces ? '' : fmtKg(g.finishedQty),
+                g.priority, PRIORITY_LABEL[g.priority] || '', itemIds.length, allocation, g.postponed.length
+            ];
+            for (const so of g.subOrders) {
+                rows.push([
+                    ...groupCells,
+                    ...csvSubOrderCells(so, batchType, unit, fulfilledIds.has(so.id) ? 'Fulfilled' : 'Postponed')
+                ]);
+            }
+        }
+        const flagged = [
+            ...plan.unmatched.map((so) => [so, 'No matching roll width']),
+            ...plan.missingGsm.map((so) => [so, 'Missing info — cannot size'])
+        ];
+        for (const [so, status] of flagged) {
+            rows.push([
+                batchType, OUTPUT_TYPE[batchType] || '', ...CSV_EMPTY_GROUP_CELLS,
+                ...csvSubOrderCells(so, batchType, unit, status)
+            ]);
+        }
+    }
+    return rows;
+};
+
+const csvCell = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
+// BOM so Excel opens the UTF-8 content correctly.
+const downloadCsv = (filename, headers, rows) => {
+    const csv = [headers, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n');
+    const url = URL.createObjectURL(new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
 };
 
 const SubOrderPill = ({ so, batchType, unit, tone = 'slate', onViewForm }) => {
@@ -672,6 +828,49 @@ const MissingGsmPanel = ({ subOrders, batchType, unit, onViewForm }) => (
         title="missing info — can't size the order"
         detail="These orders are missing data needed to size them (GSM, bag dimensions, or patty width). Add the missing info and re-run. They are left out of every job."
     />
+);
+
+// Last-chance guard before the batch, jobs and sub-order flags are written.
+// Nothing is written until this is accepted.
+const ConfirmCreateDialog = ({ batches, totalJobs, totalPostponed, onCancel, onConfirm }) => (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4" onClick={onCancel}>
+        <div className="bg-white w-full max-w-sm rounded-2xl shadow-xl p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start gap-3">
+                <span className="shrink-0 w-9 h-9 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center">
+                    <AlertCircle size={20} />
+                </span>
+                <div className="min-w-0">
+                    <h3 className="font-bold text-slate-800">Create these jobs?</h3>
+                    <p className="text-sm text-slate-500 mt-0.5">
+                        This writes {batches.length} batch{batches.length !== 1 ? 'es' : ''} and {totalJobs} job
+                        {totalJobs !== 1 ? 's' : ''} to Grist. It can&apos;t be undone from here.
+                    </p>
+                </div>
+            </div>
+            <ul className="mt-3 space-y-1 text-xs text-slate-600 bg-slate-50 rounded-lg p-2.5">
+                {batches.map(({ batchType, plan }) => (
+                    <li key={batchType} className="flex items-center justify-between gap-2">
+                        <span className="truncate">{batchType}</span>
+                        <span className="shrink-0 font-semibold">{plan.jobCount} job{plan.jobCount !== 1 ? 's' : ''}</span>
+                    </li>
+                ))}
+            </ul>
+            {totalPostponed > 0 && (
+                <p className="mt-2 text-[11px] text-amber-700 bg-amber-50 rounded px-2 py-1.5">
+                    {totalPostponed} sub-order(s) will be flagged No_Stock_Identified.
+                </p>
+            )}
+            <div className="mt-4 flex gap-2">
+                <Button variant="secondary" className="flex-1" onClick={onCancel}>Cancel</Button>
+                <Button
+                    variant="primary" className="flex-1 bg-green-600 hover:bg-green-700"
+                    icon={ClipboardCheck} onClick={onConfirm}
+                >
+                    Create
+                </Button>
+            </div>
+        </div>
+    </div>
 );
 
 // Full-screen order-form image preview (mirrors FactoryView's modal).
