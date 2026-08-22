@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users, Boxes, Warehouse, Printer, Scissors } from 'lucide-react';
+import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users, Boxes, Warehouse, Printer, Scissors, Zap } from 'lucide-react';
 import SqlVisualization from './components/SqlVisualization';
 import DashboardList from './components/DashboardList';
 import DashboardView from './components/DashboardView';
@@ -17,6 +17,9 @@ import { APP_VERSION, BUILD_TIMESTAMP_IST_READABLE } from './version.js';
 
 // Import diagnostic service
 import { generateAndDownloadDiagnosticReport } from './utils/diagnosticService';
+
+// Import role-based page access control
+import { canAccessPage, hasGodRole, PAGE_ROLE_REQUIREMENTS } from './utils/pageAccess';
 
 // Simple UI Components
 
@@ -335,11 +338,11 @@ const SettingsModal = ({ onClose, user, onLogout, impersonateEmail, setImpersona
 );
 
 // Home Page Component
-const HomePage = ({ onNavigate, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers, showConsole, setShowConsole, getHeaders, getUrl }) => {
+const HomePage = ({ onNavigate, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers, showConsole, setShowConsole, getHeaders, getUrl, userRoles = [], godMode = false, setGodMode }) => {
   const [showSettings, setShowSettings] = useState(false);
   const [generatingReport, setGeneratingReport] = useState(false);
 
-  const pageOptions = [
+  const allPageOptions = [
     {
       id: 'dashboards',
       title: 'Data Dashboards',
@@ -422,6 +425,9 @@ const HomePage = ({ onNavigate, user, onLogout, impersonateEmail, setImpersonate
     },
   ];
 
+  // Hide tiles the current (or impersonated) user's roles don't grant access to.
+  const pageOptions = allPageOptions.filter((option) => canAccessPage(option.id, userRoles, godMode));
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
       <header className="bg-white border-b border-slate-200 px-4 py-4">
@@ -436,13 +442,34 @@ const HomePage = ({ onNavigate, user, onLogout, impersonateEmail, setImpersonate
                 <p className="text-sm text-slate-500">Select a view to get started</p>
               </div>
             </div>
-            <button
-              onClick={() => setShowSettings(true)}
-              className="p-2 hover:bg-slate-100 rounded-lg transition-colors"
-              aria-label="Settings"
-            >
-              <Settings size={24} className="text-slate-600" />
-            </button>
+            <div className="flex items-center gap-2">
+              {/* Only a PWA GOD holder sees this; everyone else has nothing to unlock. */}
+              {hasGodRole(userRoles) && (
+                <button
+                  onClick={() => setGodMode?.(!godMode)}
+                  aria-pressed={godMode}
+                  title={godMode
+                    ? 'God mode on — every page is unlocked. Click to drop back to your own roles.'
+                    : 'God mode off — you see only what your roles allow. Click to unlock every page.'}
+                  className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${godMode
+                    ? 'bg-purple-600 text-white hover:bg-purple-700'
+                    : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                >
+                  <Zap size={16} className={godMode ? '' : 'opacity-70'} />
+                  <span className="hidden sm:inline">God mode</span>
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${godMode ? 'bg-white/20' : 'bg-slate-200 text-slate-500'}`}>
+                    {godMode ? 'ON' : 'OFF'}
+                  </span>
+                </button>
+              )}
+              <button
+                onClick={() => setShowSettings(true)}
+                className="p-2 hover:bg-slate-100 rounded-lg transition-colors"
+                aria-label="Settings"
+              >
+                <Settings size={24} className="text-slate-600" />
+              </button>
+            </div>
           </div>
         </div>
       </header>
@@ -2285,6 +2312,62 @@ const SQLAnalysisView = ({ onBack, user, teamId, onLogout, getHeaders, getUrl, i
 
 // Main App Component
 
+// Full-screen "Unauthorised" gate shown when a user lacks the role for a page.
+const UnauthorisedScreen = () => {
+  const navigate = useNavigate();
+  return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+      <Card className="max-w-md w-full p-8 text-center">
+        <div className="w-16 h-16 bg-red-100 rounded-2xl flex items-center justify-center mx-auto mb-4 text-red-600">
+          <AlertCircle size={32} />
+        </div>
+        <h2 className="text-2xl font-bold text-slate-800 mb-2">Unauthorised</h2>
+        <p className="text-slate-600 mb-6">
+          You don't have the required role to view this page. If you think this is a
+          mistake, contact an administrator.
+        </p>
+        <div className="flex flex-col sm:flex-row gap-3 justify-center">
+          <Button variant="secondary" onClick={() => navigate(-1)} icon={ArrowLeft} className="w-full sm:w-auto">
+            Go Back
+          </Button>
+          <Button variant="primary" onClick={() => navigate('/')} icon={Home} className="w-full sm:w-auto">
+            Go to Home
+          </Button>
+        </div>
+      </Card>
+    </div>
+  );
+};
+
+// Central route guard: wraps ALL routes and derives the page id from the URL's
+// first path segment (e.g. "/salesman/customer/1" -> "salesman"). Any page added
+// to PAGE_ROLE_REQUIREMENTS is automatically gated here — no per-route wiring
+// needed. Ungated pages pass straight through. While roles are still loading a
+// gated page shows a spinner rather than gating prematurely.
+const RouteAccessGuard = ({ userRoles, rolesLoading, godMode, children }) => {
+  const location = useLocation();
+  const pageId = location.pathname.split('/')[1] || '';
+
+  // Not a gated page -> render normally.
+  if (!(pageId in PAGE_ROLE_REQUIREMENTS)) {
+    return children;
+  }
+
+  if (rolesLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <Loader2 size={40} className="animate-spin text-green-600" />
+      </div>
+    );
+  }
+
+  if (!canAccessPage(pageId, userRoles, godMode)) {
+    return <UnauthorisedScreen />;
+  }
+
+  return children;
+};
+
 export default function App() {
   const { loginWithRedirect, logout, user, isAuthenticated, isLoading, getAccessTokenSilently } = useAuth0();
   const navigate = useNavigate();
@@ -2295,6 +2378,10 @@ export default function App() {
   const [showConsole, setShowConsole] = useState(() => {
     return localStorage.getItem('consoleEnabled') === 'true';
   });
+  // PWA GOD unlocks every page only while this is on, and it starts off: the role
+  // is for maintenance, so seeing past your own roles is a deliberate act.
+  const [godMode, setGodMode] = useState(() => localStorage.getItem('godMode') === 'true');
+  useEffect(() => { localStorage.setItem('godMode', godMode ? 'true' : 'false'); }, [godMode]);
 
   // Global impersonation state
   // Global impersonation state
@@ -2335,6 +2422,18 @@ export default function App() {
       id: teamId // Add the fetched teamId to the user object
     };
   }, [user, impersonateEmail, teamMembers, teamId]);
+
+  // Roles of the effective user (impersonated user when impersonating, else the
+  // logged-in user), resolved from the Team table. Drives page gating.
+  const currentUserRoles = useMemo(() => {
+    const email = derivedUser?.email;
+    if (!email) return [];
+    const member = teamMembers.find((m) => m.Email === email);
+    return parseRoles(member?.Roles);
+  }, [derivedUser, teamMembers]);
+
+  // Roles come from teamMembers; treat them as still loading until that list arrives.
+  const rolesLoading = loadingTeamMembers || teamMembers.length === 0;
 
   const handleLogout = () => {
     logout({ logoutParams: { returnTo: window.location.origin } });
@@ -2592,8 +2691,9 @@ export default function App() {
   // Main Application - Render based on URL routes
   return (
     <div>
+      <RouteAccessGuard userRoles={currentUserRoles} rolesLoading={rolesLoading} godMode={godMode}>
       <Routes>
-        <Route path="/" element={<HomePage onNavigate={(path) => navigate(`/${path}`)} user={derivedUser} onLogout={handleLogout} impersonateEmail={impersonateEmail} setImpersonateEmail={setImpersonateEmail} teamMembers={teamMembers} loadingTeamMembers={loadingTeamMembers} showConsole={showConsole} setShowConsole={setShowConsole} getHeaders={getHeaders} getUrl={getUrl} />} />
+        <Route path="/" element={<HomePage onNavigate={(path) => navigate(`/${path}`)} user={derivedUser} onLogout={handleLogout} impersonateEmail={impersonateEmail} setImpersonateEmail={setImpersonateEmail} teamMembers={teamMembers} loadingTeamMembers={loadingTeamMembers} showConsole={showConsole} setShowConsole={setShowConsole} getHeaders={getHeaders} getUrl={getUrl} userRoles={currentUserRoles} godMode={godMode} setGodMode={setGodMode} />} />
         <Route
           path="/telecaller"
           element={
@@ -2688,12 +2788,13 @@ export default function App() {
           }
         />
         <Route path="/sql" element={<SQLAnalysisView onBack={() => navigate('/dashboards')} user={derivedUser} teamId={derivedUser?.id} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
-        <Route path="/dashboards" element={<DashboardList onNavigate={(id) => navigate(`/dashboards/${id}`)} onBack={() => navigate('/')} teamId={derivedUser?.id} getHeaders={getHeaders} getUrl={getUrl} user={derivedUser} />} />
+        <Route path="/dashboards" element={<DashboardList onNavigate={(id) => navigate(`/dashboards/${id}`)} onBack={() => navigate('/')} teamId={derivedUser?.id} getHeaders={getHeaders} getUrl={getUrl} user={derivedUser} userRoles={currentUserRoles} godMode={godMode} />} />
         <Route path="/dashboards/:id" element={<DashboardWrapper onBack={() => navigate('/dashboards')} getHeaders={getHeaders} getUrl={getUrl} teamId={derivedUser?.id} user={derivedUser} />} />
         <Route path="/telecaller/customer/:customerId" element={<TelecallerCustomerView onBack={() => navigate('/telecaller')} user={derivedUser} getHeaders={getHeaders} getUrl={getUrl} />} />
         <Route path="/salesman" element={<SalesmanView onBack={() => navigate('/')} user={derivedUser} teamId={derivedUser?.id} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
         <Route path="/salesman/customer/:customerId" element={<SalesmanCustomerView onBack={() => navigate('/salesman')} user={derivedUser} getHeaders={getHeaders} getUrl={getUrl} />} />
       </Routes>
+      </RouteAccessGuard>
 
       {/* Console Panel - conditionally rendered based on query parameter */}
       {showConsole && <Console />}

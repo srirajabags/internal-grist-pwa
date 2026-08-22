@@ -2,11 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { LayoutDashboard, Plus, Trash2, ArrowRight, ArrowLeft, Code, Users } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { fetchPwaDataSql, savePwaData, deletePwaData } from '../utils/gristDataSync';
+import { canAccessPage } from '../utils/pageAccess';
 import ShareQueryModal from './ShareQueryModal';
 
 const PWA_DATA_DOC_ID = '8vRFY3UUf4spJroktByH4u';
 
-const DashboardList = ({ onNavigate, onBack, teamId, getHeaders, getUrl }) => {
+const DashboardList = ({ onNavigate, onBack, teamId, getHeaders, getUrl, userRoles = [], godMode = false }) => {
     const [dashboards, setDashboards] = useState([]);
     const [showCreateModal, setShowCreateModal] = useState(false);
     const [newDashboardName, setNewDashboardName] = useState('');
@@ -153,7 +154,8 @@ const DashboardList = ({ onNavigate, onBack, teamId, getHeaders, getUrl }) => {
 
             <main className="flex-1 p-4 overflow-auto">
                 <div className="max-w-7xl mx-auto">
-                    {/* Sticky SQL Analysis Card */}
+                    {/* Sticky SQL Analysis Card - gated by role */}
+                    {canAccessPage('sql', userRoles, godMode) && (
                     <div className="sticky top-0 z-10 mb-6 -mt-2 pt-2 bg-slate-50 pb-2">
                         <div
                             onClick={() => navigate('/sql')}
@@ -173,6 +175,7 @@ const DashboardList = ({ onNavigate, onBack, teamId, getHeaders, getUrl }) => {
                             </div>
                         </div>
                     </div>
+                    )}
 
                     {dashboards.length === 0 ? (
                         <div className="text-center py-20 text-slate-500 bg-white rounded-xl border border-dashed border-slate-300">
