@@ -9,6 +9,7 @@
 // so they can be re-added here without further changes.
 export const BATCH_TYPES = [
     'ROLLS TO SHEETS',
+    'ROLLS TO MODEL SHEETS',
     'ROLLS TO DCUT',
     'ROLLS TO SIDEPATTY',
     'ROLLS TO HANDLES',
@@ -23,6 +24,7 @@ export const HARD_START_DATE = '2026-06-25';
 // value is the Inventory_Item_Codes.Type string for that output.
 export const OUTPUT_TYPE = {
     'ROLLS TO SHEETS': 'SHEET',
+    'ROLLS TO MODEL SHEETS': 'MODEL NUMBER SHEET',
     'ROLLS TO DCUT': 'DCUT BAG',
     'ROLLS TO UCUT': 'UCUT BAG',
     'ROLLS TO WCUT': 'WCUT BAG',
@@ -42,6 +44,95 @@ export const MATERIAL_MAP = {
 const norm = (v) => String(v ?? '').trim().toUpperCase();
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const isSet = (v) => v !== null && v !== undefined && String(v).trim() !== '';
+
+// --- What one finished bag needs -------------------------------------------
+// The factory's bill of materials, in one editable place. Each rule pairs a
+// `combination` — filters matched against the sub-order — with `requirements`:
+// how many of each output item ONE finished bag needs. Everything downstream
+// (planned kg, bundles, the output counts shown in the batch modal) reads these
+// numbers, so changing a count here changes the plan.
+//
+// combination values are matched case-insensitively and may be:
+//   'STITCHING'            exact value
+//   ['DCUT', 'UCUT']       any one of these
+//   '*'                    any non-empty value
+// Rules are tried top-down and the FIRST match wins, so keep the specific ones
+// above the general ones. requirements keys are Inventory_Item_Codes types (the
+// output types in OUTPUT_TYPE / outputTypeFor); an item absent from a rule is
+// simply not needed by that bag.
+export const OUTPUT_REQUIREMENTS = [
+    {
+        label: 'Stitching bag with a printed side patty (its gusset is a bottom patty)',
+        combination: { Model: 'STITCHING', Sidepatty_Colour: 'PRINTED' },
+        requirements: {
+            'SHEET': 2,                  // front + back
+            'MODEL NUMBER SHEET': 2,
+            'HANDLE': 2,                 // one pair
+            'BOTTOMPATTY': 1
+        }
+    },
+    {
+        label: 'Stitching bag with a plain side patty',
+        combination: { Model: 'STITCHING' },
+        requirements: {
+            'SHEET': 2,                  // front + back
+            'MODEL NUMBER SHEET': 2,
+            'HANDLE': 2,
+            'SIDEPATTY': 1
+        }
+    },
+    {
+        label: 'Handle-model bag (d-cut body, pressing handles)',
+        combination: { Model: 'HANDLE' },
+        requirements: {
+            'HANDLE BAG': 1,
+            'DCUT BAG': 1,
+            'PRESSING HANDLE': 2,
+            'SIDEPATTY': 1,
+            'BOTTOMPATTY': 1
+        }
+    },
+    {
+        label: 'Cut bag (d-cut / u-cut / w-cut)',
+        combination: { Model: ['DCUT', 'UCUT', 'WCUT'] },
+        requirements: {
+            'DCUT BAG': 1, 'UCUT BAG': 1, 'WCUT BAG': 1,
+            'SIDEPATTY': 1, 'BOTTOMPATTY': 1
+        }
+    },
+    {
+        label: 'Plain (unstitched) sheet order',
+        combination: { Model: 'PLAIN' },
+        requirements: { 'SHEET': 1, 'MODEL NUMBER SHEET': 1 }
+    }
+];
+
+// Pieces per bundle, by output item type — how the godown counts that form
+// (mirrors InventoryView). Sheets and bags are counted one at a time.
+export const PIECES_PER_BUNDLE = {
+    'SIDEPATTY': 50, 'BOTTOMPATTY': 50,
+    'HANDLE': 100, 'PRESSING HANDLE': 100
+};
+
+const matchesCombination = (combination, so) =>
+    Object.entries(combination).every(([field, want]) => {
+        const have = norm(so[field]);
+        if (want === '*') return have !== '';
+        if (Array.isArray(want)) return want.some((w) => norm(w) === have);
+        return norm(want) === have;
+    });
+
+// The rule that governs a sub-order, or null when none matches.
+export const requirementRule = (so) => OUTPUT_REQUIREMENTS.find((r) => matchesCombination(r.combination, so)) || null;
+
+// How many `outputType` items one bag of this sub-order needs. null when the
+// sub-order matches no rule, or its rule does not use that item at all.
+export const perBagRequirement = (so, outputType) => {
+    const rule = requirementRule(so);
+    if (!rule) return null;
+    const key = Object.keys(rule.requirements).find((k) => norm(k) === norm(outputType));
+    return key === undefined ? null : num(rule.requirements[key]);
+};
 
 // Types counted in bundles/pieces rather than kg (mirrors the Grist
 // Planned_Count_Bundles_ formula). Side/bottom patty are cut from raw rolls and
@@ -99,7 +190,11 @@ export const pattyRollWidth = (so) => {
 
 // Batch types whose sub-orders are grouped — and matched to rolls — by roll width
 // rather than by output size. One job then represents one physical roll width.
-export const ROLL_WIDTH_TYPES = new Set(['ROLLS TO SHEETS', 'ROLLS TO DCUT']);
+export const ROLL_WIDTH_TYPES = new Set(['ROLLS TO SHEETS', 'ROLLS TO MODEL SHEETS', 'ROLLS TO DCUT']);
+
+// Both sheet batches cut the same way (sheet geometry -> ROLL_WIDTHS_SHEETS) and
+// differ only in what the finished sheet is stocked as; see isModelNumberSheet.
+export const SHEET_TYPES = new Set(['ROLLS TO SHEETS', 'ROLLS TO MODEL SHEETS']);
 
 // Smallest available width >= target (exact match wins, else next larger); null
 // when nothing is wide enough.
@@ -120,7 +215,7 @@ const parseSheetSize = (v) => {
 //   null     -> a genuine requirement that no available roll width can satisfy;
 //               the caller flags it during allocation so it is not lost.
 export const requiredRollWidth = (batchType, so) => {
-    if (batchType === 'ROLLS TO SHEETS') {
+    if (SHEET_TYPES.has(batchType)) {
         const dims = parseSheetSize(so.Sheet_Size);
         if (!dims) return 'ignore';
         const [w, h] = dims;
@@ -155,12 +250,15 @@ export const requiredRollWidth = (batchType, so) => {
 // kg = piece count * per-sheet mass.
 const PIECE_TO_KG_DIVISOR = 1550 * 1000;
 
-const sheetPiecesToKg = (so) => {
+const sheetPiecesToKg = (batchType, so) => {
     const dims = parseSheetSize(so.Sheet_Size);
     const gsm = num(so.Bag_GSM);
     if (!dims || !gsm) return null;        // geometry missing -> can't convert
+    // A bag is not one sheet: OUTPUT_REQUIREMENTS says how many it takes (a
+    // stitching bag needs a front and a back), and the roll must cover all of them.
+    const perBag = perBagRequirement(so, OUTPUT_TYPE[batchType]) ?? 1;
     const [w, h] = dims;
-    return num(so.Quantity) * (w * h * gsm) / PIECE_TO_KG_DIVISOR;
+    return num(so.Quantity) * perBag * (w * h * gsm) / PIECE_TO_KG_DIVISOR;
 };
 
 // A STITCHING order quoted in pieces feeds a kg-based sheet batch only after a
@@ -176,7 +274,7 @@ export const needsPieceConversion = (batchType, so) =>
 // because its Bag_GSM (or sheet geometry) is missing — surfaced to the operator
 // rather than silently mis-allocated.
 export const cannotConvertQty = (batchType, so) =>
-    needsPieceConversion(batchType, so) && sheetPiecesToKg(so) == null;
+    needsPieceConversion(batchType, so) && sheetPiecesToKg(batchType, so) == null;
 
 // --- Piece-batch quantities: bags → finished pieces → bundles ---
 // Handles are produced per finished bag and stocked in fixed-size bundles, so a
@@ -209,6 +307,33 @@ const bagPieces = (so) => {
 export const cannotSizePieces = (batchType, so) =>
     isPieceType(batchType) && bagPieces(so) == null;
 
+// The exact fields a flagged sub-order is missing, so the operator is told which
+// cell to fill rather than a generic list. Returns [] when nothing is missing.
+export const missingInfoFields = (batchType, so) => {
+    const gone = [];
+    if (SHEET_TYPES.has(batchType) && needsPieceConversion(batchType, so)) {
+        // Sheet size is entered per sub-order (it is not the bag size — it carries
+        // its own stitching/gusset allowance), and is what pieces -> kg needs.
+        if (!parseSheetSize(so.Sheet_Size)) gone.push('sheet size');
+        if (!num(so.Bag_GSM)) gone.push('bag GSM');
+    }
+    if (isPieceType(batchType) && bagPieces(so) == null) {
+        if (!num(so.Bag_Width)) gone.push('bag width');
+        if (!num(so.Bag_Height)) gone.push('bag height');
+        if (!num(so.Bag_GSM)) gone.push('bag GSM');
+    }
+    if (batchType === 'ROLLS TO SIDEPATTY' && pattyDims(so) == null) {
+        const printed = norm(so.Sidepatty_Colour) === 'PRINTED';
+        if (!num(so.Sidepatty_Width)) gone.push('side-patty width');
+        if (!num(so.Bag_Width)) gone.push('bag width');
+        if (!printed) {
+            if (!num(so.Bag_Height)) gone.push('bag height');
+            if (!num(so.Sidepatty_GSM)) gone.push('side-patty GSM');
+        }
+    }
+    return [...new Set(gone)];
+};
+
 // A patty order missing the info needed to size it (strip width, bag dims, GSM).
 export const cannotSizePatty = (batchType, so) =>
     batchType === 'ROLLS TO SIDEPATTY' && pattyDims(so) == null;
@@ -220,7 +345,81 @@ const pattyKg = (so) => {
     const d = pattyDims(so);
     const bags = bagPieces(so);
     if (!d || bags == null) return 0;
-    return bags * (d.width * d.length * num(d.gsm)) / PIECE_TO_KG_DIVISOR;
+    const perBag = perBagRequirement(so, d.kind) ?? 1;
+    return bags * perBag * (d.width * d.length * num(d.gsm)) / PIECE_TO_KG_DIVISOR;
+};
+
+// --- Output counts: how many finished items a group actually needs ---
+// Planning is done in kg (or bundles), but the floor thinks in pieces. The counts
+// come from OUTPUT_REQUIREMENTS (items per bag) and PIECES_PER_BUNDLE (how the
+// godown counts that form).
+export const OUTPUT_COUNT_UNIT = {
+    'ROLLS TO SHEETS': 'sheets',
+    'ROLLS TO MODEL SHEETS': 'sheets',
+    'ROLLS TO DCUT': 'bags',
+    'ROLLS TO UCUT': 'bags',
+    'ROLLS TO WCUT': 'bags',
+    'ROLLS TO SIDEPATTY': 'bundles',
+    'ROLLS TO HANDLES': 'bundles',
+    'ROLLS TO PRESSING HANDLES': 'bundles'
+};
+
+// Cloth mass of ONE finished bag, used to back a bag count out of a weight-quoted
+// order. Sheet batches multiply the sheet by however many the bag needs; cut bags
+// use their flat blank. null when the geometry is missing.
+const bagClothKg = (batchType, so) => {
+    if (SHEET_TYPES.has(batchType)) {
+        const dims = parseSheetSize(so.Sheet_Size);
+        const gsm = num(so.Bag_GSM);
+        const perBag = perBagRequirement(so, OUTPUT_TYPE[batchType]);
+        if (!dims || !gsm || !perBag) return null;
+        return perBag * (dims[0] * dims[1] * gsm) / PIECE_TO_KG_DIVISOR;
+    }
+    if (batchType === 'ROLLS TO DCUT') {
+        const w = num(so.Bag_Width), h = num(so.Bag_Height), gsm = num(so.Bag_GSM);
+        if (!w || !h || !gsm) return null;
+        // Flat blank = bag width × (both faces + the same allowance the roll-width
+        // match uses): +2″ for a HANDLE bag, +4″ for a D-cut.
+        const flat = norm(so.Model) === 'HANDLE' ? h * 2 + 2 : h * 2 + 4;
+        return (w * flat * gsm) / PIECE_TO_KG_DIVISOR;
+    }
+    return null;
+};
+
+// Finished bags a sub-order covers: piece-quoted orders state it, weight-quoted
+// ones are divided by one bag's cloth.
+const bagCount = (batchType, so) => {
+    if (norm(so.Quantity_Type) === 'PIECES') return num(so.Quantity);
+    const per = bagClothKg(batchType, so);
+    if (per > 0) return num(so.Quantity) / per;
+    return bagPieces(so);          // HANDLE-model weight orders size themselves
+};
+
+// Finished items a sub-order needs, in the unit its output form is stocked in:
+// bags × the per-bag requirement, divided into bundles where the godown counts in
+// bundles. Returns { count, exact } — `exact` is false when the bag count had to
+// be backed out of a weight-quoted order — or null when it can't be derived.
+export const outputCount = (batchType, so) => {
+    const outType = outputTypeFor(batchType, so);
+    const perBag = perBagRequirement(so, outType);
+    if (perBag == null) return null;
+    const bags = bagCount(batchType, so);
+    if (bags == null) return null;
+    const perBundle = PIECES_PER_BUNDLE[norm(outType)] || 1;
+    return { count: (bags * perBag) / perBundle, exact: norm(so.Quantity_Type) === 'PIECES' };
+};
+
+// Roll the per-sub-order counts up to a group: the total, whether every part of it
+// is exact, and how many sub-orders could not be counted at all.
+export const groupOutputCount = (batchType, subOrders) => {
+    let count = 0, exact = true, unknown = 0;
+    for (const so of subOrders) {
+        const c = outputCount(batchType, so);
+        if (!c) { unknown += 1; exact = false; continue; }
+        count += c.count;
+        if (!c.exact) exact = false;
+    }
+    return { count, exact, unknown, unit: OUTPUT_COUNT_UNIT[batchType] || 'pieces' };
 };
 
 // The quantity a sub-order contributes to its group's requirement, in the unit the
@@ -231,11 +430,12 @@ export const effectiveQty = (batchType, so) => {
     if (isPieceType(batchType)) {
         const bags = bagPieces(so);
         if (bags == null) return 0;   // un-sizable -> flagged, contributes nothing
-        return (bags * PIECES_PER_BAG[batchType]) / BUNDLE_SIZE[batchType];
+        const perBag = perBagRequirement(so, OUTPUT_TYPE[batchType]) ?? PIECES_PER_BAG[batchType];
+        return (bags * perBag) / BUNDLE_SIZE[batchType];
     }
     if (batchType === 'ROLLS TO SIDEPATTY') return pattyKg(so);
     if (needsPieceConversion(batchType, so)) {
-        const kg = sheetPiecesToKg(so);
+        const kg = sheetPiecesToKg(batchType, so);
         if (kg != null) return kg;
     }
     return num(so.Quantity);
@@ -244,6 +444,15 @@ export const effectiveQty = (batchType, so) => {
 // --- Qualification: does this sub-order need the chosen output? ---
 // Centralised so the factory's real rules are a one-place edit. A sub-order can
 // satisfy several types (e.g. a STITCHING bag needs a body AND a side-patty).
+// A model-number sheet: a non-woven stitching bag printed with the customer's
+// model number. It cuts exactly like a plain sheet, but the finished sheet is
+// stocked as MODEL NUMBER SHEET (one item code per model), so these sub-orders
+// go to ROLLS TO MODEL SHEETS *instead of* ROLLS TO SHEETS, never both.
+export const isModelNumberSheet = (so) =>
+    norm(so.Material) === 'NON-WOVEN' &&
+    norm(so.Model) === 'STITCHING' &&
+    norm(so.Print) === 'MODEL NUMBER';
+
 export const typeNeedsSubOrder = (batchType, so) => {
     const model = norm(so.Model);
     switch (batchType) {
@@ -251,7 +460,8 @@ export const typeNeedsSubOrder = (batchType, so) => {
         case 'ROLLS TO UCUT': return model === 'UCUT';
         case 'ROLLS TO HANDLES': return model === 'STITCHING';
         case 'ROLLS TO PRESSING HANDLES': return model === 'HANDLE';
-        case 'ROLLS TO SHEETS': return model === 'STITCHING' || model === 'PLAIN';
+        case 'ROLLS TO SHEETS': return (model === 'STITCHING' || model === 'PLAIN') && !isModelNumberSheet(so);
+        case 'ROLLS TO MODEL SHEETS': return isModelNumberSheet(so);
         // ROLLS TO SIDEPATTY makes the bag's single gusset: a side patty, or a
         // bottom patty when the side patty is PRINTED. Either way needs a width.
         case 'ROLLS TO SIDEPATTY':
@@ -512,7 +722,12 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
     const stockById = new Map(stock.map((r) => [r.itemId, r]));
 
     const groups = [...byKey.values()]
-        .map((g) => ({ ...g, requiredQty: g.subOrders.reduce((s, so) => s + effectiveQty(batchType, so), 0) }))
+        .map((g) => ({
+            ...g,
+            requiredQty: g.subOrders.reduce((s, so) => s + effectiveQty(batchType, so), 0),
+            // What the floor has to turn out for this group, in whole items.
+            requiredCount: groupOutputCount(batchType, g.subOrders)
+        }))
         .sort((a, b) => b.requiredQty - a.requiredQty)
         .map((g) => {
             const alloc = allocateStock(g.attrs, g.subOrders, stock, batchType);
@@ -548,9 +763,17 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
     const totalFinishedQty = groups.reduce((s, g) => s + g.finishedQty, 0);
     const totalOutputQty = groups.reduce((s, g) => s + g.outputQty, 0);
     const jobCount = groups.filter((g) => g.fulfilled.length > 0).length;
+    // Batch-wide output requirement in items, summed from the groups.
+    const totalRequiredCount = {
+        count: groups.reduce((s, g) => s + g.requiredCount.count, 0),
+        exact: groups.every((g) => g.requiredCount.exact),
+        unknown: groups.reduce((s, g) => s + g.requiredCount.unknown, 0),
+        unit: OUTPUT_COUNT_UNIT[batchType] || 'pieces'
+    };
 
     return {
         groups, postponedCount, totalPlannedQty, totalFinishedQty, totalOutputQty, jobCount,
+        totalRequiredCount,
         isPieces: isPieceType(batchType),
         unmatched, unmatchedCount: unmatched.length,
         missingGsm, missingGsmCount: missingGsm.length

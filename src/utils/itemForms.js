@@ -93,7 +93,7 @@ export const itemForm = (type, name) => {
     // counted in sheets, so they must be matched ahead of the patty rule below
     // (which counts in bundles of 50) and ahead of the generic sheet rule.
     if (/BOTTOM.?(PATTY|GUSSET).?SHEET/.test(s)) return 'bottompattysheet';
-    if (/MODEL.?(NUMBER|NO\.?).?SHEET/.test(s)) return 'modelsheet';
+    if (/MODEL.?(NUMBER|NO\.?)?.?SHEET/.test(s)) return 'modelsheet';
     if (/SIDE.?(PATTY|GUSSET)|SIDEPATTY/.test(s)) return 'sidepatty';
     if (/BOTTOM.?(PATTY|GUSSET)/.test(s)) return 'bottompatty';
     if (/SHEET/.test(s)) return 'sheet';

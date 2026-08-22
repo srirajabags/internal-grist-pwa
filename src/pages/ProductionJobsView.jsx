@@ -24,6 +24,7 @@ const roundWeight = (v) => Math.round(num(v) * 1000) / 1000;
 // the heading shown for that dimension's summary table.
 const SIZE_DIM = {
     'ROLLS TO SHEETS': 'sheet',
+    'ROLLS TO MODEL SHEETS': 'sheet',
     'ROLLS TO DCUT': 'bag',
     'ROLLS TO UCUT': 'bag',
     'ROLLS TO WCUT': 'bag',

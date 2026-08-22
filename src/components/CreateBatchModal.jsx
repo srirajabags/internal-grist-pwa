@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
     X, Loader2, AlertCircle, CheckCircle2, ChevronRight, ChevronLeft, ChevronDown,
     Search, Layers, Package, CalendarDays, ClipboardCheck, Maximize2, Download
@@ -6,7 +6,8 @@ import {
 import Button from './Button';
 import {
     BATCH_TYPES, HARD_START_DATE, OUTPUT_TYPE, PRIORITY_LABEL, buildPlan,
-    effectiveQty, needsPieceConversion, cannotConvertQty, cannotSizePieces, cannotSizePatty, BUNDLE_SIZE
+    effectiveQty, needsPieceConversion, cannotConvertQty, cannotSizePieces, cannotSizePatty, BUNDLE_SIZE,
+    typeNeedsSubOrder, missingInfoFields, outputCount
 } from '../utils/productionBatch';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
@@ -26,10 +27,21 @@ const truthy = (v) => v === true || v === 1 || v === '1' || v === 'true';
 // kg values are always shown with 2 decimals; piece counts stay integer.
 const fmtKg = (v) => num(v).toFixed(2);
 const fmtQty = (v, isPieces) => isPieces ? String(num(v)) : fmtKg(v);
+// A group's output requirement in whole items — "2,640 sheets", "≈ 132 bags",
+// "14 bundles". Always rounded up: half a sheet or a part bundle still has to be
+// produced. "≈" marks a count backed out of a weight-quoted order, and any
+// sub-order whose count can't be derived at all is called out separately.
+const countText = (rc) => {
+    if (!rc || (rc.count <= 0 && !rc.unknown)) return null;
+    const n = Math.ceil(rc.count - 1e-9).toLocaleString('en-IN');
+    const unknown = rc.unknown ? ` + ${rc.unknown} unsized` : '';
+    return `${rc.exact ? '' : '≈ '}${n} ${rc.unit}${unknown}`;
+};
 
 // 'YYYY-MM-DD' -> epoch seconds (UTC midnight), matching how Grist stores DATE
 // columns elsewhere in the app (see FactoryView).
 const dateToEpoch = (d) => new Date(d).getTime() / 1000;
+const todayStr = () => new Date().toLocaleDateString('en-CA');
 const epochToDate = (v) => {
     if (!v || typeof v === 'object') return null;
     const d = new Date(num(v) * 1000);
@@ -68,7 +80,7 @@ const dateText = (v) => epochToDate(v) || '—';
 
 const sizeText = (batchType, so) => {
     const type = String(batchType || '').trim().toUpperCase();
-    if (type === 'ROLLS TO SHEETS') {
+    if (type === 'ROLLS TO SHEETS' || type === 'ROLLS TO MODEL SHEETS') {
         return { label: 'Sheet', value: so.Sheet_Size || '—' };
     }
     if (type === 'ROLLS TO SIDEPATTY') {
@@ -105,15 +117,116 @@ const Step = ({ n, label, active, done }) => (
     </div>
 );
 
+const WEEKDAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+
+// Dates are handled as plain 'YYYY-MM-DD' strings on a UTC clock so the grid
+// never drifts by a day in the local timezone.
+const ymd = (dt) => dt.toISOString().slice(0, 10);
+const monthOf = (d) => d.slice(0, 7);
+const shiftMonth = (cursor, delta) => {
+    const [y, m] = cursor.split('-').map(Number);
+    return monthOf(ymd(new Date(Date.UTC(y, m - 1 + delta, 1))));
+};
+
+// Month grid for picking the from/to range. Each day carries the number of
+// sub-orders still available on that date — i.e. with no production job yet for
+// the batch types chosen above — so the operator can see which dates are worth
+// including before running the search.
+const AvailabilityCalendar = ({ counts, from, to, minDate, maxDate, onPick, loading, hint }) => {
+    const [cursor, setCursor] = useState(() => monthOf(from || maxDate));
+
+    // Follow the inputs when a date is typed in directly.
+    useEffect(() => { if (from) setCursor(monthOf(from)); }, [from]);
+
+    const [y, m] = cursor.split('-').map(Number);
+    const lead = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
+    const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const cells = [
+        ...Array(lead).fill(null),
+        ...Array.from({ length: daysInMonth }, (_, i) => ymd(new Date(Date.UTC(y, m - 1, i + 1))))
+    ];
+
+    const canPrev = shiftMonth(cursor, -1) >= monthOf(minDate);
+    const canNext = shiftMonth(cursor, 1) <= monthOf(maxDate);
+    const navCls = (on) => `p-1.5 rounded-lg ${on ? 'text-slate-500 hover:bg-slate-100' : 'text-slate-200 cursor-default'}`;
+
+    return (
+        <div className="mt-2 bg-white border border-slate-200 rounded-xl p-2.5">
+            <div className="flex items-center justify-between mb-1.5">
+                <button type="button" disabled={!canPrev} className={navCls(canPrev)}
+                    onClick={() => setCursor(shiftMonth(cursor, -1))}>
+                    <ChevronLeft size={16} />
+                </button>
+                <span className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+                    {MONTH_NAMES[m - 1]} {y}
+                    {loading && <Loader2 size={13} className="animate-spin text-slate-400" />}
+                </span>
+                <button type="button" disabled={!canNext} className={navCls(canNext)}
+                    onClick={() => setCursor(shiftMonth(cursor, 1))}>
+                    <ChevronRight size={16} />
+                </button>
+            </div>
+            <div className="grid grid-cols-7 gap-1 text-center text-[10px] text-slate-400 mb-1">
+                {WEEKDAYS.map((d, i) => <span key={i}>{d}</span>)}
+            </div>
+            <div className="grid grid-cols-7 gap-1">
+                {cells.map((d, i) => {
+                    if (!d) return <span key={`p${i}`} />;
+                    const out = d < minDate || d > maxDate;
+                    const count = counts.get(d) || 0;
+                    const isStart = d === from;
+                    const isEnd = d === (to || from);
+                    const inRange = from && d >= from && (to ? d <= to : d <= maxDate);
+                    const cls = out
+                        ? 'text-slate-300 cursor-default'
+                        : isStart || isEnd
+                            ? 'bg-amber-600 text-white border-amber-600'
+                            : inRange
+                                ? 'bg-amber-50 text-amber-900 border-amber-200'
+                                : count > 0
+                                    ? 'bg-white text-slate-700 border-slate-200 hover:border-amber-400'
+                                    : 'bg-white text-slate-400 border-slate-100 hover:border-amber-300';
+                    return (
+                        <button
+                            key={d}
+                            type="button"
+                            disabled={out}
+                            onClick={() => onPick(d)}
+                            className={`h-11 rounded-lg border flex flex-col items-center justify-center leading-none ${cls}`}
+                        >
+                            <span className="text-xs font-medium">{Number(d.slice(8))}</span>
+                            {!out && (
+                                <span className={`text-[10px] mt-0.5 font-semibold ${isStart || isEnd ? 'text-amber-50'
+                                    : count > 0 ? 'text-amber-700' : 'text-slate-300'}`}>
+                                    {count > 0 ? count : '·'}
+                                </span>
+                            )}
+                        </button>
+                    );
+                })}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-2">{hint}</p>
+        </div>
+    );
+};
+
 const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
-    const [step, setStep] = useState('setup'); // setup | review | confirm | writing | done
+    const [step, setStep] = useState('setup'); // setup | review | writing | done
     // Default to building every type — the from-date is the only real input; the
     // type picker stays as an optional override to narrow the run.
     const [batchTypes, setBatchTypes] = useState([...BATCH_TYPES]);
-    const [startDate, setStartDate] = useState(HARD_START_DATE);
+    // Both ends default to today — the usual run is "what came in today".
+    const [startDate, setStartDate] = useState(todayStr);
     // Empty = open-ended (everything from the start date onwards).
-    const [endDate, setEndDate] = useState('');
-    const [availableDates, setAvailableDates] = useState([]);
+    const [endDate, setEndDate] = useState(todayStr);
+    // First tap on the calendar sets a single day; the next one extends the range.
+    const [rangeAnchor, setRangeAnchor] = useState(null);
+    // One row per candidate sub-order: its factory date + the batch types it
+    // already has a job for. Fetched once; counts are derived per chosen type.
+    const [dateRows, setDateRows] = useState([]);
+    const [datesLoading, setDatesLoading] = useState(true);
 
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -125,6 +238,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
 
     const toggleType = (t) =>
         setBatchTypes((prev) => prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]);
+    const allTypesOn = batchTypes.length === BATCH_TYPES.length;
 
     const runSql = async (sql, args = []) => {
         const headers = await getHeaders();
@@ -201,23 +315,92 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
         setLoadingPreview(false);
     };
 
-    // Distinct factory-update dates (desc) for the quick-pick, from the hard floor.
+    // Per-date availability for the calendar: every candidate sub-order from the
+    // hard floor onwards, tagged with the batch types it already has a job for.
+    // Fetched once — the per-type counts are recomputed locally as types change.
     useEffect(() => {
         (async () => {
             try {
-                const rows = await runSql(
-                    `SELECT DISTINCT Factory_Updated_Date d FROM Sub_Orders
-                     WHERE Status='UPDATED TO FACTORY' AND Factory_Updated_Date >= ?
-                     ORDER BY d DESC`,
-                    [dateToEpoch(HARD_START_DATE)]
-                );
-                setAvailableDates(rows.map((r) => epochToDate(r.d)).filter(Boolean));
+                const [rows, jobs] = await Promise.all([
+                    runSql(
+                        `SELECT so.Factory_Updated_Date AS d,
+                                so.Factory_Production_Jobs AS jobs,
+                                so.Model AS Model, so.Material AS Material, so.Print AS Print,
+                                so.Sidepatty_Width AS Sidepatty_Width
+                         FROM Sub_Orders so
+                         WHERE so.Status = 'UPDATED TO FACTORY' AND so.Factory_Updated_Date >= ?
+                           AND so.Material IN ('NON-WOVEN', 'BOPP LAMINATED')
+                           AND so.Model != 'MISPRINT'`,
+                        [dateToEpoch(HARD_START_DATE)]
+                    ),
+                    runSql(
+                        `SELECT j.id AS id, b.Type AS type
+                         FROM Factory_Production_Jobs j
+                         LEFT JOIN Factory_Production_Job_Batches b ON b.id = j.Factory_Production_Job_Batch`
+                    )
+                ]);
+                const jobType = new Map(jobs.map((j) => [num(j.id), j.type]));
+                setDateRows(rows
+                    .map((r) => ({
+                        date: epochToDate(r.d),
+                        jobTypes: parseRefList(r.jobs).map((jid) => jobType.get(jid)).filter(Boolean),
+                        // Only the fields typeNeedsSubOrder qualifies on.
+                        so: {
+                            Model: r.Model, Material: r.Material, Print: r.Print,
+                            Sidepatty_Width: r.Sidepatty_Width
+                        }
+                    }))
+                    .filter((r) => r.date));
             } catch {
-                // Quick-pick is optional; the date input still works.
+                // The counts are a hint only; the date inputs still work without them.
+            } finally {
+                setDatesLoading(false);
             }
         })();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    // A sub-order counts as available while at least one chosen batch type both
+    // applies to it (typeNeedsSubOrder — a DCUT bag is irrelevant to a HANDLES
+    // batch) and has no job for it yet, mirroring what findSubOrders would pull.
+    const dateCounts = useMemo(() => {
+        const counts = new Map();
+        if (batchTypes.length === 0) return counts;
+        for (const r of dateRows) {
+            const wanted = batchTypes.some((t) => typeNeedsSubOrder(t, r.so) && !r.jobTypes.includes(t));
+            if (!wanted) continue;
+            counts.set(r.date, (counts.get(r.date) || 0) + 1);
+        }
+        return counts;
+    }, [dateRows, batchTypes]);
+
+    // Calendar upper bound: today, unless a sub-order carries a later factory date.
+    const lastDate = useMemo(
+        () => dateRows.reduce((max, r) => (r.date > max ? r.date : max), todayStr()),
+        [dateRows]
+    );
+
+    const rangeCount = useMemo(() => {
+        let total = 0;
+        for (const [d, c] of dateCounts) {
+            if (d >= startDate && (!endDate || d <= endDate)) total += c;
+        }
+        return total;
+    }, [dateCounts, startDate, endDate]);
+
+    // Calendar tap: first one collapses the range onto that day, the next one
+    // stretches it either way.
+    const pickDate = (d) => {
+        if (rangeAnchor) {
+            setStartDate(d < rangeAnchor ? d : rangeAnchor);
+            setEndDate(d < rangeAnchor ? rangeAnchor : d);
+            setRangeAnchor(null);
+        } else {
+            setStartDate(d);
+            setEndDate(d);
+            setRangeAnchor(d);
+        }
+    };
 
     const findSubOrders = async () => {
         if (endDate && endDate < startDate) {
@@ -232,7 +415,8 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
             //    Already-postponed (No_Stock_Identified) ones are kept on purpose —
             //    inventory may have changed since they were postponed.
             const subOrders = await runSql(
-                `SELECT so.id AS id, so.Model AS Model, so.Roll_Material AS Roll_Material,
+                `SELECT so.id AS id, so.Model AS Model, so.Material AS Material,
+                        so.Print AS Print, so.Roll_Material AS Roll_Material,
                         so.Bag_Colour AS Bag_Colour, so.Bag_GSM AS Bag_GSM,
                         so.Bag_Width AS Bag_Width, so.Bag_Height AS Bag_Height,
                         so.Sidepatty_Colour AS Sidepatty_Colour, so.Sidepatty_GSM AS Sidepatty_GSM,
@@ -333,7 +517,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
         setStep('writing');
         setError(null);
         try {
-            const today = new Date().toLocaleDateString('en-CA');
+            const today = todayStr();
 
             let created = 0;
             // Aggregate the No_Stock_Identified decision across all plans: a sub-order
@@ -393,7 +577,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
             setStep('done');
         } catch (err) {
             setError(err.message || String(err));
-            setStep('confirm');
+            setStep('review');
         }
     };
 
@@ -406,7 +590,6 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
 
     // Roll-up across all plans for the header/footer summaries.
     const totalJobs = plans.reduce((s, p) => s + p.plan.jobCount, 0);
-    const hasGroups = plans.some((p) => p.plan.groups.length > 0);
     const batchesToCreate = plans.filter((p) => p.plan.jobCount > 0);
     const totalPostponed = plans.reduce((s, p) => s + p.plan.postponedCount, 0);
 
@@ -425,11 +608,9 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
 
                 {/* Stepper */}
                 <div className="bg-white px-4 py-2 border-b border-slate-100 flex items-center gap-3 justify-between">
-                    <Step n={1} label="Setup" active={step === 'setup'} done={['review', 'confirm', 'writing', 'done'].includes(step)} />
+                    <Step n={1} label="Setup" active={step === 'setup'} done={['review', 'writing', 'done'].includes(step)} />
                     <ChevronRight size={14} className="text-slate-300" />
-                    <Step n={2} label="Review" active={step === 'review'} done={['confirm', 'writing', 'done'].includes(step)} />
-                    <ChevronRight size={14} className="text-slate-300" />
-                    <Step n={3} label="Allocation & Confirm" active={step === 'confirm' || step === 'writing'} done={step === 'done'} />
+                    <Step n={2} label="Review & Confirm" active={step === 'review' || step === 'writing'} done={step === 'done'} />
                 </div>
 
                 <div className="flex-1 overflow-auto p-4">
@@ -440,70 +621,21 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                         </div>
                     )}
 
-                    {/* STEP 1 — SETUP */}
+                    {/* STEP 1 — SETUP: batch types first, then the date range */}
                     {step === 'setup' && (
                         <div className="space-y-5">
                             <div>
-                                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                                    <CalendarDays size={14} /> Include sub-orders from
-                                </p>
-                                <div className="grid grid-cols-2 gap-2">
-                                    <label className="block">
-                                        <span className="block text-[11px] text-slate-500 mb-1">From</span>
-                                        <input
-                                            type="date"
-                                            value={startDate}
-                                            min={HARD_START_DATE}
-                                            max={endDate || undefined}
-                                            onChange={(e) => setStartDate(e.target.value)}
-                                            className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none bg-white"
-                                        />
-                                    </label>
-                                    <div>
-                                        <div className="text-[11px] text-slate-500 mb-1 flex items-center gap-1">
-                                            <span>To</span>
-                                            {endDate
-                                                ? <button onClick={() => setEndDate('')} className="text-amber-700 hover:underline">· clear</button>
-                                                : <span className="text-slate-400">· optional</span>}
-                                        </div>
-                                        <input
-                                            type="date"
-                                            value={endDate}
-                                            min={startDate || HARD_START_DATE}
-                                            onChange={(e) => setEndDate(e.target.value)}
-                                            className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none bg-white"
-                                        />
-                                    </div>
+                                <div className="flex items-center justify-between gap-2 mb-2">
+                                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                                        <Layers size={14} /> 1 · Batch Types{batchTypes.length !== BATCH_TYPES.length ? ` · ${batchTypes.length} of ${BATCH_TYPES.length}` : ''}
+                                    </p>
+                                    <button
+                                        onClick={() => setBatchTypes(allTypesOn ? [] : [...BATCH_TYPES])}
+                                        className="text-xs font-medium text-amber-700 hover:text-amber-800 hover:underline shrink-0"
+                                    >
+                                        {allTypesOn ? 'Deselect all' : 'Select all'}
+                                    </button>
                                 </div>
-                                {availableDates.length > 0 && (
-                                    <div className="-mx-1 mt-2 flex gap-1.5 overflow-x-auto pb-1">
-                                        {availableDates.slice(0, 12).map((d) => (
-                                            <button
-                                                key={d}
-                                                onClick={() => {
-                                                    setStartDate(d);
-                                                    // Keep the range valid when jumping past the current "to".
-                                                    if (endDate && endDate < d) setEndDate(d);
-                                                }}
-                                                className={`px-2.5 py-1 rounded-full text-xs whitespace-nowrap border transition-colors ${startDate === d
-                                                    ? 'bg-amber-100 text-amber-800 border-amber-300'
-                                                    : 'bg-white text-slate-500 border-slate-200 hover:border-amber-300'}`}
-                                            >
-                                                {d}
-                                            </button>
-                                        ))}
-                                    </div>
-                                )}
-                                <p className="text-[11px] text-slate-400 mt-1.5">
-                                    Pulls UPDATED-TO-FACTORY sub-orders {endDate ? `between ${startDate} and ${endDate} (both included)` : 'from this date onwards'} with
-                                    no matching job yet (including previously postponed ones). Every batch type is built by default.
-                                </p>
-                            </div>
-
-                            <div>
-                                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
-                                    Batch Types{batchTypes.length !== BATCH_TYPES.length ? ` · ${batchTypes.length} of ${BATCH_TYPES.length}` : ''}
-                                </p>
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                                     {BATCH_TYPES.map((t) => {
                                         const on = batchTypes.includes(t);
@@ -531,6 +663,67 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                                 <p className="text-[11px] text-slate-400 mt-1.5">All types on by default — deselect any you want to skip. A batch is created per type.</p>
                             </div>
 
+                            <div>
+                                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                                    <CalendarDays size={14} /> 2 · Include sub-orders from
+                                </p>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <label className="block">
+                                        <span className="block text-[11px] text-slate-500 mb-1">From</span>
+                                        <input
+                                            type="date"
+                                            value={startDate}
+                                            min={HARD_START_DATE}
+                                            max={endDate || undefined}
+                                            onChange={(e) => { setStartDate(e.target.value); setRangeAnchor(null); }}
+                                            className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none bg-white"
+                                        />
+                                    </label>
+                                    <div>
+                                        <div className="text-[11px] text-slate-500 mb-1 flex items-center gap-1">
+                                            <span>To</span>
+                                            {endDate
+                                                ? <button onClick={() => { setEndDate(''); setRangeAnchor(null); }} className="text-amber-700 hover:underline">· clear</button>
+                                                : <span className="text-slate-400">· open-ended</span>}
+                                        </div>
+                                        <input
+                                            type="date"
+                                            value={endDate}
+                                            min={startDate || HARD_START_DATE}
+                                            onChange={(e) => { setEndDate(e.target.value); setRangeAnchor(null); }}
+                                            className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none bg-white"
+                                        />
+                                    </div>
+                                </div>
+                                {batchTypes.length === 0 ? (
+                                    <p className="mt-2 p-3 bg-white border border-slate-200 rounded-xl text-[12px] text-slate-500">
+                                        Pick at least one batch type above to see how many sub-orders are still available per date.
+                                    </p>
+                                ) : (
+                                    <AvailabilityCalendar
+                                        counts={dateCounts}
+                                        from={startDate}
+                                        to={endDate}
+                                        minDate={HARD_START_DATE}
+                                        maxDate={lastDate}
+                                        loading={datesLoading}
+                                        onPick={pickDate}
+                                        hint={rangeAnchor
+                                            ? 'Tap another day to stretch the range, or leave it as a single day.'
+                                            : 'Each day shows the sub-orders still waiting for a job of the chosen types. Tap a day, then tap a second one for a range.'}
+                                    />
+                                )}
+                                <p className="text-[11px] text-slate-400 mt-1.5">
+                                    {batchTypes.length > 0 && (
+                                        <span className="text-slate-500 font-medium">
+                                            {rangeCount} sub-order{rangeCount !== 1 ? 's' : ''} available in this range.{' '}
+                                        </span>
+                                    )}
+                                    Pulls UPDATED-TO-FACTORY sub-orders {endDate ? `between ${startDate} and ${endDate} (both included)` : 'from this date onwards'} with
+                                    no matching job yet (including previously postponed ones).
+                                </p>
+                            </div>
+
                             <Button
                                 variant="primary"
                                 className="w-full bg-amber-600 hover:bg-amber-700"
@@ -543,20 +736,11 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                         </div>
                     )}
 
-                    {/* STEP 2 — REVIEW GROUPS (per chosen type) */}
-                    {step === 'review' && (
+                    {/* STEP 2 — REVIEW, ALLOCATION & CONFIRM (per chosen type) */}
+                    {(step === 'review' || step === 'writing') && (
                         <div className="space-y-4">
                             {plans.map(({ batchType, plan }) => (
-                                <ReviewSection key={batchType} batchType={batchType} plan={plan} onViewForm={viewOrderForm} />
-                            ))}
-                        </div>
-                    )}
-
-                    {/* STEP 3 — ALLOCATION + CONFIRM (per chosen type) */}
-                    {(step === 'confirm' || step === 'writing') && (
-                        <div className="space-y-4">
-                            {plans.map(({ batchType, plan }) => (
-                                <ConfirmSection key={batchType} batchType={batchType} plan={plan} onViewForm={viewOrderForm} />
+                                <PlanSection key={batchType} batchType={batchType} plan={plan} onViewForm={viewOrderForm} />
                             ))}
                         </div>
                     )}
@@ -578,21 +762,6 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                     {step === 'review' && (
                         <>
                             <Button variant="ghost" icon={ChevronLeft} onClick={() => { setStep('setup'); setPlans([]); }}>Back</Button>
-                            <Button variant="ghost" icon={Download} disabled={plans.length === 0} onClick={exportCsv}>
-                                <span className="hidden sm:inline">Download </span>CSV
-                            </Button>
-                            <Button
-                                variant="primary" className="bg-amber-600 hover:bg-amber-700"
-                                icon={ChevronRight} disabled={!hasGroups}
-                                onClick={() => setStep('confirm')}
-                            >
-                                Review allocation
-                            </Button>
-                        </>
-                    )}
-                    {step === 'confirm' && (
-                        <>
-                            <Button variant="ghost" icon={ChevronLeft} onClick={() => setStep('review')}>Back</Button>
                             <Button variant="ghost" icon={Download} disabled={plans.length === 0} onClick={exportCsv}>
                                 <span className="hidden sm:inline">Download </span>CSV
                             </Button>
@@ -679,12 +848,14 @@ const CSV_HEADERS = [
     'Batch Type', 'Output Type', 'Job Name', 'Job Item Code ID',
     'Group', 'Group Material', 'Group Colour', 'Group GSM', 'Group Width (in)', 'Roll Width (in)',
     'Unit', 'Group Required', 'Group Fulfilled', 'Group To Produce', 'Group From Stock',
+    'Group Required Count', 'Count Unit',
     'Priority', 'Priority Label', 'Stock Items', 'Allocation Detail', 'Group Postponed Count',
     'Sub-Order Status', 'Sub-Order ID', 'Order ID', 'Shop', 'Model', 'Roll Material',
     'Bag Colour', 'Bag GSM', 'Bag Width', 'Bag Height', 'Sheet Size',
     'Sidepatty Colour', 'Sidepatty GSM', 'Sidepatty Width', 'Handle Colour',
     'Size Label', 'Size', 'Quantity', 'Quantity Type', 'Planned Quantity',
-    'Order Form Date', 'Factory Updated Date', 'Previously No-Stock Flagged'
+    'Order Form Date', 'Factory Updated Date', 'Previously No-Stock Flagged',
+    'Sub-Order Required Count'
 ];
 
 // The sub-order half of a row — shared by grouped and flagged sub-orders.
@@ -696,13 +867,14 @@ const csvSubOrderCells = (so, batchType, unit, status) => {
         so.Sidepatty_Colour || '', so.Sidepatty_GSM || '', so.Sidepatty_Width || '', so.Handle_Colour || '',
         size.label, size.value, so.Quantity ?? '', so.Quantity_Type || '',
         qtyLabel(batchType, so, unit), dateText(so.Order_Form_Date), dateText(so.Factory_Updated_Date),
-        truthy(so.No_Stock_Identified) ? 'Yes' : 'No'
+        truthy(so.No_Stock_Identified) ? 'Yes' : 'No',
+        (() => { const c = outputCount(batchType, so); return c ? Math.ceil(c.count - 1e-9) : ''; })()
     ];
 };
 
 // Blank group/job/allocation cells (everything after Batch Type + Output Type),
 // for sub-orders that never reached a group.
-const CSV_EMPTY_GROUP_CELLS = new Array(18).fill('');
+const CSV_EMPTY_GROUP_CELLS = new Array(20).fill('');
 
 const buildCsvRows = (plans, codeNames) => {
     const rows = [];
@@ -723,6 +895,7 @@ const buildCsvRows = (plans, codeNames) => {
                 g.attrs.width || '', g.rollWidth || '',
                 unitLabel, fmtQty(g.requiredQty, plan.isPieces), fmtQty(g.fulfilledQty, plan.isPieces),
                 plan.isPieces ? '' : fmtKg(g.outputQty), plan.isPieces ? '' : fmtKg(g.finishedQty),
+                Math.ceil(g.requiredCount.count - 1e-9), g.requiredCount.unit,
                 g.priority, PRIORITY_LABEL[g.priority] || '', itemIds.length, allocation, g.postponed.length
             ];
             for (const so of g.subOrders) {
@@ -764,13 +937,17 @@ const downloadCsv = (filename, headers, rows) => {
     URL.revokeObjectURL(url);
 };
 
-const SubOrderPill = ({ so, batchType, unit, tone = 'slate', onViewForm }) => {
+const SubOrderPill = ({ so, batchType, unit, tone = 'slate', onViewForm, showMissing = false }) => {
     const size = sizeText(batchType, so);
     const orderId = so.Order_ID === null || so.Order_ID === undefined || so.Order_ID === '' ? null : so.Order_ID;
     const hasForm = onViewForm && parseAttachmentId(so.Order_Form) != null;
-    const cls = tone === 'red'
-        ? 'bg-white text-red-700 ring-red-200'
-        : 'bg-slate-100 text-slate-600 ring-slate-200';
+    const missing = showMissing ? missingInfoFields(batchType, so) : null;
+    // Amber matches the "postponed → No_Stock_Identified" note under the group, so
+    // the sub-orders it refers to are identifiable at a glance.
+    const cls = {
+        red: 'bg-white text-red-700 ring-red-200',
+        amber: 'bg-amber-50 text-amber-800 ring-amber-300'
+    }[tone] || 'bg-slate-100 text-slate-600 ring-slate-200';
     return (
         <span className={'inline-flex flex-col gap-0.5 px-2 py-1 rounded-md text-[11px] ring-1 ' + cls}>
             <span className="inline-flex items-center gap-1 font-medium">
@@ -787,6 +964,9 @@ const SubOrderPill = ({ so, batchType, unit, tone = 'slate', onViewForm }) => {
                 )}
             </span>
             <span>{size.label}: <span className="font-medium">{size.value}</span></span>
+            {missing && missing.length > 0 && (
+                <span className="font-semibold">Missing: {missing.join(', ')}</span>
+            )}
             <span>{orderId != null ? `Order #${orderId} · ` : ''}Ordered: {dateText(so.Order_Form_Date)} · Factory: {dateText(so.Factory_Updated_Date)}</span>
         </span>
     );
@@ -794,7 +974,7 @@ const SubOrderPill = ({ so, batchType, unit, tone = 'slate', onViewForm }) => {
 
 // Sub-orders that couldn't be placed in any job, for a stated reason. Rendered
 // during review and confirm so the operator can fix the data and re-run.
-const FlaggedPanel = ({ subOrders, batchType, unit, title, detail, onViewForm }) => {
+const FlaggedPanel = ({ subOrders, batchType, unit, title, detail, onViewForm, showMissing = false }) => {
     if (!subOrders || subOrders.length === 0) return null;
     return (
         <div className="bg-red-50 border border-red-200 rounded-xl p-3">
@@ -804,7 +984,8 @@ const FlaggedPanel = ({ subOrders, batchType, unit, title, detail, onViewForm })
             <p className="text-[11px] text-red-600 mb-2">{detail}</p>
             <div className="flex flex-wrap gap-1.5">
                 {subOrders.map((so) => (
-                    <SubOrderPill key={so.id} so={so} batchType={batchType} unit={unit} tone="red" onViewForm={onViewForm} />
+                    <SubOrderPill key={so.id} so={so} batchType={batchType} unit={unit} tone="red"
+                        onViewForm={onViewForm} showMissing={showMissing} />
                 ))}
             </div>
         </div>
@@ -824,9 +1005,9 @@ const UnmatchedPanel = ({ subOrders, batchType, unit, onViewForm }) => (
 // weight orders, or side/bottom patty missing strip width / bag dims / GSM.
 const MissingGsmPanel = ({ subOrders, batchType, unit, onViewForm }) => (
     <FlaggedPanel
-        subOrders={subOrders} batchType={batchType} unit={unit} onViewForm={onViewForm}
+        subOrders={subOrders} batchType={batchType} unit={unit} onViewForm={onViewForm} showMissing
         title="missing info — can't size the order"
-        detail="These orders are missing data needed to size them (GSM, bag dimensions, or patty width). Add the missing info and re-run. They are left out of every job."
+        detail="Each order below lists the Sub_Orders field it is missing (sheet size, GSM, bag dimensions or patty width). Sheet size is entered per sub-order and is not the bag size. Fill it in and re-run — these are left out of every job."
     />
 );
 
@@ -940,8 +1121,9 @@ const TypeHeader = ({ batchType, open, onToggle }) => (
     </button>
 );
 
-// One chosen type's grouped sub-orders (review step).
-const ReviewSection = ({ batchType, plan, onViewForm }) => {
+// One chosen type's plan: the groups, what each needs, what stock covers it, and
+// the sub-orders behind it — everything the operator checks before creating.
+const PlanSection = ({ batchType, plan, onViewForm }) => {
     const [open, setOpen] = useState(false);
     const unit = plan.isPieces ? ' bundles' : ' kg';
     const subOrders = plan.groups.reduce((s, g) => s + g.subOrders.length, 0);
@@ -952,6 +1134,10 @@ const ReviewSection = ({ batchType, plan, onViewForm }) => {
                 <Stat label="Groups" value={plan.groups.length} />
                 <Stat label="Sub-orders" value={subOrders} />
                 <Stat label="Jobs" value={plan.jobCount} />
+                {countText(plan.totalRequiredCount) && <Stat label="Output" value={countText(plan.totalRequiredCount)} tone="sky" />}
+                <Stat label={`Planned${plan.isPieces ? ' (bundles)' : ' kg'}`} value={fmtQty(plan.totalPlannedQty, plan.isPieces)} />
+                {!plan.isPieces && plan.totalFinishedQty > 0 && <Stat label="To produce kg" value={fmtKg(plan.totalOutputQty)} tone="green" />}
+                {!plan.isPieces && plan.totalFinishedQty > 0 && <Stat label="From stock kg" value={fmtKg(plan.totalFinishedQty)} tone="sky" />}
                 <Stat label="Postponed" value={plan.postponedCount} tone={plan.postponedCount ? 'amber' : 'slate'} />
                 {plan.unmatchedCount > 0 && <Stat label="No roll width" value={plan.unmatchedCount} tone="red" />}
                 {plan.missingGsmCount > 0 && <Stat label="Missing info" value={plan.missingGsmCount} tone="red" />}
@@ -960,9 +1146,11 @@ const ReviewSection = ({ batchType, plan, onViewForm }) => {
                 <>
                     {plan.groups.length === 0 ? (
                         <Empty label="No qualifying sub-orders for this type and date." />
-                    ) : plan.groups.map((g) => (
+                    ) : plan.groups.map((g) => {
+                        const postponedIds = new Set(g.postponed.map((so) => so.id));
+                        return (
                         <div key={g.key} className="bg-white rounded-xl border border-slate-200 p-3">
-                            <div className="flex items-start justify-between gap-2 mb-2">
+                            <div className="flex items-start justify-between gap-2 mb-1.5">
                                 <div className="min-w-0">
                                     <p className="font-semibold text-slate-800 text-sm break-words">{attrText(g.attrs)}</p>
                                     {g.rollWidth ? <div className="mt-1"><RollBadge width={g.rollWidth} /></div> : null}
@@ -970,52 +1158,13 @@ const ReviewSection = ({ batchType, plan, onViewForm }) => {
                                         {g.matchedCodeId ? `Item code #${g.matchedCodeId}` : 'No matching item code'}
                                     </p>
                                 </div>
-                                <span className="text-xs font-semibold text-slate-600 shrink-0 whitespace-nowrap">{fmtQty(g.requiredQty, plan.isPieces)}{unit}</span>
-                            </div>
-                            <div className="flex flex-wrap gap-1.5">
-                                {g.subOrders.map((so) => (
-                                    <SubOrderPill key={so.id} so={so} batchType={batchType} unit={unit} onViewForm={onViewForm} />
-                                ))}
-                            </div>
-                        </div>
-                    ))}
-                    <UnmatchedPanel subOrders={plan.unmatched} batchType={batchType} unit={unit} onViewForm={onViewForm} />
-                    <MissingGsmPanel subOrders={plan.missingGsm} batchType={batchType} unit={unit} onViewForm={onViewForm} />
-                </>
-            )}
-        </div>
-    );
-};
-
-// One chosen type's allocation summary (confirm step).
-const ConfirmSection = ({ batchType, plan, onViewForm }) => {
-    const [open, setOpen] = useState(false);
-    const unit = plan.isPieces ? ' bundles' : ' kg';
-    return (
-        <div className="space-y-2">
-            <TypeHeader batchType={batchType} open={open} onToggle={() => setOpen((o) => !o)} />
-            <div className="flex flex-wrap gap-2 text-sm">
-                <Stat label="Jobs" value={plan.jobCount} />
-                <Stat label={`Planned${plan.isPieces ? ' (bundles)' : ' kg'}`} value={fmtQty(plan.totalPlannedQty, plan.isPieces)} />
-                {!plan.isPieces && plan.totalFinishedQty > 0 && <Stat label="Output kg" value={fmtKg(plan.totalOutputQty)} tone="green" />}
-                {!plan.isPieces && plan.totalFinishedQty > 0 && <Stat label="From stock kg" value={fmtKg(plan.totalFinishedQty)} tone="sky" />}
-                <Stat label="Postponed" value={plan.postponedCount} tone={plan.postponedCount ? 'amber' : 'slate'} />
-                {plan.unmatchedCount > 0 && <Stat label="No roll width" value={plan.unmatchedCount} tone="red" />}
-                {plan.missingGsmCount > 0 && <Stat label="Missing info" value={plan.missingGsmCount} tone="red" />}
-            </div>
-            {open && (
-                <>
-                    {plan.groups.map((g) => (
-                        <div key={g.key} className="bg-white rounded-xl border border-slate-200 p-3">
-                            <div className="flex items-start justify-between gap-2 mb-1.5">
-                                <div className="min-w-0">
-                                    <p className="font-semibold text-slate-800 text-sm break-words">{attrText(g.attrs)}</p>
-                                    {g.rollWidth ? <div className="mt-1"><RollBadge width={g.rollWidth} /></div> : null}
-                                </div>
                                 <PriorityBadge priority={g.priority} />
                             </div>
                             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
-                                <span>Required {fmtQty(g.requiredQty, plan.isPieces)}{unit}</span>
+                                <span className="font-semibold text-slate-700">Required {fmtQty(g.requiredQty, plan.isPieces)}{unit}</span>
+                                {countText(g.requiredCount) && (
+                                    <span className="font-medium text-slate-600">Output {countText(g.requiredCount)}</span>
+                                )}
                                 <span>Fulfilled {fmtQty(g.fulfilledQty, plan.isPieces)}{unit}</span>
                                 {g.picks.length > 0 && (
                                     <span className="flex items-center gap-1">
@@ -1024,13 +1173,23 @@ const ConfirmSection = ({ batchType, plan, onViewForm }) => {
                                 )}
                             </div>
                             {!plan.isPieces && <QtyBar output={g.outputQty} finished={g.finishedQty} />}
+                            <div className="flex flex-wrap gap-1.5 mt-2">
+                                {g.subOrders.map((so) => (
+                                    <SubOrderPill
+                                        key={so.id} so={so} batchType={batchType} unit={unit}
+                                        tone={postponedIds.has(so.id) ? 'amber' : 'slate'}
+                                        onViewForm={onViewForm}
+                                    />
+                                ))}
+                            </div>
                             {g.postponed.length > 0 && (
                                 <p className="mt-1.5 text-[11px] text-amber-700 bg-amber-50 rounded px-2 py-1">
-                                    {g.postponed.length} sub-order(s) postponed → No_Stock_Identified
+                                    {g.postponed.length} sub-order(s) postponed → No_Stock_Identified (marked amber above)
                                 </p>
                             )}
                         </div>
-                    ))}
+                        );
+                    })}
                     <UnmatchedPanel subOrders={plan.unmatched} batchType={batchType} unit={unit} onViewForm={onViewForm} />
                     <MissingGsmPanel subOrders={plan.missingGsm} batchType={batchType} unit={unit} onViewForm={onViewForm} />
                 </>
