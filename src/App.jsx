@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users, Boxes, Warehouse, Printer, Scissors, Zap } from 'lucide-react';
+import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users, Boxes, Warehouse, Printer, Scissors, Zap, PackageSearch } from 'lucide-react';
 import SqlVisualization from './components/SqlVisualization';
 import DashboardList from './components/DashboardList';
 import DashboardView from './components/DashboardView';
@@ -392,6 +392,14 @@ const HomePage = ({ onNavigate, user, onLogout, impersonateEmail, setImpersonate
       hoverColor: 'hover:bg-teal-700'
     },
     {
+      id: 'track',
+      title: 'Track Order',
+      description: 'Look up an order\'s progress, or get a customer\'s tracking code',
+      icon: PackageSearch,
+      color: 'bg-green-600',
+      hoverColor: 'hover:bg-green-700'
+    },
+    {
       id: 'telecaller',
       title: 'Telecaller View',
       description: 'Manage telecaller operations and calls',
@@ -535,6 +543,7 @@ import SalesmanCustomerView from './pages/SalesmanCustomerView';
 import ProductionJobsView from './pages/ProductionJobsView';
 import InventoryView from './pages/InventoryView';
 import StageJobsView from './pages/StageJobsView';
+import OrderTrackingView from './pages/OrderTrackingView';
 
 // Design Confirmation View Component (Placeholder)
 const DesignConfirmationView = ({ onBack, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers }) => {
@@ -2652,6 +2661,20 @@ export default function App() {
 
 
   // --- VIEWS ---
+
+  // Public order tracking, checked before the auth gate: this page is embedded on
+  // srirajabags.in, where there is no login. Staff who happen to be signed in get
+  // the id -> code lookup and the floor detail on the same page.
+  if (location.pathname === '/track') {
+    return (
+      <OrderTrackingView
+        embedded={new URLSearchParams(location.search).get('embed') === '1'}
+        isStaff={isAuthenticated}
+        getHeaders={getHeaders}
+        getUrl={getUrl}
+      />
+    );
+  }
 
   if (isLoading) {
     return (
