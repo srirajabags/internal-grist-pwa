@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
     ArrowLeft, Warehouse, AlertCircle, Loader2, RefreshCw, Search, X, Package,
-    LayoutGrid, List, ChevronDown
+    LayoutGrid, List, ChevronDown, ShieldAlert
 } from 'lucide-react';
 import Card from '../components/Card';
+import InventoryTxnModal from '../components/InventoryTxnModal';
+import PendingAckModal from '../components/PendingAckModal';
 import Button from '../components/Button';
 import { ItemVisual, Dim } from '../components/itemVisuals';
 import { colourToCss, itemForm, typeName, FORM_LABEL } from '../utils/itemForms';
+import { SHEET_FORMS } from '../utils/txnDisplay';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 
@@ -46,6 +49,7 @@ const sqlByCode = (summaryTable) => `
 const sqlById = (summaryTable) => `
     SELECT
         it.Item_ID AS iid,
+        s.Item_ID AS item_ref,
         s.Item_Code AS code_ref,
         s.Location AS location,
         s.Available_Weight_Kg_ AS avail,
@@ -95,10 +99,10 @@ const PIECES_PER_BUNDLE = {
     sidepatty: 50, bottompatty: 50,
     manualhandle: 100, readymadehandle: 100, pressinghandle: 100
 };
-// Forms booked one sheet at a time, so their count needs no bundle multiplier.
-// Bottom-patty and model-number sheets belong here, not with the patties they
-// are cut into — booking them per bundle would overstate stock 50-fold.
-const SHEET_FORMS = new Set(['sheet', 'bottompattysheet', 'modelsheet']);
+// Forms booked one sheet at a time need no bundle multiplier (SHEET_FORMS, shared
+// with the transaction views): bottom-patty and model-number sheets belong there,
+// not with the patties they are cut into — booking them per bundle would
+// overstate stock 50-fold.
 
 // One sheet/piece (kg) = W(in) * H(in) * GSM / (1550 * 1000), since 1550 in² = 1 m².
 const PIECE_TO_KG_DIVISOR = 1550 * 1000;
@@ -157,14 +161,36 @@ const Chip = ({ children }) => (
     <span className="inline-flex px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-600">{children}</span>
 );
 
-const FormChip = ({ label, active, onClick }) => (
+// Type filter above the list. `form` draws the same illustration the rows use, so
+// the chips read as the item they filter to rather than as text alone.
+// The transaction count, as the way into an item's history — same affordance as
+// the table's TXNS cell.
+const TxnLink = ({ count, onClick }) => (
+    count > 0 ? (
+        <button
+            type="button"
+            onClick={onClick}
+            title="View transaction history"
+            className="font-semibold text-teal-700 underline decoration-dotted underline-offset-2 hover:text-teal-900 hover:decoration-solid"
+        >
+            {count} txn{count !== 1 ? 's' : ''}
+        </button>
+    ) : <span>{count} txns</span>
+);
+
+const FormChip = ({ label, form, active, onClick }) => (
     <button
         onClick={onClick}
-        className={`px-3.5 py-1.5 rounded-full text-sm font-medium whitespace-nowrap border transition-colors ${active
+        className={`inline-flex items-center gap-1.5 ${form ? 'pl-1.5 pr-3.5' : 'px-3.5'} py-1 rounded-full text-sm font-medium whitespace-nowrap border transition-colors ${active
             ? 'bg-teal-600 text-white border-teal-600'
             : 'bg-white text-slate-600 border-slate-200 hover:border-teal-300'
             }`}
     >
+        {form && (
+            <span className={`w-7 shrink-0 rounded-full ${active ? 'bg-white/15' : ''}`}>
+                <ItemVisual form={form} size="xs" />
+            </span>
+        )}
         {label}
     </button>
 );
@@ -174,12 +200,16 @@ const FormChip = ({ label, active, onClick }) => (
 // a meaningless colour swatch.
 const isModelCode = (r) => itemForm(r.itype, r.name) === 'modelsheet';
 
+// `flex` (not inline-flex) so the cell's width bounds it — an inline box sizes to
+// its content and a long colour name then prints straight over the next column.
 const ColourCell = ({ col, asModel }) => (asModel ? (
-    <span className="inline-flex px-1.5 py-0.5 rounded text-[11px] font-bold tracking-wide bg-slate-100 text-slate-700">
-        {col || '—'}
+    <span className="flex min-w-0">
+        <span className="truncate px-1.5 py-0.5 rounded text-[11px] font-bold tracking-wide bg-slate-100 text-slate-700">
+            {col || '—'}
+        </span>
     </span>
 ) : (
-    <span className="inline-flex items-center gap-1.5 min-w-0">
+    <span className="flex items-center gap-1.5 min-w-0">
         <span className="w-3 h-3 rounded-full border border-slate-300 shrink-0" style={{ background: colourToCss(col) }} />
         <span className="truncate">{col || '—'}</span>
     </span>
@@ -228,11 +258,25 @@ const ColFilter = ({ values, options, onToggle, onClear }) => {
 };
 
 // Compact tabular view of the same rows shown as cards — handy on desktop for
-// scanning many items at once. Horizontally scrollable on narrow screens.
-const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClear }) => {
+// scanning many items at once. The layout is fixed and column widths are
+// proportional, so the table always fits its container on desktop; below the
+// min-width it scrolls horizontally instead of squashing.
+// Widths are in table-column order and are only a ratio — the browser scales them
+// to the available width.
+const COL_WIDTHS = {
+    code: ['44px', '17%', '12%', '16%', '7%', '14%', '11%', '15%', '7%'],
+    id: ['7%', '44px', '14%', '10%', '13%', '6%', '12%', '9%', '13%', '10%', '6%']
+};
+// Below these the columns start wrapping, so the table scrolls instead. Desktop
+// containers are wider than both, so the fixed layout just fits.
+const MIN_TABLE_W = { code: 'min-w-[860px]', id: 'min-w-[1040px]' };
+
+const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClear, onOpenTxns }) => {
     const isRolls = tab === 'id';
-    const th = 'py-2 px-3 font-semibold whitespace-nowrap align-top';
-    const td = 'py-1.5 px-3 whitespace-nowrap';
+    // Text columns wrap so they can give width back; only figures stay on one line.
+    const th = 'py-2 px-2.5 font-semibold align-top';
+    const td = 'py-1.5 px-2.5';
+    const tdNum = `${td} whitespace-nowrap tabular-nums`;
     const filter = (key) => (
         <ColFilter
             values={colFilters[key] || []}
@@ -243,7 +287,10 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
     );
     return (
         <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
-            <table className="w-full text-sm">
+            <table className={`w-full table-fixed text-sm ${MIN_TABLE_W[tab] || MIN_TABLE_W.code}`}>
+                <colgroup>
+                    {(isRolls ? COL_WIDTHS.id : COL_WIDTHS.code).map((w, i) => <col key={i} style={{ width: w }} />)}
+                </colgroup>
                 <thead>
                     <tr className="text-left text-[11px] uppercase tracking-wider text-slate-500 bg-slate-50 border-b border-slate-200">
                         {isRolls && <th className={th}>Roll #</th>}
@@ -251,9 +298,9 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
                         <th className={th}>Item{filter('item')}</th>
                         <th className={th}>Material{filter('mat')}</th>
                         <th className={th}>Colour / Model{filter('col')}</th>
-                        <th className={`${th} text-right`}>GSM{filter('gsm')}</th>
+                        <th className={`${th} text-right whitespace-nowrap`}>GSM{filter('gsm')}</th>
                         <th className={th}>Location{filter('location')}</th>
-                        <th className={`${th} text-right`}>Size (W×H){filter('size')}</th>
+                        <th className={`${th} text-right`}>Size&nbsp;(W×H){filter('size')}</th>
                         <th className={`${th} text-right`}>Available</th>
                         {isRolls && <th className={`${th} text-right`}>Initial</th>}
                         <th className={`${th} text-right`}>Txns</th>
@@ -264,19 +311,19 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
                         const q = rowQty(r);
                         return (
                             <tr key={`${r.code_ref}-${r.iid ?? idx}`} className="hover:bg-slate-50">
-                                {isRolls && <td className={`${td} font-bold text-teal-800`}>#{r.iid || '—'}</td>}
-                                <td className="py-1 px-2">
+                                {isRolls && <td className={`${tdNum} font-bold text-teal-800`}>#{r.iid || '—'}</td>}
+                                <td className="py-1 px-1.5">
                                     <div className="w-9"><ItemVisual colour={r.col} type={r.itype} name={r.name} size="sm" /></div>
                                 </td>
                                 <td className={`${td} font-medium text-slate-800`}>{typeName(r.mat, r.itype, r.name)}</td>
                                 <td className={`${td} text-slate-600`}>{r.mat || '—'}</td>
-                                <td className="py-1.5 px-3 text-slate-600 max-w-[150px]"><ColourCell col={r.col} asModel={isModelCode(r)} /></td>
-                                <td className={`${td} text-right text-slate-600 tabular-nums`}>{r.gsm || '—'}</td>
+                                <td className={`${td} text-slate-600`}><ColourCell col={r.col} asModel={isModelCode(r)} /></td>
+                                <td className={`${tdNum} text-right text-slate-600`}>{r.gsm || '—'}</td>
                                 <td className={`${td} text-slate-600`}>{r.location || '—'}</td>
-                                <td className={`${td} text-right text-slate-600 tabular-nums`}>
+                                <td className={`${tdNum} text-right text-slate-600`}>
                                     {sizeLabel(r)}
                                 </td>
-                                <td className={`${td} text-right`}>
+                                <td className={`${tdNum} text-right`}>
                                     <span className="font-bold text-teal-700 tabular-nums" title={q.derived ? 'Converted from count' : undefined}>
                                         {q.derived && <span className="font-normal text-slate-400">≈ </span>}
                                         {fmtKg(q.kg)}<span className="text-xs font-normal text-slate-400"> kg</span>
@@ -285,8 +332,19 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
                                         <div className="text-[11px] text-slate-400 tabular-nums">{q.count} {q.countUnit}</div>
                                     )}
                                 </td>
-                                {isRolls && <td className={`${td} text-right text-slate-500 tabular-nums`}>{fmtKg(r.initial)} kg</td>}
-                                <td className={`${td} text-right text-slate-500 tabular-nums`}>{num(r.cnt)}</td>
+                                {isRolls && <td className={`${tdNum} text-right text-slate-500`}>{fmtKg(r.initial)} kg</td>}
+                                <td className={`${tdNum} text-right`}>
+                                    {num(r.cnt) > 0 ? (
+                                        <button
+                                            type="button"
+                                            onClick={() => onOpenTxns(r)}
+                                            title="View transaction history"
+                                            className="font-semibold text-teal-700 underline decoration-dotted underline-offset-2 hover:text-teal-900 hover:decoration-solid"
+                                        >
+                                            {num(r.cnt)}
+                                        </button>
+                                    ) : <span className="text-slate-400">0</span>}
+                                </td>
                             </tr>
                         );
                     })}
@@ -307,6 +365,12 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     const [view, setView] = useState(defaultView); // 'grid' (cards) | 'list' (table)
     // Per-column dropdown filters for the table view: { mat, col, gsm, location }.
     const [colFilters, setColFilters] = useState({});
+    // Row whose Inventory_Transactions history is open, or null.
+    const [txnRow, setTxnRow] = useState(null);
+    // Transactions the incharge has not signed off yet — they do not count towards
+    // stock, so the queue is surfaced as an action button while any are waiting.
+    const [pendingAck, setPendingAck] = useState(0);
+    const [ackOpen, setAckOpen] = useState(false);
 
     const fetchData = async (activeTab) => {
         setLoading(true);
@@ -336,8 +400,32 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
         }
     };
 
+    // How many transactions are still waiting on the incharge. Cheap enough to
+    // re-run whenever the list is refreshed or something is signed off.
+    const fetchPendingAck = async () => {
+        try {
+            const headers = await getHeaders();
+            const res = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
+                method: 'POST',
+                headers: { ...headers, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sql: `SELECT count(*) AS n FROM Inventory_Transactions
+                          WHERE Incharge_Ack IS NULL OR Incharge_Ack = 0`,
+                    args: []
+                })
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            setPendingAck(num((data.records || [])[0]?.fields?.n));
+        } catch {
+            // The queue button is an extra; the inventory list stands on its own.
+        }
+    };
+
+    const refresh = (activeTab) => { fetchData(activeTab); fetchPendingAck(); };
+
     useEffect(() => {
-        fetchData(tab);
+        refresh(tab);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [tab]);
 
@@ -442,7 +530,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                         <Button variant="secondary" onClick={() => setShowSearch((s) => !s)} className="!px-2.5 shrink-0">
                             <Search size={18} />
                         </Button>
-                        <Button variant="secondary" onClick={() => fetchData(tab)} disabled={loading} className="!px-2.5 shrink-0">
+                        <Button variant="secondary" onClick={() => refresh(tab)} disabled={loading} className="!px-2.5 shrink-0">
                             <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
                         </Button>
                     </div>
@@ -501,7 +589,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                             <div className="flex gap-2 w-max">
                                 <FormChip label="All Types" active={selectedForm === ''} onClick={() => setSelectedForm('')} />
                                 {presentForms.map((f) => (
-                                    <FormChip key={f} label={FORM_LABEL[f]} active={selectedForm === f} onClick={() => setSelectedForm(f)} />
+                                    <FormChip key={f} label={FORM_LABEL[f]} form={f} active={selectedForm === f} onClick={() => setSelectedForm(f)} />
                                 ))}
                             </div>
                         </div>
@@ -565,6 +653,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                     rows={filtered} tab={tab}
                                     colFilters={colFilters} options={colOptions}
                                     onColToggle={toggleColFilter} onColClear={clearColFilter}
+                                    onOpenTxns={setTxnRow}
                                 />
                             ) : tab === 'code' ? (
                                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -600,7 +689,8 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                                     </span>
                                                     <span className="text-xs text-slate-400"> kg available</span>
                                                     <p className="text-[11px] text-slate-400 mt-0.5">
-                                                        {q.hasCount ? `${q.count} ${q.countUnit} · ` : ''}{num(r.cnt)} txn{num(r.cnt) !== 1 ? 's' : ''}
+                                                        {q.hasCount ? `${q.count} ${q.countUnit} · ` : ''}
+                                                        <TxnLink count={num(r.cnt)} onClick={() => setTxnRow(r)} />
                                                     </p>
                                                 </div>
                                             </Card>
@@ -642,7 +732,9 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                             <div className="mt-3 pt-2 border-t border-slate-100 text-center">
                                                 <span className="text-xl font-bold text-teal-700">{fmtKg(r.avail)}</span>
                                                 <span className="text-xs text-slate-400"> kg available</span>
-                                                <p className="text-[11px] text-slate-400 mt-0.5">Initial {fmtKg(r.initial)} kg · {num(r.cnt)} txn{num(r.cnt) !== 1 ? 's' : ''}</p>
+                                                <p className="text-[11px] text-slate-400 mt-0.5">
+                                                    Initial {fmtKg(r.initial)} kg · <TxnLink count={num(r.cnt)} onClick={() => setTxnRow(r)} />
+                                                </p>
                                             </div>
                                         </Card>
                                     ))}
@@ -652,6 +744,41 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                     )}
                 </div>
             </main>
+
+            {/* Urgent action: stock booked but not yet counted. Hidden entirely when
+                the queue is empty — there is nothing to open. */}
+            {pendingAck > 0 && !ackOpen && (
+                <button
+                    onClick={() => setAckOpen(true)}
+                    title={`${pendingAck} transaction(s) awaiting acknowledgement`}
+                    className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-2 pl-3 pr-4 py-3 rounded-full bg-amber-500 text-white font-semibold shadow-lg shadow-amber-500/30 hover:bg-amber-600 active:scale-95 transition"
+                >
+                    <span className="relative flex items-center justify-center">
+                        <span className="absolute inline-flex w-full h-full rounded-full bg-white/40 animate-ping" />
+                        <ShieldAlert size={20} className="relative" />
+                    </span>
+                    <span className="text-sm">{pendingAck} to acknowledge</span>
+                </button>
+            )}
+
+            {ackOpen && (
+                <PendingAckModal
+                    onClose={() => setAckOpen(false)}
+                    onAcknowledged={() => refresh(tab)}
+                    getHeaders={getHeaders}
+                    getUrl={getUrl}
+                />
+            )}
+
+            {txnRow && (
+                <InventoryTxnModal
+                    row={txnRow}
+                    qty={rowQty(txnRow)}
+                    onClose={() => setTxnRow(null)}
+                    getHeaders={getHeaders}
+                    getUrl={getUrl}
+                />
+            )}
         </div>
     );
 };

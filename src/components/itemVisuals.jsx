@@ -5,11 +5,13 @@ import { colourToCss, shade, itemForm } from '../utils/itemForms';
 // gussets, handle) tinted with the item colour. Pure helpers/constants live in
 // ../utils/itemForms so this file only exports components (fast-refresh safe).
 
-const HEIGHT_CLASS = { sm: 'h-10', md: 'h-16', lg: 'h-20' };
+const HEIGHT_CLASS = { xs: 'h-6', sm: 'h-10', md: 'h-16', lg: 'h-20' };
 
-// SVG illustration for a form, tinted with the item colour.
-export const ItemVisual = ({ colour, type, name, size = 'md' }) => {
-    const form = itemForm(type, name);
+// SVG illustration for a form, tinted with the item colour. `form` names the form
+// directly — for chips and legends that stand for a form rather than a stock row;
+// otherwise it is derived from the item's type/name.
+export const ItemVisual = ({ colour, type, name, size = 'md', form: formProp }) => {
+    const form = formProp || itemForm(type, name);
     // Model-number sheets carry the model code in the colour field — a customer
     // picks either a colour or a model, never both — and the stock itself is
     // always white. Tint from that, or colourToCss would hash "F8" into an
