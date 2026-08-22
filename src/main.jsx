@@ -18,8 +18,16 @@ createRoot(document.getElementById('root')).render(
     <Auth0Provider
       domain={domain}
       clientId={clientId}
+      // Without these the SDK keeps tokens in memory only, so every page refresh
+      // drops the session and falls back to a silent-auth iframe -- which modern
+      // browsers block as a third-party cookie, hence the surprise logouts.
+      // localStorage survives the reload; the refresh token renews it after that.
+      cacheLocation="localstorage"
+      useRefreshTokens
+      useRefreshTokensFallback
       authorizationParams={{
         redirect_uri: window.location.origin,
+        scope: 'openid profile email offline_access',
       }}
     >
       <BrowserRouter>
