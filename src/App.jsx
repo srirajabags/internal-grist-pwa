@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users, Boxes, Warehouse } from 'lucide-react';
+import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users, Boxes, Warehouse, Printer, Scissors } from 'lucide-react';
 import SqlVisualization from './components/SqlVisualization';
 import DashboardList from './components/DashboardList';
 import DashboardView from './components/DashboardView';
@@ -365,6 +365,22 @@ const HomePage = ({ onNavigate, user, onLogout, impersonateEmail, setImpersonate
       hoverColor: 'hover:bg-amber-700'
     },
     {
+      id: 'printing',
+      title: 'Printing Jobs',
+      description: 'Print what production has cut',
+      icon: Printer,
+      color: 'bg-fuchsia-600',
+      hoverColor: 'hover:bg-fuchsia-700'
+    },
+    {
+      id: 'stitching',
+      title: 'Stitching Jobs',
+      description: 'Stitch printed sheets into finished bags',
+      icon: Scissors,
+      color: 'bg-violet-600',
+      hoverColor: 'hover:bg-violet-700'
+    },
+    {
       id: 'inventory',
       title: 'Inventory',
       description: 'Track current stock from inventory transactions',
@@ -491,6 +507,7 @@ import SalesmanView from './pages/SalesmanView';
 import SalesmanCustomerView from './pages/SalesmanCustomerView';
 import ProductionJobsView from './pages/ProductionJobsView';
 import InventoryView from './pages/InventoryView';
+import StageJobsView from './pages/StageJobsView';
 
 // Design Confirmation View Component (Placeholder)
 const DesignConfirmationView = ({ onBack, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers }) => {
@@ -2631,6 +2648,28 @@ export default function App() {
               onBack={() => navigate('/')}
               user={derivedUser}
               onLogout={handleLogout}
+              getHeaders={getHeaders}
+              getUrl={getUrl}
+            />
+          }
+        />
+        <Route
+          path="/printing"
+          element={
+            <StageJobsView
+              stage="printing"
+              onBack={() => navigate('/')}
+              getHeaders={getHeaders}
+              getUrl={getUrl}
+            />
+          }
+        />
+        <Route
+          path="/stitching"
+          element={
+            <StageJobsView
+              stage="stitching"
+              onBack={() => navigate('/')}
               getHeaders={getHeaders}
               getUrl={getUrl}
             />
