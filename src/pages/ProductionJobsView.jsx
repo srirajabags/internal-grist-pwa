@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import {
     ArrowLeft, Boxes, AlertCircle, Loader2, RefreshCw, Package,
-    PlayCircle, CheckCircle2, Circle, Clock, ChevronRight, Layers, FileText, ArrowRight, Plus, X, Warehouse
+    PlayCircle, CheckCircle2, Circle, Clock, ChevronRight, Layers, FileText, ArrowRight, Plus, X, Warehouse,
+    AlertTriangle
 } from 'lucide-react';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import CreateBatchModal from '../components/CreateBatchModal';
+import OverageDriftModal from '../components/OverageDriftModal';
+import { checkOverageDrift } from '../utils/overageDrift';
 import { ItemVisual, Dim } from '../components/itemVisuals';
 import { itemForm, FORM_LABEL, splitJobType } from '../utils/itemForms';
 import { outputTypeFor, ROLL_WIDTH_TYPES, effectiveQty } from '../utils/productionBatch';
@@ -296,6 +299,17 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     const [updatingBatchId, setUpdatingBatchId] = useState(null);
     const [showCreate, setShowCreate] = useState(false);
     const [completingJob, setCompletingJob] = useState(null);
+    // The app's PRODUCTION_OVERAGE vs. the OVERAGE dict inside the Grist
+    // Required_Quantity_Kg_ formula. They plan the same runs, so a mismatch is
+    // surfaced rather than left to be discovered in a job's numbers.
+    const [drift, setDrift] = useState(null);
+    const [driftOpen, setDriftOpen] = useState(false);
+
+    const runDriftCheck = async () => {
+        const result = await checkOverageDrift({ docId: DOC_ID, getHeaders, getUrl });
+        setDrift(result);
+        if (result.ok) setDriftOpen(false);
+    };
 
     // Fetch the whole tree in a single joined query. `silent` skips the full-page
     // spinner (used after an update to refresh data without flashing the tree).
@@ -328,6 +342,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
 
     useEffect(() => {
         fetchData();
+        runDriftCheck();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -666,7 +681,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                             <span className="hidden sm:inline">Create Batch</span>
                         </Button>
                     )}
-                    <Button variant="secondary" onClick={() => fetchData()} disabled={loading} className="!px-2.5 shrink-0">
+                    <Button variant="secondary" onClick={() => { fetchData(); runDriftCheck(); }} disabled={loading} className="!px-2.5 shrink-0">
                         <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
                     </Button>
                 </div>
@@ -678,6 +693,30 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                     getUrl={getUrl}
                     onClose={() => setShowCreate(false)}
                     onCreated={() => { setShowCreate(false); fetchData(); }}
+                />
+            )}
+
+            {/* Config drift: the app plans with one overage, Grist reports another.
+                Hidden entirely while they agree. */}
+            {drift && !drift.ok && !driftOpen && (
+                <button
+                    onClick={() => setDriftOpen(true)}
+                    title="Production overage differs between the app and the Grist formula"
+                    className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-2 pl-3 pr-4 py-3 rounded-full bg-orange-500 text-white font-semibold shadow-lg shadow-orange-500/30 hover:bg-orange-600 active:scale-95 transition"
+                >
+                    <span className="relative flex items-center justify-center">
+                        <span className="absolute inline-flex w-full h-full rounded-full bg-white/40 animate-ping" />
+                        <AlertTriangle size={20} className="relative" />
+                    </span>
+                    <span className="text-sm">Overage out of step</span>
+                </button>
+            )}
+
+            {driftOpen && drift && (
+                <OverageDriftModal
+                    drift={drift}
+                    onClose={() => setDriftOpen(false)}
+                    onRecheck={runDriftCheck}
                 />
             )}
 
