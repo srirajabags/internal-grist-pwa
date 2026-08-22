@@ -107,6 +107,29 @@ export const OUTPUT_REQUIREMENTS = [
     }
 ];
 
+// --- Extra production per batch type ---------------------------------------
+// Some processes have to start more than the orders need: misprints and cutting
+// wastage mean a run of 3,000 sheets is put on as 3,300. The fraction here is
+// added to the requirement of every group of that batch type, so it carries
+// through the roll allocation, the planned output and the counts on screen.
+// 0 (or a type left out) = make exactly what the orders need.
+export const PRODUCTION_OVERAGE = {
+    'ROLLS TO SHEETS': 0.10,          // misprints + cutting wastage
+    'ROLLS TO MODEL SHEETS': 0.10,   // printed the same way, same allowance
+    'ROLLS TO DCUT': 0,
+    'ROLLS TO UCUT': 0,
+    'ROLLS TO WCUT': 0,
+    'ROLLS TO SIDEPATTY': 0,
+    'ROLLS TO HANDLES': 0,
+    'ROLLS TO PRESSING HANDLES': 0
+};
+
+export const overageRate = (batchType) => num(PRODUCTION_OVERAGE[batchType]) || 0;
+// Note this lifts the whole requirement, including any part met from finished
+// godown stock — ready stock carries no misprint risk, so if that matters the
+// allowance should be split out to the roll-produced share only.
+const withOverage = (batchType, qty) => qty * (1 + overageRate(batchType));
+
 // Pieces per bundle, by output item type — how the godown counts that form
 // (mirrors InventoryView). Sheets and bags are counted one at a time.
 export const PIECES_PER_BUNDLE = {
@@ -406,7 +429,10 @@ export const outputCount = (batchType, so) => {
     const bags = bagCount(batchType, so);
     if (bags == null) return null;
     const perBundle = PIECES_PER_BUNDLE[norm(outType)] || 1;
-    return { count: (bags * perBag) / perBundle, exact: norm(so.Quantity_Type) === 'PIECES' };
+    return {
+        count: withOverage(batchType, (bags * perBag) / perBundle),
+        exact: norm(so.Quantity_Type) === 'PIECES'
+    };
 };
 
 // Roll the per-sub-order counts up to a group: the total, whether every part of it
@@ -426,7 +452,10 @@ export const groupOutputCount = (batchType, subOrders) => {
 // batch allocates in (bundles for handle batches, kg otherwise). Side/bottom patty
 // convert their strip geometry to kg; a STITCHING sheet order quoted in pieces is
 // converted to kg; everything else as-is.
-export const effectiveQty = (batchType, so) => {
+export const effectiveQty = (batchType, so) => withOverage(batchType, orderedQty(batchType, so));
+
+// What the orders themselves call for, before any production allowance.
+const orderedQty = (batchType, so) => {
     if (isPieceType(batchType)) {
         const bags = bagPieces(so);
         if (bags == null) return 0;   // un-sizable -> flagged, contributes nothing

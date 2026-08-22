@@ -7,7 +7,7 @@ import Button from './Button';
 import {
     BATCH_TYPES, HARD_START_DATE, OUTPUT_TYPE, PRIORITY_LABEL, buildPlan,
     effectiveQty, needsPieceConversion, cannotConvertQty, cannotSizePieces, cannotSizePatty, BUNDLE_SIZE,
-    typeNeedsSubOrder, missingInfoFields, outputCount
+    typeNeedsSubOrder, missingInfoFields, outputCount, overageRate
 } from '../utils/productionBatch';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
@@ -848,7 +848,7 @@ const CSV_HEADERS = [
     'Batch Type', 'Output Type', 'Job Name', 'Job Item Code ID',
     'Group', 'Group Material', 'Group Colour', 'Group GSM', 'Group Width (in)', 'Roll Width (in)',
     'Unit', 'Group Required', 'Group Fulfilled', 'Group To Produce', 'Group From Stock',
-    'Group Required Count', 'Count Unit',
+    'Group Required Count', 'Count Unit', 'Production Overage %',
     'Priority', 'Priority Label', 'Stock Items', 'Allocation Detail', 'Group Postponed Count',
     'Sub-Order Status', 'Sub-Order ID', 'Order ID', 'Shop', 'Model', 'Roll Material',
     'Bag Colour', 'Bag GSM', 'Bag Width', 'Bag Height', 'Sheet Size',
@@ -874,7 +874,7 @@ const csvSubOrderCells = (so, batchType, unit, status) => {
 
 // Blank group/job/allocation cells (everything after Batch Type + Output Type),
 // for sub-orders that never reached a group.
-const CSV_EMPTY_GROUP_CELLS = new Array(20).fill('');
+const CSV_EMPTY_GROUP_CELLS = new Array(21).fill('');
 
 const buildCsvRows = (plans, codeNames) => {
     const rows = [];
@@ -896,6 +896,7 @@ const buildCsvRows = (plans, codeNames) => {
                 unitLabel, fmtQty(g.requiredQty, plan.isPieces), fmtQty(g.fulfilledQty, plan.isPieces),
                 plan.isPieces ? '' : fmtKg(g.outputQty), plan.isPieces ? '' : fmtKg(g.finishedQty),
                 Math.ceil(g.requiredCount.count - 1e-9), g.requiredCount.unit,
+                Math.round(overageRate(batchType) * 100),
                 g.priority, PRIORITY_LABEL[g.priority] || '', itemIds.length, allocation, g.postponed.length
             ];
             for (const so of g.subOrders) {
@@ -1117,6 +1118,14 @@ const TypeHeader = ({ batchType, open, onToggle }) => (
             : <ChevronRight size={14} className="text-slate-400 shrink-0" />}
         <span className="text-sm font-bold text-slate-800">{batchType}</span>
         <span className="text-[11px] text-slate-400">→ {OUTPUT_TYPE[batchType]}</span>
+        {overageRate(batchType) > 0 && (
+            <span
+                className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md text-orange-700 bg-orange-50 ring-1 ring-orange-200"
+                title="Extra production added for misprints and wastage — included in every figure below"
+            >
+                +{Math.round(overageRate(batchType) * 100)}% wastage
+            </span>
+        )}
         <span className="ml-auto text-[11px] text-slate-400">{open ? 'Hide' : 'Details'}</span>
     </button>
 );
