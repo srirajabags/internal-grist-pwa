@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
     ArrowLeft, Warehouse, AlertCircle, Loader2, RefreshCw, Search, X, Package,
-    LayoutGrid, List, ChevronDown, ShieldAlert, Plus, Minus, ScanLine
+    LayoutGrid, List, ChevronDown, ShieldAlert, Plus, Minus, ScanLine, PackagePlus
 } from 'lucide-react';
 import Card from '../components/Card';
 import InventoryTxnModal from '../components/InventoryTxnModal';
 import PendingAckModal from '../components/PendingAckModal';
 import StockAdjustModal from '../components/StockAdjustModal';
 import QrScanModal from '../components/QrScanModal';
+import NewRollStockModal from '../components/NewRollStockModal';
 import Button from '../components/Button';
 import { ItemVisual, Dim } from '../components/itemVisuals';
 import { colourToCss, itemForm, typeName, FORM_LABEL } from '../utils/itemForms';
@@ -401,6 +402,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     // Roll being booked in or out, with the direction: { row, mode }.
     const [adjusting, setAdjusting] = useState(null);
     const [scanning, setScanning] = useState(false);
+    const [newStock, setNewStock] = useState(false);
     const [scanError, setScanError] = useState(null);
 
     const fetchData = async (activeTab) => {
@@ -620,6 +622,16 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                         <Button variant="secondary" onClick={() => setShowSearch((s) => !s)} className="!px-2.5 shrink-0">
                             <Search size={18} />
                         </Button>
+                        {tab === 'id' && (
+                            <Button
+                                variant="primary"
+                                onClick={() => setNewStock(true)}
+                                className="!px-2.5 shrink-0 bg-sky-600 hover:bg-sky-700"
+                                title="Book a new roll into the godown"
+                            >
+                                <PackagePlus size={18} />
+                            </Button>
+                        )}
                         {tab === 'id' && (
                             <Button
                                 variant="primary"
@@ -903,6 +915,15 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
 
             {scanning && (
                 <QrScanModal onClose={() => setScanning(false)} onScan={openScannedRoll} />
+            )}
+
+            {newStock && (
+                <NewRollStockModal
+                    onClose={() => setNewStock(false)}
+                    onSaved={() => refresh(tab)}
+                    getHeaders={getHeaders}
+                    getUrl={getUrl}
+                />
             )}
 
             {adjusting && (
