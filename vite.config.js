@@ -89,7 +89,11 @@ export default defineConfig({
         ]
       },
       workbox: {
-        navigateFallbackDenylist: [/\/api/]
+        navigateFallbackDenylist: [/\/api/],
+        // The app bundle sits just over Workbox's 2 MiB default, which fails the
+        // build rather than warning about it, so a few KB of new code could break
+        // a deploy.
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024
       }
     })
   ],
