@@ -4,6 +4,7 @@ import {
     Search, Layers, Package, CalendarDays, ClipboardCheck, Maximize2, Download
 } from 'lucide-react';
 import Button from './Button';
+import { countToKg } from '../utils/txnDisplay';
 import {
     BATCH_TYPES, HARD_START_DATE, OUTPUT_TYPE, PRIORITY_LABEL, buildPlan,
     effectiveQty, needsPieceConversion, cannotConvertQty, cannotSizePieces, cannotSizePatty, BUNDLE_SIZE,
@@ -19,6 +20,7 @@ const ACKED_GODOWN_FILTER = `
                     AND s.Incharge_Ack = 1
 `;
 const SUMMARY_BY_ID_TABLE = 'Inventory_Transactions_summary_Incharge_Ack_Item_Code_Item_ID_Location';
+const SUMMARY_BY_CODE_TABLE = 'Inventory_Transactions_summary_Incharge_Ack_Item_Code_Location';
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const truthy = (v) => v === true || v === 1 || v === '1' || v === 'true';
@@ -463,26 +465,50 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
             );
             // Readable code per item-code id — the job name shown in ProductionJobsView.
             setCodeNames(new Map(itemCodes.map((ic) => [num(ic.id), ic.Item_Code])));
+            // Godown stock is often booked only as a count -- every sheet in BAGS
+            // GODOWN carries 0 kg and a sheet count -- so the count comes along and
+            // the weight is derived from it where there is none. Filtering on
+            // Available_Weight_Kg_ here made all of that stock invisible, and every
+            // order fell through to cutting a fresh roll.
             const invRows = await runSql(
                 `SELECT s.Item_ID AS itemId, s.Item_Code AS codeId,
                         ic.Type AS type, ic.Material AS material, ic.Colour AS colour,
                         ic.GSM AS gsm, ic.Width_Inches_ AS width,
-                        s.Available_Weight_Kg_ AS availWeight
+                        ic.Height_Inches_ AS height,
+                        ic.Item_Code AS name,
+                        s.Available_Weight_Kg_ AS availWeight,
+                        -- Only the by-code summary carries counts; each non-roll code
+                        -- has exactly one physical item, so this maps one to one.
+                        COALESCE((
+                            SELECT c.Available_Count_Bundles_
+                            FROM ${SUMMARY_BY_CODE_TABLE} c
+                            WHERE c.Item_Code = s.Item_Code AND c.Location = s.Location
+                              AND c.Incharge_Ack = 1
+                            LIMIT 1
+                        ), 0) AS availCount
                  FROM ${SUMMARY_BY_ID_TABLE} s
                  LEFT JOIN Inventory_Item_Codes ic ON ic.id = s.Item_Code
                  WHERE s.Item_Code != 0
-                    AND ${ACKED_GODOWN_FILTER}
-                    AND s.Available_Weight_Kg_ > 0`
+                    AND ${ACKED_GODOWN_FILTER}`
             );
-            const inventory = invRows.map((r) => ({
-                itemId: num(r.itemId),
-                codeId: num(r.codeId),
-                type: r.type, material: r.material, colour: r.colour, gsm: r.gsm, width: r.width,
-                availWeight: num(r.availWeight),
-                // Per-physical-item bundle counts aren't available; piece-type
-                // (sidepatty/handle) allocation therefore stays conservative.
-                availBundles: 0
-            }));
+            const inventory = invRows.map((r) => {
+                const count = num(r.availCount);
+                const booked = num(r.availWeight);
+                return {
+                    itemId: num(r.itemId),
+                    codeId: num(r.codeId),
+                    type: r.type, material: r.material, colour: r.colour, gsm: r.gsm,
+                    width: r.width, height: r.height,
+                    // Booked weight leads; a count-only line converts from geometry.
+                    availWeight: booked > 0
+                        ? booked
+                        : countToKg({ w: r.width, h: r.height, gsm: r.gsm, type: r.type, name: r.name, count }),
+                    // Bundle counts are per item code, which for the piece types is
+                    // per physical item too -- so handle allocation no longer has to
+                    // assume nothing is in stock.
+                    availBundles: count
+                };
+            }).filter((r) => r.availWeight > 0 || r.availBundles > 0);
 
             // 4. Build a plan per chosen type, sharing one working inventory so a
             //    physical roll/sheet consumed by an earlier type isn't offered again

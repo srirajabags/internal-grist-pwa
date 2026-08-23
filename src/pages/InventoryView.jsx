@@ -14,7 +14,7 @@ import { makeItemLabelPng, itemLabelLines, makeLabelsZip } from '../utils/itemLa
 import Button from '../components/Button';
 import { ItemVisual, Dim } from '../components/itemVisuals';
 import { colourToCss, itemForm, typeName, FORM_LABEL } from '../utils/itemForms';
-import { SHEET_FORMS } from '../utils/txnDisplay';
+import { SHEET_FORMS, PIECES_PER_BUNDLE, pieceKg, countToKg } from '../utils/txnDisplay';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 
@@ -100,31 +100,12 @@ const DERIVED_COL = {
 // stock, though, is booked by hand in either weight or count; a count-only line is
 // converted to kg via piece geometry. Sheets are counted as individual sheets;
 // patty/handle in bundles of a fixed piece count.
-const PIECES_PER_BUNDLE = {
-    sidepatty: 50, bottompatty: 50,
-    manualhandle: 100, readymadehandle: 100, pressinghandle: 100
-};
 // Forms booked one sheet at a time need no bundle multiplier (SHEET_FORMS, shared
 // with the transaction views): bottom-patty and model-number sheets belong there,
 // not with the patties they are cut into — booking them per bundle would
-// overstate stock 50-fold.
-
-// One sheet/piece (kg) = W(in) * H(in) * GSM / (1550 * 1000), since 1550 in² = 1 m².
-const PIECE_TO_KG_DIVISOR = 1550 * 1000;
-const pieceKg = (r) => {
-    const w = num(r.w), h = num(r.h), gsm = num(r.gsm);
-    return (w && h && gsm) ? w * h * gsm / PIECE_TO_KG_DIVISOR : 0;   // 0 -> geometry missing
-};
-
-// kg implied by a count-booked line: sheets store a sheet count, patty/handle a
-// bundle count (× pieces-per-bundle). 0 when geometry is missing.
-const countToKg = (r, form) => {
-    const per = pieceKg(r);
-    if (!per) return 0;
-    if (SHEET_FORMS.has(form)) return num(r.bundles) * per;
-    const ppb = PIECES_PER_BUNDLE[form];
-    return ppb ? num(r.bundles) * ppb * per : 0;
-};
+// overstate stock 50-fold. The conversion itself lives in utils/txnDisplay, so the
+// stock views and the production allocator read counted stock the same way.
+const rowCountToKg = (r) => countToKg({ w: r.w, h: r.h, gsm: r.gsm, type: r.itype, name: r.name, count: r.bundles });
 
 // Quantity for a row, always led by kg. Booked weight wins; a count-only line is
 // converted to kg from geometry (`derived`), so kg stays the lead denomination.
@@ -133,7 +114,7 @@ const rowQty = (r) => {
     const form = itemForm(r.itype, r.name);
     const recorded = num(r.avail);
     const count = num(r.bundles);
-    const kg = recorded > 0 ? recorded : countToKg(r, form);
+    const kg = recorded > 0 ? recorded : rowCountToKg(r);
     return {
         kg,
         count,

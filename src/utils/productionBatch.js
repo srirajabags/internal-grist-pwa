@@ -528,6 +528,38 @@ export const groupAttrs = (batchType, so) => {
             height: batchType === 'ROLLS TO PRESSING HANDLES' ? '14.5' : '13'
         };
     }
+    // A model-number sheet is stocked under the customer's model number, which the
+    // sub-order carries in Bag_Colour (e.g. K10), so finished stock is searched for
+    // on that. Nothing is printed with a model number on a coloured roll: the raw
+    // material is plain white NW VIRGIN, cut to the width the sheet size needs.
+    if (batchType === 'ROLLS TO MODEL SHEETS') {
+        const rw = requiredRollWidth(batchType, so);
+        const dims = parseSheetSize(so.Sheet_Size);
+        const [sheetW, sheetH] = dims ? [Math.min(...dims), Math.max(...dims)] : ['', ''];
+        return {
+            material: 'NW VIRGIN',
+            colour: so.Bag_Colour || '',          // the model number
+            gsm: so.Bag_GSM || '',
+            width: typeof rw === 'number' ? String(rw) : '',
+            // Ready model sheets are held at their own size, not the roll's.
+            finishedWidth: String(sheetW),
+            finishedHeight: String(sheetH),
+            // The roll behind them is always plain white.
+            rollColour: 'WHITE',
+            // Failing ready model sheets, a plain white sheet of the same size can
+            // be printed into one. Either sheet type will do -- what matters is
+            // that it is white NW VIRGIN and the right size.
+            blank: {
+                types: ['SHEET', 'MODEL NUMBER SHEET'],
+                material: 'NW VIRGIN',
+                colour: 'WHITE',
+                gsm: so.Bag_GSM || '',
+                width: String(sheetW),
+                height: String(sheetH)
+            }
+        };
+    }
+
     // Roll-width types group by the required roll width, not the bag/sheet size, so
     // every sub-order cuttable from the same roll lands in one job.
     if (ROLL_WIDTH_TYPES.has(batchType)) {
@@ -585,14 +617,23 @@ export const softMatchItemCode = (attrs, itemCodes, batchType, outputType) => {
 // Available stock relevant to a group, split into finished (output-form) and raw
 // rolls. `inventory` rows are joined summary rows: { itemId, codeId, type,
 // material, colour, gsm, width, availWeight, availBundles }.
-const relevantStock = (attrs, inventory, batchType, outputType) => {
-    const wantMat = MATERIAL_MAP[norm(attrs.material)] || null;
-    const matchCore = (r) =>
-        (wantMat ? norm(r.material) === norm(wantMat) : false) &&
-        norm(r.colour) === norm(attrs.colour) &&
-        norm(r.gsm) === norm(attrs.gsm);
-    const matchAttrs = (r, width) => matchCore(r) && (width == null || norm(r.width) === norm(width));
+// Finished output and the rolls it is cut from usually share the group's
+// attributes, but not always: a model-number sheet is stocked under the customer's
+// model (its "colour") while the roll it comes from is plain white NW VIRGIN. The
+// group therefore carries optional finished*/roll* overrides, and each side is
+// matched against its own specification.
+const matchesSpec = (r, spec) => {
+    const wantMat = MATERIAL_MAP[norm(spec.material)] || null;
+    return (wantMat ? norm(r.material) === norm(wantMat) : false)
+        && norm(r.colour) === norm(spec.colour)
+        && norm(r.gsm) === norm(spec.gsm)
+        && (spec.width == null || norm(r.width) === norm(spec.width))
+        // Height only where the group asks for it: two model sheets can share a
+        // width (16x18 and 16x19) and are different stock.
+        && (!isSet(spec.height) || norm(r.height) === norm(spec.height));
+};
 
+const relevantStock = (attrs, inventory, batchType, outputType) => {
     const availOf = (r) => (isPieceType(batchType) ? num(r.availBundles) : num(r.availWeight));
     const outType = norm(outputType || OUTPUT_TYPE[batchType]);
 
@@ -602,16 +643,42 @@ const relevantStock = (attrs, inventory, batchType, outputType) => {
     // carried on attrs.rollWidth; other types cut down wide rolls, so width is free.
     const requireRollWidth = ROLL_WIDTH_TYPES.has(batchType);
     const rollWidthWanted = isSet(attrs.rollWidth) ? attrs.rollWidth : (requireRollWidth ? attrs.width : null);
+
+    const finishedSpec = {
+        material: attrs.finishedMaterial ?? attrs.material,
+        colour: attrs.finishedColour ?? attrs.colour,
+        gsm: attrs.finishedGsm ?? attrs.gsm,
+        width: attrs.finishedWidth ?? attrs.width,
+        height: attrs.finishedHeight
+    };
+    const rollSpec = {
+        material: attrs.rollMaterial ?? attrs.material,
+        colour: attrs.rollColour ?? attrs.colour,
+        gsm: attrs.rollGsm ?? attrs.gsm,
+        width: rollWidthWanted
+    };
+
     const finished = inventory
-        .filter((r) => norm(r.type) === outType && matchAttrs(r, attrs.width) && availOf(r) > 0)
+        .filter((r) => norm(r.type) === outType && matchesSpec(r, finishedSpec) && availOf(r) > 0)
         .map((r) => ({ ...r, avail: availOf(r) }))
         .sort((a, b) => b.avail - a.avail);
+    // Blanks: stock that is already cut to size but not yet the finished article --
+    // a plain white sheet a model number can still be printed onto. Only groups
+    // that define one look for them.
+    const blank = attrs.blank;
+    const blankTypes = new Set((blank?.types || []).map(norm));
+    const alternates = blank
+        ? inventory
+            .filter((r) => blankTypes.has(norm(r.type)) && matchesSpec(r, blank) && availOf(r) > 0)
+            .map((r) => ({ ...r, avail: availOf(r) }))
+            .sort((a, b) => b.avail - a.avail)
+        : [];
     const rolls = inventory
-        .filter((r) => norm(r.type) === 'ROLL' && matchAttrs(r, rollWidthWanted) && availOf(r) > 0)
+        .filter((r) => norm(r.type) === 'ROLL' && matchesSpec(r, rollSpec) && availOf(r) > 0)
         .map((r) => ({ ...r, avail: availOf(r) }))
         .sort((a, b) => b.avail - a.avail);
 
-    return { finished, rolls };
+    return { finished, alternates, rolls };
 };
 
 // Greedily take from a list of stock rows up to `need`. Returns the picks (with
@@ -650,9 +717,53 @@ const splitByCapacity = (batchType, subOrders, capacity) => {
 // job to create (if any) and which sub-orders are postponed.
 export const allocateStock = (attrs, subOrders, inventory, batchType, outputType) => {
     const required = subOrders.reduce((s, so) => s + effectiveQty(batchType, so), 0);
-    const { finished, rolls } = relevantStock(attrs, inventory, batchType, outputType);
+    const { finished, alternates, rolls } = relevantStock(attrs, inventory, batchType, outputType);
     const finishedTotal = finished.reduce((s, r) => s + r.avail, 0);
     const rollsTotal = rolls.reduce((s, r) => s + r.avail, 0);
+
+    // Model sheets are printed for one customer's model and are no use to anyone
+    // else, so whatever is in the godown is always drawn on first and the rolls
+    // only make up the shortfall. Every other type prefers to cut from a roll when
+    // a roll can cover the lot.
+    if (batchType === 'ROLLS TO MODEL SHEETS' && required > 0) {
+        // Sheets already printed with this model come first; then plain white
+        // sheets of the same size, which only need printing; and a roll is cut
+        // only for whatever neither of those covers.
+        const fromFinished = takeFrom(finished, Math.min(required, finishedTotal), 'finished');
+        let shortfall = required - fromFinished.covered;
+        const alternatesTotal = alternates.reduce((s, r) => s + r.avail, 0);
+        const fromBlanks = shortfall > 0
+            ? takeFrom(alternates, Math.min(shortfall, alternatesTotal), 'blank')
+            : { picks: [], covered: 0 };
+        shortfall -= fromBlanks.covered;
+        const fromRolls = shortfall > 0 ? takeFrom(rolls, shortfall, 'roll') : { picks: [], covered: 0 };
+        const covered = fromFinished.covered + fromBlanks.covered + fromRolls.covered;
+        const picks = [...fromFinished.picks, ...fromBlanks.picks, ...fromRolls.picks];
+        if (covered >= required) {
+            return {
+                // 1 when the godown covered it outright, 2 when only rolls were
+                // used, 3 when it took a mix.
+                priority: fromRolls.covered === 0
+                    ? 1
+                    : (fromFinished.covered + fromBlanks.covered) === 0 ? 2 : 3,
+                picks,
+                fulfilledQty: required,
+                fulfilled: subOrders,
+                postponed: []
+            };
+        }
+        const { fulfilled, postponed } = splitByCapacity(batchType, subOrders, covered);
+        if (fulfilled.length === 0) {
+            return { priority: 5, picks: [], fulfilledQty: 0, fulfilled: [], postponed: subOrders };
+        }
+        return {
+            priority: 4,
+            picks,
+            fulfilledQty: fulfilled.reduce((s, so) => s + effectiveQty(batchType, so), 0),
+            fulfilled,
+            postponed
+        };
+    }
 
     // Priority 1 — finished/semi stock covers the whole requirement.
     if (finishedTotal >= required && required > 0) {
