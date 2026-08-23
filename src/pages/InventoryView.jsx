@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
     ArrowLeft, Warehouse, AlertCircle, Loader2, RefreshCw, Search, X, Package,
-    LayoutGrid, List, ChevronDown, ShieldAlert, Plus, Minus, ScanLine, PackagePlus
+    LayoutGrid, List, ChevronDown, ShieldAlert, Plus, Minus, ScanLine, PackagePlus, QrCode, Download
 } from 'lucide-react';
 import Card from '../components/Card';
 import InventoryTxnModal from '../components/InventoryTxnModal';
@@ -9,6 +9,8 @@ import PendingAckModal from '../components/PendingAckModal';
 import StockAdjustModal from '../components/StockAdjustModal';
 import QrScanModal from '../components/QrScanModal';
 import NewRollStockModal from '../components/NewRollStockModal';
+import ItemLabelModal from '../components/ItemLabelModal';
+import { makeItemLabelPng, itemLabelLines, makeLabelsZip } from '../utils/itemLabel';
 import Button from '../components/Button';
 import { ItemVisual, Dim } from '../components/itemVisuals';
 import { colourToCss, itemForm, typeName, FORM_LABEL } from '../utils/itemForms';
@@ -267,14 +269,14 @@ const ColFilter = ({ values, options, onToggle, onClear }) => {
 // Widths are in table-column order and are only a ratio — the browser scales them
 // to the available width.
 const COL_WIDTHS = {
-    code: ['44px', '17%', '12%', '16%', '7%', '14%', '11%', '15%', '7%'],
-    id: ['210px', '40px', '9%', '7%', '9%', '5%', '9%', '7%', '11%', '8%', '5%', '76px']
+    code: ['40px', '15%', '11%', '14%', '6%', '12%', '10%', '13%', '6%', '108px'],
+    id: ['210px', '40px', '8%', '6%', '8%', '5%', '8%', '6%', '10%', '7%', '5%', '108px']
 };
 // Below these the columns start wrapping, so the table scrolls instead. Desktop
 // containers are wider than both, so the fixed layout just fits.
-const MIN_TABLE_W = { code: 'min-w-[860px]', id: 'min-w-[1180px]' };
+const MIN_TABLE_W = { code: 'min-w-[960px]', id: 'min-w-[1240px]' };
 
-const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClear, onOpenTxns, onAdjust }) => {
+const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClear, onOpenTxns, onAdjust, onLabel, labelFor }) => {
     const isRolls = tab === 'id';
     // Text columns wrap so they can give width back; only figures stay on one line.
     const th = 'py-2 px-2.5 font-semibold align-top';
@@ -307,7 +309,7 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
                         <th className={`${th} text-right`}>Available</th>
                         {isRolls && <th className={`${th} text-right`}>Initial</th>}
                         <th className={`${th} text-right`}>Txns</th>
-                        {isRolls && <th className={`${th} text-center`}>Stock</th>}
+                        <th className={`${th} text-center`}>Stock</th>
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -351,28 +353,36 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
                                         </button>
                                     ) : <span className="text-slate-400">0</span>}
                                 </td>
-                                {isRolls && (
-                                    <td className="py-1.5 px-1.5">
-                                        <div className="flex items-center justify-center gap-1">
-                                            <button
-                                                type="button"
-                                                onClick={() => onAdjust(r, 'ADD')}
-                                                title="Add stock for this roll"
-                                                className="w-7 h-7 rounded-lg border border-emerald-200 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 flex items-center justify-center"
-                                            >
-                                                <Plus size={14} />
-                                            </button>
-                                            <button
-                                                type="button"
-                                                onClick={() => onAdjust(r, 'LESS')}
-                                                title="Reduce stock for this roll"
-                                                className="w-7 h-7 rounded-lg border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 flex items-center justify-center"
-                                            >
-                                                <Minus size={14} />
-                                            </button>
-                                        </div>
-                                    </td>
-                                )}
+                                <td className="py-1.5 px-1.5">
+                                    <div className="flex items-center justify-center gap-1">
+                                        <button
+                                            type="button"
+                                            onClick={() => onAdjust(r, 'ADD')}
+                                            title="Add stock"
+                                            className="w-7 h-7 rounded-lg border border-emerald-200 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 flex items-center justify-center"
+                                        >
+                                            <Plus size={14} />
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => onAdjust(r, 'LESS')}
+                                            title="Reduce stock"
+                                            className="w-7 h-7 rounded-lg border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 flex items-center justify-center"
+                                        >
+                                            <Minus size={14} />
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => onLabel(r)}
+                                            title="Download this item's QR label"
+                                            className="w-7 h-7 rounded-lg border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 flex items-center justify-center"
+                                        >
+                                            {labelFor === (r.code_ref ?? r.item_ref)
+                                                ? <Loader2 size={13} className="animate-spin" />
+                                                : <QrCode size={14} />}
+                                        </button>
+                                    </div>
+                                </td>
                             </tr>
                         );
                     })}
@@ -403,6 +413,9 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     const [adjusting, setAdjusting] = useState(null);
     const [scanning, setScanning] = useState(false);
     const [newStock, setNewStock] = useState(false);
+    const [labelFor, setLabelFor] = useState(null);
+    const [label, setLabel] = useState(null);   // { iid, url, filename }
+    const [bulk, setBulk] = useState(null);     // { done, total }
     const [scanError, setScanError] = useState(null);
 
     const fetchData = async (activeTab) => {
@@ -460,7 +473,10 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     // A scanned label names a roll. Prefer the row already on screen -- it carries
     // the live available figure -- and fall back to Grist, so a roll that is out
     // of stock (and so absent from the list) can still be booked back in.
-    const openScannedRoll = async ({ raw, id }) => {
+    // Every stock item, roll or not, is one row in Inventory_Items, so a scanned
+    // label resolves the same way regardless of type. The rows already on screen
+    // are preferred because they carry the live figures.
+    const openScannedItem = async ({ raw, id }) => {
         setScanning(false);
         setScanError(null);
         const scanned = String(raw || '').trim();
@@ -468,51 +484,191 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
             setScanError('Nothing was read from that code.');
             return;
         }
-        // Prefer the row already on screen -- it carries the live available figure.
         const onScreen = rows.find((r) => {
             const iid = String(r.iid || '').toUpperCase();
             return iid && (iid === id || scanned.toUpperCase().includes(iid));
         });
         if (onScreen) { setAdjusting({ row: onScreen, mode: 'ADD', fromScan: true }); return; }
         try {
-            const headers = await getHeaders();
-            const numeric = /^\d+$/.test(scanned) ? Number(scanned) : 0;
-            const res = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
-                method: 'POST',
-                headers: { ...headers, 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    // Three ways in, because a label may carry the id alone, a URL
-                    // with the id inside it, or the item's row id.
-                    sql: `SELECT it.id AS item_ref, it.Item_ID AS iid,
-                                 ic.id AS code_ref, ic.Item_Code AS name, ic.Type AS itype,
-                                 ic.Material AS mat, ic.Colour AS col, ic.GSM AS gsm,
-                                 ic.Width_Inches_ AS w, ic.Height_Inches_ AS h,
-                                 'ROLLS GODOWN' AS location,
-                                 COALESCE((
-                                     SELECT s.Available_Weight_Kg_
-                                     FROM ${SUMMARY_BY_ID_TABLE} s
-                                     WHERE s.Item_ID = it.id AND s.Location = 'ROLLS GODOWN'
-                                       AND s.Incharge_Ack = 1
-                                     LIMIT 1
-                                 ), 0) AS avail
-                          FROM Inventory_Items it
-                          LEFT JOIN Inventory_Item_Codes ic ON ic.id = it.Item_Code
-                          WHERE upper(it.Item_ID) = ?
-                             OR instr(upper(?), upper(it.Item_ID)) > 0
-                             OR (? > 0 AND it.id = ?)
-                          LIMIT 1`,
-                    args: [id, scanned.toUpperCase(), numeric, numeric]
-                })
-            });
-            if (!res.ok) throw new Error(`Lookup failed (${res.status})`);
-            const [row] = ((await res.json()).records || []).map((r) => r.fields);
+            const row = await lookupItem({ id, scanned });
             if (!row) {
-                setScanError(`Scanned "${scanned}" — no roll matches that. Expected something like ROLL_30-06-2026_0182.`);
+                setScanError(`Scanned "${scanned}" — no stock item matches that.`);
                 return;
             }
             setAdjusting({ row, mode: 'ADD', fromScan: true });
         } catch (err) {
             setScanError(`Scanned "${scanned}" — lookup failed: ${err.message || String(err)}`);
+        }
+    };
+
+    // Find a physical item by its label, or by the item code behind a by-code row.
+    // Location comes from wherever the item actually holds stock, falling back to
+    // the godown its type belongs in.
+    const lookupItem = async ({ id, scanned, codeRef, location }) => {
+        const headers = await getHeaders();
+        const byCode = codeRef != null;
+        const numeric = !byCode && /^\d+$/.test(String(scanned || '')) ? Number(scanned) : 0;
+        const res = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sql: `SELECT it.id AS item_ref, it.Item_ID AS iid,
+                             ic.id AS code_ref, ic.Item_Code AS name, ic.Type AS itype,
+                             ic.Material AS mat, ic.Colour AS col, ic.GSM AS gsm,
+                             ic.Width_Inches_ AS w, ic.Height_Inches_ AS h,
+                             s.Location AS location,
+                             COALESCE(s.Available_Weight_Kg_, 0) AS avail,
+                             -- Only the by-code summary carries a bundle count, so
+                             -- the count comes from there for the same location.
+                             COALESCE((
+                                 SELECT c2.Available_Count_Bundles_
+                                 FROM ${SUMMARY_BY_CODE_TABLE} c2
+                                 WHERE c2.Item_Code = it.Item_Code
+                                   AND c2.Location = s.Location
+                                   AND c2.Incharge_Ack = 1
+                                 LIMIT 1
+                             ), 0) AS bundles
+                      FROM Inventory_Items it
+                      LEFT JOIN Inventory_Item_Codes ic ON ic.id = it.Item_Code
+                      LEFT JOIN ${SUMMARY_BY_ID_TABLE} s
+                             ON s.Item_ID = it.id AND s.Incharge_Ack = 1
+                            ${byCode ? "AND s.Location = ?" : ''}
+                      WHERE ${byCode
+                          ? 'it.Item_Code = ?'
+                          : `upper(it.Item_ID) = ?
+                             OR instr(upper(?), upper(it.Item_ID)) > 0
+                             OR (? > 0 AND it.id = ?)`}
+                      ORDER BY COALESCE(s.Available_Weight_Kg_, 0) DESC
+                      LIMIT 1`,
+                args: byCode
+                    ? [location, num(codeRef)]
+                    : [id, String(scanned || '').toUpperCase(), numeric, numeric]
+            })
+        });
+        if (!res.ok) throw new Error(`Lookup failed (${res.status})`);
+        const [row] = ((await res.json()).records || []).map((r) => r.fields);
+        if (!row) return null;
+        return {
+            ...row,
+            location: row.location || location
+                || (/ROLL/i.test(String(row.itype || '')) ? 'ROLLS GODOWN' : 'BAGS GODOWN')
+        };
+    };
+
+    // A by-code row has no physical item on it, so resolve one before booking.
+    const adjustRow = async (row, mode) => {
+        setScanError(null);
+        if (row.item_ref != null) { setAdjusting({ row, mode }); return; }
+        try {
+            const resolved = await lookupItem({ codeRef: row.code_ref, location: row.location });
+            if (!resolved) {
+                setScanError(`No physical item exists for ${row.name || 'this item code'} yet.`);
+                return;
+            }
+            setAdjusting({ row: { ...resolved, avail: row.avail, bundles: row.bundles }, mode });
+        } catch (err) {
+            setScanError(err.message || String(err));
+        }
+    };
+
+    // Labels for everything currently listed, as one zip. Rows are resolved to
+    // physical items in a single query rather than one per row.
+    const downloadAllLabels = async (listed) => {
+        setScanError(null);
+        if (listed.length === 0) return;
+        setBulk({ done: 0, total: listed.length });
+        try {
+            const needCodes = [...new Set(listed.filter((r) => !r.iid).map((r) => num(r.code_ref)))].filter(Boolean);
+            const resolved = new Map();
+            if (needCodes.length > 0) {
+                const headers = await getHeaders();
+                const holes = needCodes.map(() => '?').join(',');
+                const res = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
+                    method: 'POST',
+                    headers: { ...headers, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sql: `SELECT it.Item_Code AS code_ref, it.Item_ID AS iid, ic.Type AS itype,
+                                     ic.Colour AS col, ic.GSM AS gsm,
+                                     ic.Width_Inches_ AS w, ic.Height_Inches_ AS h
+                              FROM Inventory_Items it
+                              LEFT JOIN Inventory_Item_Codes ic ON ic.id = it.Item_Code
+                              WHERE it.Item_Code IN (${holes})`,
+                        args: needCodes
+                    })
+                });
+                if (!res.ok) throw new Error(`Lookup failed (${res.status})`);
+                for (const row of ((await res.json()).records || []).map((r) => r.fields)) {
+                    resolved.set(num(row.code_ref), row);
+                }
+            }
+
+            const items = listed.map((r) => {
+                // Rows on the rolls tab already carry everything; by-code rows take
+                // the item id from the resolved row and the rest from the row itself.
+                const item = r.iid ? r : { ...r, ...(resolved.get(num(r.code_ref)) || {}) };
+                if (!item?.iid) return null;
+                return { iid: item.iid, lines: itemLabelLines(item) };
+            }).filter(Boolean);
+
+            if (items.length === 0) {
+                setScanError('None of these items has a physical item id to label yet.');
+                return;
+            }
+
+            const zip = await makeLabelsZip(items, (done, total) => setBulk({ done, total }));
+            const url = URL.createObjectURL(zip.blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = zip.filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+            if (items.length < listed.length) {
+                setScanError(`${listed.length - items.length} of ${listed.length} items had no physical item id and were skipped.`);
+            }
+        } catch (err) {
+            setScanError(`Could not build the labels: ${err.message || String(err)}`);
+        } finally {
+            setBulk(null);
+        }
+    };
+
+    const closeLabel = () => {
+        setLabel((prev) => {
+            if (prev?.url) URL.revokeObjectURL(prev.url);
+            return null;
+        });
+    };
+
+    // The item's printable label, on demand rather than only at intake.
+    const downloadLabel = async (row) => {
+        setScanError(null);
+        setLabelFor(row.code_ref ?? row.item_ref ?? null);
+        try {
+            let item = row;
+            if (!item.iid) {
+                item = (await lookupItem({ codeRef: row.code_ref, location: row.location })) || row;
+            }
+            if (!item.iid) {
+                setScanError('That item has no physical item id to put on a label yet.');
+                return;
+            }
+            const iid = item.iid;
+            const built = await makeItemLabelPng(iid, itemLabelLines(item));
+            // Hand it to the browser and put it on screen: the download is what the
+            // operator asked for, the preview is how they check it before printing.
+            const a = document.createElement('a');
+            a.href = built.url;
+            a.download = built.filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setLabel({ iid, ...built });
+        } catch (err) {
+            setScanError(`Could not build the label: ${err.message || String(err)}`);
+        } finally {
+            setLabelFor(null);
         }
     };
 
@@ -632,7 +788,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                 <PackagePlus size={18} />
                             </Button>
                         )}
-                        {tab === 'id' && (
+                        {(
                             <Button
                                 variant="primary"
                                 onClick={() => { setScanError(null); setScanning(true); }}
@@ -754,6 +910,17 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                             <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 mb-2 px-1">
                                 <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
                                     {filtered.length} item{filtered.length !== 1 ? 's' : ''}
+                                    <button
+                                        type="button"
+                                        onClick={() => downloadAllLabels(filtered)}
+                                        disabled={Boolean(bulk)}
+                                        title="Download a zip of QR labels for every item listed"
+                                        className="ml-2 inline-flex items-center gap-1 normal-case tracking-normal font-medium text-teal-700 hover:text-teal-900 disabled:opacity-50"
+                                    >
+                                        {bulk
+                                            ? <><Loader2 size={12} className="animate-spin" /> {bulk.done}/{bulk.total} labels…</>
+                                            : <><Download size={12} /> QR labels (zip)</>}
+                                    </button>
                                 </p>
                                 <p className="text-xs text-slate-500">
                                     Total available: <span className="font-semibold text-slate-700">{fmtKg(totalAvailable)} kg</span>
@@ -778,7 +945,9 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                     colFilters={colFilters} options={colOptions}
                                     onColToggle={toggleColFilter} onColClear={clearColFilter}
                                     onOpenTxns={setTxnRow}
-                                    onAdjust={(row, mode) => setAdjusting({ row, mode })}
+                                    onAdjust={adjustRow}
+                                    onLabel={downloadLabel}
+                                    labelFor={labelFor}
                                 />
                             ) : tab === 'code' ? (
                                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -817,6 +986,33 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                                         {q.hasCount ? `${q.count} ${q.countUnit} · ` : ''}
                                                         <TxnLink count={num(r.cnt)} onClick={() => setTxnRow(r)} />
                                                     </p>
+                                                </div>
+
+                                                <div className="mt-2 grid grid-cols-3 gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => adjustRow(r, 'ADD')}
+                                                        className="inline-flex items-center justify-center gap-1 py-1.5 rounded-lg border border-emerald-200 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 text-xs font-semibold"
+                                                    >
+                                                        <Plus size={14} /> Add
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => adjustRow(r, 'LESS')}
+                                                        className="inline-flex items-center justify-center gap-1 py-1.5 rounded-lg border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 text-xs font-semibold"
+                                                    >
+                                                        <Minus size={14} /> Less
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => downloadLabel(r)}
+                                                        title="Download this item's QR label"
+                                                        className="inline-flex items-center justify-center gap-1 py-1.5 rounded-lg border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 text-xs font-semibold"
+                                                    >
+                                                        {labelFor === (r.code_ref ?? r.item_ref)
+                                                            ? <Loader2 size={14} className="animate-spin" />
+                                                            : <><QrCode size={14} /> QR</>}
+                                                    </button>
                                                 </div>
                                             </Card>
                                         );
@@ -863,20 +1059,30 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                             </div>
 
                                             {/* Same booking actions as the table's Stock column. */}
-                                            <div className="mt-2 grid grid-cols-2 gap-2">
+                                            <div className="mt-2 grid grid-cols-3 gap-2">
                                                 <button
                                                     type="button"
-                                                    onClick={() => setAdjusting({ row: r, mode: 'ADD' })}
+                                                    onClick={() => adjustRow(r, 'ADD')}
                                                     className="inline-flex items-center justify-center gap-1 py-1.5 rounded-lg border border-emerald-200 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 text-xs font-semibold"
                                                 >
                                                     <Plus size={14} /> Add
                                                 </button>
                                                 <button
                                                     type="button"
-                                                    onClick={() => setAdjusting({ row: r, mode: 'LESS' })}
+                                                    onClick={() => adjustRow(r, 'LESS')}
                                                     className="inline-flex items-center justify-center gap-1 py-1.5 rounded-lg border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 text-xs font-semibold"
                                                 >
                                                     <Minus size={14} /> Less
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => downloadLabel(r)}
+                                                    title="Download this item's QR label"
+                                                    className="inline-flex items-center justify-center gap-1 py-1.5 rounded-lg border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 text-xs font-semibold"
+                                                >
+                                                    {labelFor === (r.code_ref ?? r.item_ref)
+                                                        ? <Loader2 size={14} className="animate-spin" />
+                                                        : <><QrCode size={14} /> QR</>}
                                                 </button>
                                             </div>
                                         </Card>
@@ -913,8 +1119,10 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                 />
             )}
 
+            {label && <ItemLabelModal label={label} onClose={closeLabel} />}
+
             {scanning && (
-                <QrScanModal onClose={() => setScanning(false)} onScan={openScannedRoll} />
+                <QrScanModal onClose={() => setScanning(false)} onScan={openScannedItem} />
             )}
 
             {newStock && (
@@ -931,7 +1139,10 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                     row={adjusting.row}
                     mode={adjusting.mode}
                     allowModeSwitch={Boolean(adjusting.fromScan)}
+                    fromScan={Boolean(adjusting.fromScan)}
                     available={rowQty(adjusting.row).kg}
+                    availableCount={rowQty(adjusting.row).count}
+                    availableDerived={rowQty(adjusting.row).derived}
                     onClose={() => setAdjusting(null)}
                     onSaved={() => { setAdjusting(null); refresh(tab); }}
                     getHeaders={getHeaders}

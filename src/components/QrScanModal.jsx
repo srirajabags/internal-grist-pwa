@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { X, Loader2, AlertCircle, Camera, Keyboard, ScanLine } from 'lucide-react';
 import Button from './Button';
-import { readRollCode } from '../utils/rollCode';
+import { readItemLabel } from '../utils/itemLabel';
 
 // Camera QR scanning. Chrome on Android has BarcodeDetector natively, which is
 // faster and needs no download; everywhere else (notably iOS Safari) falls back
@@ -35,7 +35,7 @@ const QrScanModal = ({ onClose, onScan }) => {
         stop();
         // The raw payload travels with the parsed id: when a label does not
         // resolve, the operator has to be able to see what was actually read.
-        onScan({ raw: String(text || ''), id: readRollCode(text) });
+        onScan({ raw: String(text || ''), id: readItemLabel(text) });
     }, [onScan, stop]);
 
     useEffect(() => {

@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { X, Loader2, AlertCircle, Plus, Minus, Clock } from 'lucide-react';
+import { X, Loader2, AlertCircle, Plus, Minus, Clock, ClipboardList } from 'lucide-react';
 import Button from './Button';
 import { ItemVisual } from './itemVisuals';
 import { typeName } from '../utils/itemForms';
+import { countUnitFor } from '../utils/txnDisplay';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 const TXN_TABLE = 'Inventory_Transactions';
@@ -17,18 +18,37 @@ const fmtKg = (v) => num(v).toFixed(2);
 // Incharge_Ack is deliberately left unset, so the transaction does not count
 // towards stock until the incharge signs it off in the acknowledgement queue --
 // the same path every other movement the app books goes through.
-const StockAdjustModal = ({ row, mode: initialMode, available, onClose, onSaved, getHeaders, getUrl, allowModeSwitch = false }) => {
+const StockAdjustModal = ({ row, mode: initialMode, available, availableCount = 0, availableDerived = false, onClose, onSaved, getHeaders, getUrl, allowModeSwitch = false, fromScan = false }) => {
     // Opened from a row's + / - the direction is already decided; opened from a
     // scan there is nothing to decide it, so the operator picks here.
-    const [mode, setMode] = useState(initialMode || 'ADD');
+    // A scan says "here is the item", not which way its stock moves, so counted
+    // items start on Recount there. Pressing + or - has already said which way, so
+    // that choice is honoured -- Recount is still one click away.
+    const isCounted = !/ROLL/i.test(String(row.itype || ''));
+    const [mode, setMode] = useState(fromScan && isCounted ? 'RECOUNT' : (initialMode || 'ADD'));
     const [qty, setQty] = useState('');
+    // Rolls are weighed; sheets, patty and handles are counted. Offer the unit the
+    // godown actually uses for this form, with kg still available either way.
+    const isRoll = !isCounted;
+    const countUnit = countUnitFor(row.itype, row.name);
+    const [unit, setUnit] = useState(isRoll ? 'kg' : 'count');
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState(null);
 
-    const isAdd = mode === 'ADD';
-    const weight = num(qty);
-    const after = isAdd ? num(available) + weight : num(available) - weight;
-    const valid = weight > 0 && !saving;
+    const recount = mode === 'RECOUNT';
+    const byCount = unit === 'count';
+    const entered = num(qty);
+    // The running total shown alongside only makes sense against the same unit.
+    const base = byCount ? num(availableCount) : num(available);
+    // A recount states what is actually on the shelf; the difference against the
+    // book balance decides whether that is an ADD or a LESS, so the operator never
+    // has to work out the direction (or the sign) themselves.
+    const delta = recount ? entered - base : 0;
+    const effectiveMode = recount ? (delta >= 0 ? 'ADD' : 'LESS') : mode;
+    const isAdd = effectiveMode === 'ADD';
+    const weight = recount ? Math.abs(delta) : entered;
+    const after = recount ? entered : (isAdd ? base + weight : base - weight);
+    const valid = weight > 0 && (!recount || entered >= 0) && !saving;
 
     const submit = async () => {
         setSaving(true);
@@ -44,8 +64,10 @@ const StockAdjustModal = ({ row, mode: initialMode, available, onClose, onSaved,
                             // Item_Code is a formula off Item_ID, so only the
                             // physical item is set here.
                             Item_ID: num(row.item_ref),
-                            Transaction_Type: mode,
-                            Weight_Kg_: weight,
+                            Transaction_Type: effectiveMode,
+                            // Count_Change_Bundle_ and Weight_Change_Kg_ are
+                            // formulas, so the magnitude goes to the plain column.
+                            ...(byCount ? { Count_Bundles_: weight } : { Weight_Kg_: weight }),
                             Location: row.location,
                             Transaction_Time: Date.now() / 1000
                         }
@@ -70,12 +92,14 @@ const StockAdjustModal = ({ row, mode: initialMode, available, onClose, onSaved,
             <div className="bg-white w-full sm:max-w-sm sm:rounded-2xl shadow-xl" onClick={(e) => e.stopPropagation()}>
                 <div className="border-b border-slate-200 px-4 py-3 flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
-                        <span className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${isAdd ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
-                            {isAdd ? <Plus size={18} /> : <Minus size={18} />}
+                        <span className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${recount
+                            ? 'bg-sky-100 text-sky-700'
+                            : isAdd ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                            {recount ? <ClipboardList size={18} /> : isAdd ? <Plus size={18} /> : <Minus size={18} />}
                         </span>
                         <div className="min-w-0">
                             <h2 className="font-bold text-slate-800 leading-tight">
-                                {isAdd ? 'Add stock' : 'Reduce stock'}
+                                {recount ? 'Recount stock' : isAdd ? 'Add stock' : 'Reduce stock'}
                             </h2>
                             <p className="text-xs text-slate-500 truncate">{row.iid || `Item #${row.item_ref}`}</p>
                         </div>
@@ -84,24 +108,27 @@ const StockAdjustModal = ({ row, mode: initialMode, available, onClose, onSaved,
                 </div>
 
                 <div className="p-4 space-y-3">
-                    {allowModeSwitch && (
-                        <div className="grid grid-cols-2 gap-2">
-                            {['ADD', 'LESS'].map((m) => {
+                    {(allowModeSwitch || !isRoll) && (
+                        <div className={`grid gap-2 ${isRoll ? 'grid-cols-2' : 'grid-cols-3'}`}>
+                            {(isRoll ? ['ADD', 'LESS'] : ['ADD', 'LESS', 'RECOUNT']).map((m) => {
                                 const on = mode === m;
-                                const adding = m === 'ADD';
+                                const tone = m === 'ADD'
+                                    ? 'bg-emerald-600 text-white border-emerald-600'
+                                    : m === 'LESS'
+                                        ? 'bg-rose-600 text-white border-rose-600'
+                                        : 'bg-sky-600 text-white border-sky-600';
+                                const Icon = m === 'ADD' ? Plus : m === 'LESS' ? Minus : ClipboardList;
                                 return (
                                     <button
                                         key={m}
                                         type="button"
-                                        onClick={() => setMode(m)}
+                                        onClick={() => { setMode(m); setQty(''); }}
                                         className={`inline-flex items-center justify-center gap-1.5 py-2 rounded-xl border text-sm font-semibold transition-colors ${on
-                                            ? adding
-                                                ? 'bg-emerald-600 text-white border-emerald-600'
-                                                : 'bg-rose-600 text-white border-rose-600'
+                                            ? tone
                                             : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}
                                     >
-                                        {adding ? <Plus size={15} /> : <Minus size={15} />}
-                                        {adding ? 'Add stock' : 'Reduce stock'}
+                                        <Icon size={15} />
+                                        {m === 'ADD' ? 'Add' : m === 'LESS' ? 'Reduce' : 'Recount'}
                                     </button>
                                 );
                             })}
@@ -115,7 +142,10 @@ const StockAdjustModal = ({ row, mode: initialMode, available, onClose, onSaved,
                         <div className="min-w-0">
                             <p className="text-sm font-semibold text-slate-800 truncate">{typeName(row.mat, row.itype, row.name)}</p>
                             <p className="text-[11px] text-slate-500 truncate">{attrs || '—'}</p>
-                            <p className="text-[11px] text-slate-400">{row.location} · {fmtKg(available)} kg available</p>
+                            <p className="text-[11px] text-slate-400">
+                                {row.location} · {availableDerived ? '≈ ' : ''}{fmtKg(available)} kg
+                                {num(availableCount) > 0 ? ` · ${num(availableCount)} ${countUnit}` : ''} available
+                            </p>
                         </div>
                     </div>
 
@@ -126,9 +156,28 @@ const StockAdjustModal = ({ row, mode: initialMode, available, onClose, onSaved,
                         </div>
                     )}
 
+                    {!isRoll && (
+                        <div className="grid grid-cols-2 gap-2">
+                            {[['count', countUnit], ['kg', 'kg']].map(([key, label]) => (
+                                <button
+                                    key={key}
+                                    type="button"
+                                    onClick={() => setUnit(key)}
+                                    className={`py-1.5 rounded-lg border text-xs font-semibold capitalize transition-colors ${unit === key
+                                        ? 'bg-slate-800 text-white border-slate-800'
+                                        : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}
+                                >
+                                    Book in {label}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+
                     <label className="block">
                         <span className="block text-[11px] text-slate-500 mb-1">
-                            Weight to {isAdd ? 'add' : 'remove'} (kg)
+                            {recount
+                                ? `Counted total${byCount ? ` (${countUnit})` : ' (kg)'}`
+                                : `${byCount ? `${countUnit} to ` : 'Weight to '}${isAdd ? 'add' : 'remove'}${byCount ? '' : ' (kg)'}`}
                         </span>
                         <input
                             type="number" inputMode="decimal" step="0.01" min="0"
@@ -140,9 +189,28 @@ const StockAdjustModal = ({ row, mode: initialMode, available, onClose, onSaved,
                         />
                     </label>
 
-                    {weight > 0 && (
+                    {recount && qty !== '' && (
+                        <p className="text-xs text-slate-600">
+                            {delta === 0
+                                ? 'Matches the book balance — nothing to book.'
+                                : (
+                                    <>
+                                        Book balance {byCount ? `${Math.round(base)} ${countUnit}` : `${fmtKg(base)} kg`} →
+                                        counted {byCount ? `${Math.round(entered)} ${countUnit}` : `${fmtKg(entered)} kg`}:
+                                        {' '}
+                                        <span className={`font-semibold ${delta > 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                                            {delta > 0 ? 'ADD' : 'LESS'} {byCount ? `${Math.round(Math.abs(delta))} ${countUnit}` : `${fmtKg(Math.abs(delta))} kg`}
+                                        </span>
+                                    </>
+                                )}
+                        </p>
+                    )}
+
+                    {!recount && weight > 0 && (
                         <p className="text-xs text-slate-500">
-                            Stock after this: <span className={`font-semibold ${after < 0 ? 'text-red-600' : 'text-slate-800'}`}>{fmtKg(after)} kg</span>
+                            Stock after this: <span className={`font-semibold ${after < 0 ? 'text-red-600' : 'text-slate-800'}`}>
+                                {byCount ? `${Math.round(after)} ${countUnit}` : `${fmtKg(after)} kg`}
+                            </span>
                             {after < 0 && <span className="text-red-600"> — more than is on hand</span>}
                         </p>
                     )}
@@ -162,7 +230,7 @@ const StockAdjustModal = ({ row, mode: initialMode, available, onClose, onSaved,
                         disabled={!valid}
                         icon={saving ? Loader2 : isAdd ? Plus : Minus}
                     >
-                        {saving ? 'Saving…' : isAdd ? 'Add' : 'Reduce'}
+                        {saving ? 'Saving…' : recount ? (delta > 0 ? 'Book the increase' : delta < 0 ? 'Book the shortfall' : 'No change') : isAdd ? 'Add' : 'Reduce'}
                     </Button>
                 </div>
             </div>

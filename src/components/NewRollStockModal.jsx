@@ -3,7 +3,7 @@ import { X, Loader2, AlertCircle, Sparkles, Check, Download, Plus } from 'lucide
 import Button from './Button';
 import { ItemVisual } from './itemVisuals';
 import { typeName } from '../utils/itemForms';
-import { makeRollLabelPng } from '../utils/rollLabel';
+import { makeItemLabelPng, itemLabelLines } from '../utils/itemLabel';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 const ITEMS_TABLE = 'Inventory_Items';
@@ -156,7 +156,7 @@ const NewRollStockModal = ({ onClose, onSaved, getHeaders, getUrl }) => {
             setSaved({ id });
             onSaved?.(id);
             try {
-                const label = await makeRollLabelPng(id);
+                const label = await makeItemLabelPng(id, itemLabelLines({ ...code, iid: id }));
                 setSaved({ id, ...label });
                 // The label is wanted every time, so it downloads itself rather
                 // than waiting for a click; the button below is for a second copy.
