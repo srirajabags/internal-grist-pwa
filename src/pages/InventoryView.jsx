@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
     ArrowLeft, Warehouse, AlertCircle, Loader2, RefreshCw, Search, X, Package,
-    LayoutGrid, List, ChevronDown, ShieldAlert
+    LayoutGrid, List, ChevronDown, ShieldAlert, Plus, Minus
 } from 'lucide-react';
 import Card from '../components/Card';
 import InventoryTxnModal from '../components/InventoryTxnModal';
 import PendingAckModal from '../components/PendingAckModal';
+import StockAdjustModal from '../components/StockAdjustModal';
 import Button from '../components/Button';
 import { ItemVisual, Dim } from '../components/itemVisuals';
 import { colourToCss, itemForm, typeName, FORM_LABEL } from '../utils/itemForms';
@@ -265,13 +266,13 @@ const ColFilter = ({ values, options, onToggle, onClear }) => {
 // to the available width.
 const COL_WIDTHS = {
     code: ['44px', '17%', '12%', '16%', '7%', '14%', '11%', '15%', '7%'],
-    id: ['7%', '44px', '14%', '10%', '13%', '6%', '12%', '9%', '13%', '10%', '6%']
+    id: ['210px', '40px', '9%', '7%', '9%', '5%', '9%', '7%', '11%', '8%', '5%', '76px']
 };
 // Below these the columns start wrapping, so the table scrolls instead. Desktop
 // containers are wider than both, so the fixed layout just fits.
-const MIN_TABLE_W = { code: 'min-w-[860px]', id: 'min-w-[1040px]' };
+const MIN_TABLE_W = { code: 'min-w-[860px]', id: 'min-w-[1180px]' };
 
-const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClear, onOpenTxns }) => {
+const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClear, onOpenTxns, onAdjust }) => {
     const isRolls = tab === 'id';
     // Text columns wrap so they can give width back; only figures stay on one line.
     const th = 'py-2 px-2.5 font-semibold align-top';
@@ -304,6 +305,7 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
                         <th className={`${th} text-right`}>Available</th>
                         {isRolls && <th className={`${th} text-right`}>Initial</th>}
                         <th className={`${th} text-right`}>Txns</th>
+                        {isRolls && <th className={`${th} text-center`}>Stock</th>}
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -311,7 +313,9 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
                         const q = rowQty(r);
                         return (
                             <tr key={`${r.code_ref}-${r.iid ?? idx}`} className="hover:bg-slate-50">
-                                {isRolls && <td className={`${tdNum} font-bold text-teal-800`}>#{r.iid || '—'}</td>}
+                                {isRolls && (
+                                    <td className={`${tdNum} font-bold text-teal-800`}>#{r.iid || '—'}</td>
+                                )}
                                 <td className="py-1 px-1.5">
                                     <div className="w-9"><ItemVisual colour={r.col} type={r.itype} name={r.name} size="sm" /></div>
                                 </td>
@@ -345,6 +349,28 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
                                         </button>
                                     ) : <span className="text-slate-400">0</span>}
                                 </td>
+                                {isRolls && (
+                                    <td className="py-1.5 px-1.5">
+                                        <div className="flex items-center justify-center gap-1">
+                                            <button
+                                                type="button"
+                                                onClick={() => onAdjust(r, 'ADD')}
+                                                title="Add stock for this roll"
+                                                className="w-7 h-7 rounded-lg border border-emerald-200 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 flex items-center justify-center"
+                                            >
+                                                <Plus size={14} />
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => onAdjust(r, 'LESS')}
+                                                title="Reduce stock for this roll"
+                                                className="w-7 h-7 rounded-lg border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 flex items-center justify-center"
+                                            >
+                                                <Minus size={14} />
+                                            </button>
+                                        </div>
+                                    </td>
+                                )}
                             </tr>
                         );
                     })}
@@ -371,6 +397,8 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     // stock, so the queue is surfaced as an action button while any are waiting.
     const [pendingAck, setPendingAck] = useState(0);
     const [ackOpen, setAckOpen] = useState(false);
+    // Roll being booked in or out, with the direction: { row, mode }.
+    const [adjusting, setAdjusting] = useState(null);
 
     const fetchData = async (activeTab) => {
         setLoading(true);
@@ -654,6 +682,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                     colFilters={colFilters} options={colOptions}
                                     onColToggle={toggleColFilter} onColClear={clearColFilter}
                                     onOpenTxns={setTxnRow}
+                                    onAdjust={(row, mode) => setAdjusting({ row, mode })}
                                 />
                             ) : tab === 'code' ? (
                                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -736,6 +765,24 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                                     Initial {fmtKg(r.initial)} kg · <TxnLink count={num(r.cnt)} onClick={() => setTxnRow(r)} />
                                                 </p>
                                             </div>
+
+                                            {/* Same booking actions as the table's Stock column. */}
+                                            <div className="mt-2 grid grid-cols-2 gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setAdjusting({ row: r, mode: 'ADD' })}
+                                                    className="inline-flex items-center justify-center gap-1 py-1.5 rounded-lg border border-emerald-200 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 text-xs font-semibold"
+                                                >
+                                                    <Plus size={14} /> Add
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setAdjusting({ row: r, mode: 'LESS' })}
+                                                    className="inline-flex items-center justify-center gap-1 py-1.5 rounded-lg border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 text-xs font-semibold"
+                                                >
+                                                    <Minus size={14} /> Less
+                                                </button>
+                                            </div>
                                         </Card>
                                     ))}
                                 </div>
@@ -765,6 +812,18 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                 <PendingAckModal
                     onClose={() => setAckOpen(false)}
                     onAcknowledged={() => refresh(tab)}
+                    getHeaders={getHeaders}
+                    getUrl={getUrl}
+                />
+            )}
+
+            {adjusting && (
+                <StockAdjustModal
+                    row={adjusting.row}
+                    mode={adjusting.mode}
+                    available={rowQty(adjusting.row).kg}
+                    onClose={() => setAdjusting(null)}
+                    onSaved={() => { setAdjusting(null); refresh(tab); }}
                     getHeaders={getHeaders}
                     getUrl={getUrl}
                 />
