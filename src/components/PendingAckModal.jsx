@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Loader2, AlertCircle, ArrowDownLeft, ArrowUpRight, Sparkles, Check, ShieldCheck, Factory } from 'lucide-react';
+import { X, Loader2, AlertCircle, ArrowDownLeft, ArrowUpRight, Sparkles, Check, ShieldCheck, Factory, Trash2 } from 'lucide-react';
 import { ItemVisual } from './itemVisuals';
 import { typeName } from '../utils/itemForms';
 import { num, dayKey, changeText, isOutward, toneFor, attrText, countUnitFor } from '../utils/txnDisplay';
@@ -9,6 +9,9 @@ const TXN_TABLE = 'Inventory_Transactions';
 
 // Long enough that a stray tap cannot get through, short enough not to be a chore.
 const HOLD_MS = 650;
+// Rejecting destroys the record rather than just parking it, so it asks for a
+// noticeably longer, more deliberate press.
+const REJECT_HOLD_MS = 1600;
 
 const TYPE_ICON = { 'ADD': ArrowDownLeft, 'NEW STOCK': Sparkles, 'LESS': ArrowUpRight };
 const iconFor = (type) => TYPE_ICON[String(type || '').toUpperCase()] || ArrowDownLeft;
@@ -16,7 +19,12 @@ const iconFor = (type) => TYPE_ICON[String(type || '').toUpperCase()] || ArrowDo
 // Press-and-hold confirm. The fill is a CSS transition over exactly HOLD_MS, so
 // what the operator sees filling up IS the timer — release early and it drains
 // back with nothing committed.
-const HoldToAck = ({ onConfirm, busy, done }) => {
+const HoldToAct = ({
+    onConfirm, busy, done, holdMs = HOLD_MS,
+    label = 'Hold to acknowledge', holdingLabel = 'Keep holding…',
+    icon, tone = 'teal'
+}) => {
+    const Icon = icon || ShieldCheck;
     const [holding, setHolding] = useState(false);
     const timer = useRef(null);
 
@@ -25,20 +33,19 @@ const HoldToAck = ({ onConfirm, busy, done }) => {
     const start = () => {
         if (busy || done || holding) return;
         setHolding(true);
-        timer.current = setTimeout(() => { setHolding(false); onConfirm(); }, HOLD_MS);
+        timer.current = setTimeout(() => { setHolding(false); onConfirm(); }, holdMs);
     };
     const cancel = () => {
         clearTimeout(timer.current);
         setHolding(false);
     };
 
-    if (done) {
-        return (
-            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-emerald-700 bg-emerald-50 ring-1 ring-emerald-200">
-                <Check size={14} /> Acknowledged
-            </span>
-        );
-    }
+    if (done) return null;
+
+    const tones = {
+        teal: { idle: 'border-teal-300 text-teal-700 hover:border-teal-500 active:border-teal-600', fill: 'bg-teal-500/20' },
+        rose: { idle: 'border-rose-300 text-rose-700 hover:border-rose-500 active:border-rose-600', fill: 'bg-rose-500/25' }
+    }[tone];
 
     return (
         <button
@@ -53,17 +60,17 @@ const HoldToAck = ({ onConfirm, busy, done }) => {
             onKeyUp={cancel}
             className={`relative overflow-hidden select-none touch-none inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${busy
                 ? 'border-slate-200 text-slate-400'
-                : 'border-teal-300 text-teal-700 hover:border-teal-500 active:border-teal-600'}`}
-            title="Press and hold to acknowledge"
+                : tones.idle}`}
+            title={`Press and hold to ${label.replace(/^Hold to /, '')}`}
         >
             <span
-                className="absolute inset-y-0 left-0 bg-teal-500/20"
-                style={{ width: holding ? '100%' : '0%', transition: `width ${holding ? HOLD_MS : 160}ms linear` }}
+                className={`absolute inset-y-0 left-0 ${tones.fill}`}
+                style={{ width: holding ? '100%' : '0%', transition: `width ${holding ? holdMs : 160}ms linear` }}
                 aria-hidden="true"
             />
             <span className="relative inline-flex items-center gap-1.5">
-                {busy ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
-                {busy ? 'Saving…' : holding ? 'Keep holding…' : 'Hold to acknowledge'}
+                {busy ? <Loader2 size={14} className="animate-spin" /> : <Icon size={14} />}
+                {busy ? 'Working…' : holding ? holdingLabel : label}
             </span>
         </button>
     );
@@ -78,6 +85,7 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
     const [error, setError] = useState(null);
     const [savingId, setSavingId] = useState(null);
     const [doneIds, setDoneIds] = useState([]);
+    const [rejectedIds, setRejectedIds] = useState([]);
 
     const load = async () => {
         setLoading(true);
@@ -89,7 +97,8 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
                        t.Weight_Change_Kg_ AS wkg, t.Count_Change_Bundle_ AS cbund,
                        t.Location AS location, it.Item_ID AS iid,
                        ic.Item_Code AS name, ic.Type AS itype, ic.Material AS mat,
-                       ic.Colour AS col, ic.GSM AS gsm, ic.Width_Inches_ AS w,
+                       ic.Colour AS col, ic.GSM AS gsm,
+                       ic.Width_Inches_ AS w, ic.Height_Inches_ AS h,
                        t.Production_Job AS jobId, b.Type AS batchType, tm.Name AS who
                 FROM ${TXN_TABLE} t
                 LEFT JOIN Inventory_Items it ON it.id = t.Item_ID
@@ -145,7 +154,33 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
         }
     };
 
-    const remaining = txns.filter((t) => !doneIds.includes(t.id)).length;
+    // Rejecting removes the transaction entirely: an entry that should not have
+    // been booked leaves no trace to puzzle over later, and nothing about it ever
+    // counted towards stock.
+    const reject = async (id) => {
+        setSavingId(id);
+        setError(null);
+        try {
+            const headers = await getHeaders();
+            const res = await fetch(getUrl(`/api/docs/${DOC_ID}/tables/${TXN_TABLE}/data/delete`), {
+                method: 'POST',
+                headers: { ...headers, 'Content-Type': 'application/json' },
+                body: JSON.stringify([id])
+            });
+            if (!res.ok) {
+                const text = await res.text().catch(() => '');
+                throw new Error(`Reject failed: ${res.statusText}${text ? ` - ${text}` : ''}`);
+            }
+            setRejectedIds((prev) => [...prev, id]);
+            onAcknowledged?.();
+        } catch (err) {
+            setError(err.message || String(err));
+        } finally {
+            setSavingId(null);
+        }
+    };
+
+    const remaining = txns.filter((t) => !doneIds.includes(t.id) && !rejectedIds.includes(t.id)).length;
 
     return (
         <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 sm:p-4" onClick={onClose}>
@@ -189,13 +224,18 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
                                 const Icon = iconFor(t.type);
                                 const unit = countUnitFor(t.itype, t.name);
                                 const done = doneIds.includes(t.id);
+                                const rejected = rejectedIds.includes(t.id);
                                 const newDay = i === 0 || dayKey(t.ts) !== dayKey(txns[i - 1].ts);
                                 return (
                                     <li key={t.id}>
                                         {newDay && (
                                             <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider pt-1.5 pb-1">{dayKey(t.ts)}</p>
                                         )}
-                                        <div className={`bg-white rounded-xl border p-3 transition-colors ${done ? 'border-emerald-200 bg-emerald-50/40' : 'border-amber-200'}`}>
+                                        <div className={`bg-white rounded-xl border p-3 transition-colors ${done
+                                            ? 'border-emerald-200 bg-emerald-50/40'
+                                            : rejected
+                                                ? 'border-slate-200 bg-slate-50 opacity-60'
+                                                : 'border-amber-200'}`}>
                                             <div className="flex items-start gap-3">
                                                 <div className="w-10 shrink-0"><ItemVisual colour={t.col} type={t.itype} name={t.name} size="sm" /></div>
                                                 <div className="min-w-0 flex-1">
@@ -223,12 +263,34 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
                                                     </p>
                                                 </div>
                                             </div>
-                                            <div className="flex justify-end mt-2">
-                                                <HoldToAck
-                                                    done={done}
-                                                    busy={savingId === t.id}
-                                                    onConfirm={() => acknowledge(t.id)}
-                                                />
+                                            <div className="flex flex-wrap justify-end items-center gap-2 mt-2">
+                                                {done && (
+                                                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-emerald-700 bg-emerald-50 ring-1 ring-emerald-200">
+                                                        <Check size={14} /> Acknowledged
+                                                    </span>
+                                                )}
+                                                {rejected && (
+                                                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-slate-500 bg-slate-100 ring-1 ring-slate-200">
+                                                        <Trash2 size={14} /> Rejected and deleted
+                                                    </span>
+                                                )}
+                                                {!done && !rejected && (
+                                                    <>
+                                                        <HoldToAct
+                                                            busy={savingId === t.id}
+                                                            onConfirm={() => reject(t.id)}
+                                                            holdMs={REJECT_HOLD_MS}
+                                                            label="Hold to reject"
+                                                            holdingLabel="Keep holding to delete…"
+                                                            icon={Trash2}
+                                                            tone="rose"
+                                                        />
+                                                        <HoldToAct
+                                                            busy={savingId === t.id}
+                                                            onConfirm={() => acknowledge(t.id)}
+                                                        />
+                                                    </>
+                                                )}
                                             </div>
                                         </div>
                                     </li>
@@ -240,7 +302,8 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
 
                 <div className="bg-white border-t border-slate-200 px-4 py-2.5 sm:rounded-b-2xl">
                     <p className="text-[11px] text-slate-400">
-                        Hold the button until it fills to sign off — a stray tap does nothing. Acknowledged stock counts immediately.
+                        Hold a button until it fills — a stray tap does nothing. Acknowledged stock counts
+                        immediately; rejecting deletes the entry, and takes a longer hold.
                     </p>
                 </div>
             </div>

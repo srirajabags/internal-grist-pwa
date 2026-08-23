@@ -35,5 +35,14 @@ export const TYPE_TONE = {
 };
 export const toneFor = (type) => TYPE_TONE[String(type || '').toUpperCase()] || TYPE_TONE.ADD;
 
+// Size as the item actually is: sheets and bags have a width and a height, rolls
+// only a width. Showing the width alone turned a 12x17 sheet into `12"`.
+export const sizeText = (r) => {
+    const w = String(r?.w ?? '').trim();
+    const h = String(r?.h ?? '').trim();
+    if (w && h) return `${w}" × ${h}"`;
+    return w ? `${w}"` : h ? `${h}"` : '';
+};
+
 export const attrText = (r) =>
-    [r.mat, r.col, r.gsm && `${r.gsm} GSM`, r.w && `${r.w}"`].filter(Boolean).join(' · ') || '—';
+    [r?.mat, r?.col, r?.gsm && `${r.gsm} GSM`, sizeText(r)].filter(Boolean).join(' · ') || '—';

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Loader2, AlertCircle, ArrowDownLeft, ArrowUpRight, Sparkles, Clock, Factory } from 'lucide-react';
 import { ItemVisual } from './itemVisuals';
 import { typeName } from '../utils/itemForms';
+import { attrText } from '../utils/txnDisplay';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 
@@ -109,7 +110,7 @@ const InventoryTxnModal = ({ row, qty, onClose, getHeaders, getUrl }) => {
     // Stock booked by count only (sheets, bundles) has no weight to total up.
     const byWeight = inKg !== 0 || outKg !== 0;
     const byCount = inCount !== 0 || outCount !== 0;
-    const attrs = [row.mat, row.col, row.gsm && `${row.gsm} GSM`, row.w && `${row.w}"`].filter(Boolean).join(' · ');
+    const attrs = attrText(row);
 
     // A code row spans many physical items, so each entry names the one it moved.
     const showItemId = row.item_ref == null;

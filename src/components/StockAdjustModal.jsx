@@ -3,7 +3,7 @@ import { X, Loader2, AlertCircle, Plus, Minus, Clock, ClipboardList } from 'luci
 import Button from './Button';
 import { ItemVisual } from './itemVisuals';
 import { typeName } from '../utils/itemForms';
-import { countUnitFor } from '../utils/txnDisplay';
+import { attrText, countUnitFor } from '../utils/txnDisplay';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 const TXN_TABLE = 'Inventory_Transactions';
@@ -85,7 +85,7 @@ const StockAdjustModal = ({ row, mode: initialMode, available, availableCount = 
         }
     };
 
-    const attrs = [row.mat, row.col, row.gsm && `${row.gsm} GSM`, row.w && `${row.w}"`].filter(Boolean).join(' · ');
+    const attrs = attrText(row);
 
     return (
         <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 sm:p-4" onClick={onClose}>
