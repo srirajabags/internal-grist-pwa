@@ -116,12 +116,12 @@ export const OUTPUT_REQUIREMENTS = [
 export const PRODUCTION_OVERAGE = {
     'ROLLS TO SHEETS': 0.10,          // misprints + cutting wastage
     'ROLLS TO MODEL SHEETS': 0.10,   // printed the same way, same allowance
-    'ROLLS TO DCUT': 0,
-    'ROLLS TO UCUT': 0,
+    'ROLLS TO DCUT': 0.10,
+    'ROLLS TO UCUT': 0.10,
     'ROLLS TO WCUT': 0,
-    'ROLLS TO SIDEPATTY': 0,
-    'ROLLS TO HANDLES': 0,
-    'ROLLS TO PRESSING HANDLES': 0
+    'ROLLS TO SIDEPATTY': 0.10,
+    'ROLLS TO HANDLES': 0.10,
+    'ROLLS TO PRESSING HANDLES': 0.10
 };
 
 export const overageRate = (batchType) => num(PRODUCTION_OVERAGE[batchType]) || 0;
