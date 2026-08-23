@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
     ArrowLeft, Warehouse, AlertCircle, Loader2, RefreshCw, Search, X, Package,
-    LayoutGrid, List, ChevronDown, ShieldAlert, Plus, Minus
+    LayoutGrid, List, ChevronDown, ShieldAlert, Plus, Minus, ScanLine
 } from 'lucide-react';
 import Card from '../components/Card';
 import InventoryTxnModal from '../components/InventoryTxnModal';
 import PendingAckModal from '../components/PendingAckModal';
 import StockAdjustModal from '../components/StockAdjustModal';
+import QrScanModal from '../components/QrScanModal';
 import Button from '../components/Button';
 import { ItemVisual, Dim } from '../components/itemVisuals';
 import { colourToCss, itemForm, typeName, FORM_LABEL } from '../utils/itemForms';
@@ -399,6 +400,8 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     const [ackOpen, setAckOpen] = useState(false);
     // Roll being booked in or out, with the direction: { row, mode }.
     const [adjusting, setAdjusting] = useState(null);
+    const [scanning, setScanning] = useState(false);
+    const [scanError, setScanError] = useState(null);
 
     const fetchData = async (activeTab) => {
         setLoading(true);
@@ -451,6 +454,65 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     };
 
     const refresh = (activeTab) => { fetchData(activeTab); fetchPendingAck(); };
+
+    // A scanned label names a roll. Prefer the row already on screen -- it carries
+    // the live available figure -- and fall back to Grist, so a roll that is out
+    // of stock (and so absent from the list) can still be booked back in.
+    const openScannedRoll = async ({ raw, id }) => {
+        setScanning(false);
+        setScanError(null);
+        const scanned = String(raw || '').trim();
+        if (!scanned) {
+            setScanError('Nothing was read from that code.');
+            return;
+        }
+        // Prefer the row already on screen -- it carries the live available figure.
+        const onScreen = rows.find((r) => {
+            const iid = String(r.iid || '').toUpperCase();
+            return iid && (iid === id || scanned.toUpperCase().includes(iid));
+        });
+        if (onScreen) { setAdjusting({ row: onScreen, mode: 'ADD', fromScan: true }); return; }
+        try {
+            const headers = await getHeaders();
+            const numeric = /^\d+$/.test(scanned) ? Number(scanned) : 0;
+            const res = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
+                method: 'POST',
+                headers: { ...headers, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    // Three ways in, because a label may carry the id alone, a URL
+                    // with the id inside it, or the item's row id.
+                    sql: `SELECT it.id AS item_ref, it.Item_ID AS iid,
+                                 ic.id AS code_ref, ic.Item_Code AS name, ic.Type AS itype,
+                                 ic.Material AS mat, ic.Colour AS col, ic.GSM AS gsm,
+                                 ic.Width_Inches_ AS w, ic.Height_Inches_ AS h,
+                                 'ROLLS GODOWN' AS location,
+                                 COALESCE((
+                                     SELECT s.Available_Weight_Kg_
+                                     FROM ${SUMMARY_BY_ID_TABLE} s
+                                     WHERE s.Item_ID = it.id AND s.Location = 'ROLLS GODOWN'
+                                       AND s.Incharge_Ack = 1
+                                     LIMIT 1
+                                 ), 0) AS avail
+                          FROM Inventory_Items it
+                          LEFT JOIN Inventory_Item_Codes ic ON ic.id = it.Item_Code
+                          WHERE upper(it.Item_ID) = ?
+                             OR instr(upper(?), upper(it.Item_ID)) > 0
+                             OR (? > 0 AND it.id = ?)
+                          LIMIT 1`,
+                    args: [id, scanned.toUpperCase(), numeric, numeric]
+                })
+            });
+            if (!res.ok) throw new Error(`Lookup failed (${res.status})`);
+            const [row] = ((await res.json()).records || []).map((r) => r.fields);
+            if (!row) {
+                setScanError(`Scanned "${scanned}" — no roll matches that. Expected something like ROLL_30-06-2026_0182.`);
+                return;
+            }
+            setAdjusting({ row, mode: 'ADD', fromScan: true });
+        } catch (err) {
+            setScanError(`Scanned "${scanned}" — lookup failed: ${err.message || String(err)}`);
+        }
+    };
 
     useEffect(() => {
         refresh(tab);
@@ -558,6 +620,16 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                         <Button variant="secondary" onClick={() => setShowSearch((s) => !s)} className="!px-2.5 shrink-0">
                             <Search size={18} />
                         </Button>
+                        {tab === 'id' && (
+                            <Button
+                                variant="primary"
+                                onClick={() => { setScanError(null); setScanning(true); }}
+                                className="!px-2.5 shrink-0 bg-teal-600 hover:bg-teal-700"
+                                title="Scan a roll label"
+                            >
+                                <ScanLine size={18} />
+                            </Button>
+                        )}
                         <Button variant="secondary" onClick={() => refresh(tab)} disabled={loading} className="!px-2.5 shrink-0">
                             <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
                         </Button>
@@ -602,6 +674,18 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
 
             <main className="flex-1 p-3 overflow-auto">
                 <div className={`${wrap} mx-auto`}>
+                    {scanError && (
+                        <div className="mb-3 p-3 bg-amber-50 text-amber-800 rounded-lg border border-amber-200 flex gap-2 items-start">
+                            <AlertCircle size={18} className="mt-0.5 shrink-0" />
+                            <div className="flex-1 min-w-0">
+                                <p className="text-sm break-words">{scanError}</p>
+                            </div>
+                            <button onClick={() => setScanError(null)} className="text-amber-500 hover:text-amber-800 shrink-0">
+                                <X size={16} />
+                            </button>
+                        </div>
+                    )}
+
                     {error && (
                         <div className="mb-3 p-3 bg-red-50 text-red-700 rounded-lg border border-red-100 flex gap-2 items-start">
                             <AlertCircle size={18} className="mt-0.5 shrink-0" />
@@ -817,10 +901,15 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                 />
             )}
 
+            {scanning && (
+                <QrScanModal onClose={() => setScanning(false)} onScan={openScannedRoll} />
+            )}
+
             {adjusting && (
                 <StockAdjustModal
                     row={adjusting.row}
                     mode={adjusting.mode}
+                    allowModeSwitch={Boolean(adjusting.fromScan)}
                     available={rowQty(adjusting.row).kg}
                     onClose={() => setAdjusting(null)}
                     onSaved={() => { setAdjusting(null); refresh(tab); }}

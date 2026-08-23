@@ -17,7 +17,10 @@ const fmtKg = (v) => num(v).toFixed(2);
 // Incharge_Ack is deliberately left unset, so the transaction does not count
 // towards stock until the incharge signs it off in the acknowledgement queue --
 // the same path every other movement the app books goes through.
-const StockAdjustModal = ({ row, mode, available, onClose, onSaved, getHeaders, getUrl }) => {
+const StockAdjustModal = ({ row, mode: initialMode, available, onClose, onSaved, getHeaders, getUrl, allowModeSwitch = false }) => {
+    // Opened from a row's + / - the direction is already decided; opened from a
+    // scan there is nothing to decide it, so the operator picks here.
+    const [mode, setMode] = useState(initialMode || 'ADD');
     const [qty, setQty] = useState('');
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState(null);
@@ -81,6 +84,30 @@ const StockAdjustModal = ({ row, mode, available, onClose, onSaved, getHeaders, 
                 </div>
 
                 <div className="p-4 space-y-3">
+                    {allowModeSwitch && (
+                        <div className="grid grid-cols-2 gap-2">
+                            {['ADD', 'LESS'].map((m) => {
+                                const on = mode === m;
+                                const adding = m === 'ADD';
+                                return (
+                                    <button
+                                        key={m}
+                                        type="button"
+                                        onClick={() => setMode(m)}
+                                        className={`inline-flex items-center justify-center gap-1.5 py-2 rounded-xl border text-sm font-semibold transition-colors ${on
+                                            ? adding
+                                                ? 'bg-emerald-600 text-white border-emerald-600'
+                                                : 'bg-rose-600 text-white border-rose-600'
+                                            : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}
+                                    >
+                                        {adding ? <Plus size={15} /> : <Minus size={15} />}
+                                        {adding ? 'Add stock' : 'Reduce stock'}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
+
                     <div className="flex items-center gap-3 bg-slate-50 rounded-xl p-2.5">
                         <div className="w-11 shrink-0">
                             <ItemVisual colour={row.col} type={row.itype} name={row.name} size="sm" />
