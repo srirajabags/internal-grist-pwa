@@ -1072,9 +1072,6 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
     const jobType = (job.type || '').trim().toUpperCase();
     const sizeDim = SIZE_DIM[jobType] || 'bag';
     const isDcut = jobType === 'ROLLS TO DCUT';
-    // Handle outputs are counted in bundles; everything else (incl. side/bottom
-    // patty, which is cut from rolls) in kg.
-    const isPieces = jobType === 'ROLLS TO HANDLES' || jobType === 'ROLLS TO PRESSING HANDLES';
     const cell = (v) => (v === null || v === undefined || v === '' || typeof v === 'object') ? '—' : v;
     // The floor is ticking off what it has cut, so a patty line has to name the
     // strip it produces -- width by the length that wraps the bag -- not just the
@@ -1149,11 +1146,9 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
                 )}
 
                 {/* Required = production output + finished stock pulled from godown */}
-                {!isPieces && (
-                    <div className="mb-3 pb-3 border-b border-slate-100">
-                        <QtyBar output={job.outputKg} finished={job.finishedKg} required={job.plannedKg} />
-                    </div>
-                )}
+                <div className="mb-3 pb-3 border-b border-slate-100">
+                    <QtyBar output={job.outputKg} finished={job.finishedKg} required={job.plannedKg} />
+                </div>
 
                 <div className="mt-1">
                     <DetailRow label="Type" value={job.type || '—'} />
@@ -1163,8 +1158,8 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
                     <DetailRow label="From Date" value={formatDate(job.fromDate)} />
                     <DetailRow label="To Date" value={formatDate(job.toDate)} />
                     <DetailRow label="Required Quantity (Kg)" value={`${fmtKg(job.plannedKg ?? 0)} kg`} />
-                    {!isPieces && <DetailRow label="Finished Stock Quantity (Kg)" value={`${fmtKg(job.finishedKg ?? 0)} kg`} />}
-                    {!isPieces && <DetailRow label="Planned Output Quantity (Kg)" value={`${fmtKg(job.outputKg ?? 0)} kg`} />}
+                    <DetailRow label="Finished Stock Quantity (Kg)" value={`${fmtKg(job.finishedKg ?? 0)} kg`} />
+                    <DetailRow label="Planned Output Quantity (Kg)" value={`${fmtKg(job.outputKg ?? 0)} kg`} />
                     <DetailRow label="Planned Count (Bundles)" value={job.bundles ?? 0} />
                     <DetailRow label="Production Started" value={job.started ? 'Yes' : 'No'} />
                     <DetailRow label="Production Started At" value={startedAt || '—'} />
@@ -1216,7 +1211,7 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
                                     <p className="text-[11px] text-slate-400">{g.count} sub-order{g.count !== 1 ? 's' : ''}</p>
                                 </div>
                                 <div className="flex items-center gap-3 shrink-0">
-                                    <span className="text-sm font-semibold text-slate-700">{isPieces ? num(g.qty) : `${fmtKg(g.qty)} kg`}</span>
+                                    <span className="text-sm font-semibold text-slate-700">{`${fmtKg(g.qty)} kg`}</span>
                                     <input
                                         type="checkbox"
                                         checked={!!checked[g.key]}
@@ -1247,7 +1242,7 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
                             const convKg = soQty(so);
                             const qtyLabel = (so.qty === null || so.qty === undefined || so.qty === '')
                                 ? '—'
-                                : `${so.qty}${so.qtyType ? ` ${so.qtyType}` : ''}${!isPieces && convKg !== num(so.qty) ? ` (≈ ${fmtKg(convKg)} kg)` : ''}`;
+                                : `${so.qty}${so.qtyType ? ` ${so.qtyType}` : ''}${convKg !== num(so.qty) ? ` (≈ ${fmtKg(convKg)} kg)` : ''}`;
                             return (
                             <Card key={so.id} className={`p-4 ${checked[sizeKeyFor(so)] ? 'ring-1 ring-green-300 bg-green-50/40' : ''}`}>
                                 <div className="flex items-start justify-between gap-2 mb-3">

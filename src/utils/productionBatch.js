@@ -442,7 +442,11 @@ const bagPieces = (so) => {
         const massPerPiece = (w * (h * 2 + 2) * gsm) / PIECE_TO_KG_DIVISOR;
         return massPerPiece > 0 ? num(so.Quantity) / massPerPiece : null;
     }
-    return num(so.Quantity);
+    // A piece-quoted order states its bag count outright. A weight-quoted one has
+    // to be divided by a bag's cloth mass, and only the caller knows how to work
+    // that out, so say "unknown" rather than reading the kilos as a bag count --
+    // that turned a 500 kg line into an order for 500 bags.
+    return norm(so.Quantity_Type) === 'WEIGHT (KG)' ? null : num(so.Quantity);
 };
 
 // Bags a sub-order covers, for callers that want to show the count a weight-quoted
@@ -482,7 +486,7 @@ export const missingInfoFields = (batchType, so) => {
 
 // A patty order missing the info needed to size it (strip width, bag dims, GSM).
 export const cannotSizePatty = (batchType, so) =>
-    (batchType === 'ROLLS TO SIDEPATTY' && pattyDims(so) == null)
+    (batchType === 'ROLLS TO SIDEPATTY' && (pattyDims(so) == null || bagPieces(so) == null))
     || (batchType === 'ROLLS TO BOTTOMPATTY SHEETS' && bottomSheetCount(so) == null);
 
 // Kg of roll a patty sub-order consumes: one gusset per bag, each strip weighing
@@ -966,41 +970,43 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
     if (batchType === 'ROLLS TO MODEL SHEETS' && required > 0) {
         // Sheets already printed with this model come first; then plain white
         // sheets of the same size, which only need printing; and a roll is cut
-        // only for whatever neither of those covers.
-        const fromFinished = takeFrom(finished, Math.min(required, finishedTotal), 'finished');
-        let shortfall = required - fromFinished.covered;
+        // only for whatever neither of those covers. takeFrom only reads, so the
+        // ladder can be run twice -- once to see how far the stock goes, again to
+        // reserve just the part the job will actually consume.
         const alternatesTotal = alternates.reduce((s, r) => s + r.avail, 0);
-        const fromBlanks = shortfall > 0
-            ? takeFrom(alternates, Math.min(shortfall, alternatesTotal), 'blank')
-            : { picks: [], covered: 0 };
-        shortfall -= fromBlanks.covered;
-        const fromRolls = shortfall > 0 ? takeFrom(rolls, shortfall, 'roll') : { picks: [], covered: 0 };
-        const covered = fromFinished.covered + fromBlanks.covered + fromRolls.covered;
-        const picks = [...fromFinished.picks, ...fromBlanks.picks, ...fromRolls.picks];
-        if (covered >= required) {
+        const ladder = (budget) => {
+            const fromFinished = takeFrom(finished, Math.min(budget, finishedTotal), 'finished');
+            let shortfall = budget - fromFinished.covered;
+            const fromBlanks = shortfall > 0
+                ? takeFrom(alternates, Math.min(shortfall, alternatesTotal), 'blank')
+                : { picks: [], covered: 0 };
+            shortfall -= fromBlanks.covered;
+            const fromRolls = shortfall > 0 ? takeFrom(rolls, shortfall, 'roll') : { picks: [], covered: 0 };
+            return {
+                picks: [...fromFinished.picks, ...fromBlanks.picks, ...fromRolls.picks],
+                covered: fromFinished.covered + fromBlanks.covered + fromRolls.covered,
+                fromGodown: fromFinished.covered + fromBlanks.covered,
+                fromRolls: fromRolls.covered
+            };
+        };
+        const full = ladder(required);
+        if (full.covered >= required) {
             return {
                 // 1 when the godown covered it outright, 2 when only rolls were
                 // used, 3 when it took a mix.
-                priority: fromRolls.covered === 0
-                    ? 1
-                    : (fromFinished.covered + fromBlanks.covered) === 0 ? 2 : 3,
-                picks,
+                priority: full.fromRolls === 0 ? 1 : full.fromGodown === 0 ? 2 : 3,
+                picks: full.picks,
                 fulfilledQty: required,
                 fulfilled: subOrders,
                 postponed: []
             };
         }
-        const { fulfilled, postponed } = splitByCapacity(batchType, subOrders, covered);
+        const { fulfilled, postponed } = splitByCapacity(batchType, subOrders, full.covered);
         if (fulfilled.length === 0) {
             return { priority: 5, picks: [], fulfilledQty: 0, fulfilled: [], postponed: subOrders };
         }
-        return {
-            priority: 4,
-            picks,
-            fulfilledQty: fulfilled.reduce((s, so) => s + effectiveQty(batchType, so), 0),
-            fulfilled,
-            postponed
-        };
+        const fulfilledQty = fulfilled.reduce((s, so) => s + effectiveQty(batchType, so), 0);
+        return { priority: 4, picks: ladder(fulfilledQty).picks, fulfilledQty, fulfilled, postponed };
     }
 
     // Priority 1 — finished/semi stock covers the whole requirement.
@@ -1028,11 +1034,15 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
     // Priority 4 — partial: take everything available, postpone what does not fit.
     const capacity = rollsTotal + finishedTotal;
     if (capacity > 0) {
-        const fromRolls = takeFrom(rolls, capacity, 'roll');
-        const fromFinished = takeFrom(finished, capacity - fromRolls.covered, 'finished');
         const { fulfilled, postponed } = splitByCapacity(batchType, subOrders, capacity);
         if (fulfilled.length > 0) {
             const fulfilledQty = fulfilled.reduce((s, so) => s + effectiveQty(batchType, so), 0);
+            // Reserve what the sub-orders that fit will consume, not the whole
+            // shelf: taking the full capacity deducted stock that later groups in
+            // the same run then could not see, and left the review claiming a job
+            // had drawn several times the weight it was actually planned for.
+            const fromRolls = takeFrom(rolls, fulfilledQty, 'roll');
+            const fromFinished = takeFrom(finished, fulfilledQty - fromRolls.covered, 'finished');
             return {
                 priority: 4,
                 picks: [...fromRolls.picks, ...fromFinished.picks],
@@ -1136,7 +1146,6 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
     // Work on a mutable copy of inventory and deduct what each group consumes, so
     // a physical roll/sheet is never allocated to two groups in the same run.
     // Largest-requirement groups are served first.
-    const pieces = false;
     const stock = inventory.map((r) => ({ ...r }));
     const stockById = new Map(stock.map((r) => [r.itemId, r]));
 
@@ -1153,8 +1162,7 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
             for (const p of alloc.picks) {
                 const row = stockById.get(p.itemId);
                 if (!row) continue;
-                if (pieces) row.availBundles = num(row.availBundles) - p.take;
-                else row.availWeight = num(row.availWeight) - p.take;
+                row.availWeight = num(row.availWeight) - p.take;
             }
             // Roll-width jobs are identified by the roll they consume (one roll code
             // per group), so output codes can be resolved per model at completion.
@@ -1204,7 +1212,6 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
     return {
         groups, postponedCount, totalPlannedQty, totalPostponedQty, totalFinishedQty, totalOutputQty, jobCount,
         totalRequiredCount,
-        isPieces: false,
         unmatched: mergeLines(unmatched), unmatchedCount: mergeLines(unmatched).length,
         missingGsm: mergeLines(missingGsm), missingGsmCount: mergeLines(missingGsm).length
     };

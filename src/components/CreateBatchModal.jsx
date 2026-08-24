@@ -31,7 +31,6 @@ const truthy = (v) => v === true || v === 1 || v === '1' || v === 'true';
 // like 28.954838709677418 crowding the mobile layout).
 // kg values are always shown with 2 decimals; piece counts stay integer.
 const fmtKg = (v) => num(v).toFixed(2);
-const fmtQty = (v, isPieces) => (isPieces ? String(Math.round(num(v))) : fmtKg(v));
 // A group's output requirement in whole items — "2,640 sheets", "≈ 132 bags",
 // "14 bundles". Always rounded up: half a sheet or a part bundle still has to be
 // produced. "≈" marks a count backed out of a weight-quoted order, and any
@@ -571,8 +570,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                     for (const p of g.picks) {
                         const row = workingById.get(p.itemId);
                         if (!row) continue;
-                        if (built.isPieces) row.availBundles = num(row.availBundles) - p.take;
-                        else row.availWeight = num(row.availWeight) - p.take;
+                        row.availWeight = num(row.availWeight) - p.take;
                     }
                 }
                 builtPlans.push({ batchType: bt, plan: built });
@@ -621,7 +619,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                 // auto-populates batch.Jobs and each sub-order's Factory_Production_Jobs.
                 const jobRecords = plan.groups.filter((g) => g.fulfilled.length > 0).map((g) => {
                     const itemIds = [...new Set(g.picks.map((p) => p.itemId))];
-                    const assignedWeight = plan.isPieces ? 0 : g.picks.reduce((s, p) => s + p.take, 0);
+                    const assignedWeight = g.picks.reduce((s, p) => s + p.take, 0);
                     return {
                         fields: {
                             Factory_Production_Job_Batch: batch.id,
@@ -631,8 +629,8 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                             Available_Weight_Kg_: assignedWeight,
                             // Kg met from finished godown stock; the rest is the planned
                             // output to actually produce (Planned_Output is a Grist formula
-                            // = Required − this). Pieces batches track bundles, not kg.
-                            Finished_Stock_Quantity_Kg_: plan.isPieces ? 0 : Math.round((g.finishedQty || 0) * 1000) / 1000
+                            // = Required − this). Every batch type plans in kg.
+                            Finished_Stock_Quantity_Kg_: Math.round((g.finishedQty || 0) * 1000) / 1000
                         }
                     };
                 });
@@ -691,7 +689,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
     const totalPostponed = plans.reduce((s, p) => s + p.plan.postponedCount, 0);
     // kg only: a piece-type batch counts in bundles and cannot be added to these.
     const totalPostponedQty = plans.reduce(
-        (s, p) => s + (p.plan.isPieces ? 0 : p.plan.totalPostponedQty), 0
+        (s, p) => s + p.plan.totalPostponedQty, 0
     );
 
     return (
@@ -931,10 +929,13 @@ const RollBadge = ({ width }) => width ? (
 // actually uses. Piece-type batches (handles / patty) allocate in bundles: HANDLE
 // orders are quoted in kg, the rest in pieces, and un-sizable orders show "?".
 // STITCHING sheet orders show their piece count and the converted kg.
+// What the order itself asked for, in the unit it was quoted in.
+const orderedText = (so) => `${num(so.Quantity)} ${norm(so.Quantity_Type) === 'WEIGHT (KG)' ? 'kg' : 'pcs'}`;
+
 const qtyLabel = (batchType, so, unit) => {
     const qty = num(so.Quantity);
     if (BUNDLE_SIZE[batchType] != null) {
-        const input = String(so.Model || '').trim().toUpperCase() === 'HANDLE' ? `${qty} kg` : `${qty} pcs`;
+        const input = orderedText(so);
         const unitName = OUTPUT_COUNT_UNIT[batchType] || 'pieces';
         if (cannotSizePieces(batchType, so)) return `${input} · ? ${unitName} · ? kg`;
         const counted = outputCount(batchType, so);
@@ -952,11 +953,11 @@ const qtyLabel = (batchType, so, unit) => {
     if (batchType === 'ROLLS TO SIDEPATTY') {
         // Bags ordered, the bundles of strips they come to, and the roll weight
         // those bundles take -- the floor counts bundles, the roll is issued in kg.
-        if (cannotSizePatty(batchType, so)) return `${qty} pcs · ? bundles · ? kg`;
+        if (cannotSizePatty(batchType, so)) return `${orderedText(so)} · ? bundles · ? kg`;
         const counted = outputCount(batchType, so);
         const bundles = counted ? Math.ceil(counted.count - 1e-9) : null;
         return [
-            `${qty} pcs`,
+            orderedText(so),
             bundles == null ? '? bundles' : `${bundles} bundle${bundles === 1 ? '' : 's'}`,
             `${effectiveQty(batchType, so).toFixed(2)} kg`
         ].join(' · ');
@@ -988,18 +989,28 @@ const CSV_HEADERS = [
     'Sub-Order Required Count'
 ];
 
+// The review shows "?" wherever a sub-order cannot be sized; the CSV has to say
+// the same, not print a 0.00 that reads as "nothing to make".
+const unsizable = (batchType, so) =>
+    cannotConvertQty(batchType, so) || cannotSizePieces(batchType, so) || cannotSizePatty(batchType, so);
+
 // The sub-order half of a row — shared by grouped and flagged sub-orders.
-const csvSubOrderCells = (so, batchType, unit, status) => {
+const csvSubOrderCells = (so, batchType, status) => {
     const size = sizeText(batchType, so);
+    const sized = !unsizable(batchType, so);
     return [
         status, so.id, so.Order_ID ?? '', so.Shop || '', so.Model || '', so.Roll_Material || '',
         choiceText(so.Bag_Colour), so.Bag_GSM || '', so.Bag_Width || '', so.Bag_Height || '', so.Sheet_Size || '',
         so.Sidepatty_Colour || '', so.Sidepatty_GSM || '', so.Sidepatty_Width || '', so.Handle_Colour || '',
         size.label, size.value, so.Quantity ?? '', so.Quantity_Type || '',
-        fmtQty(effectiveQty(batchType, so), BUNDLE_SIZE[batchType] != null),
+        sized ? fmtKg(effectiveQty(batchType, so)) : '',
         dateText(so.Order_Form_Date), dateText(so.Factory_Updated_Date),
         truthy(so.No_Stock_Identified) ? 'Yes' : 'No',
-        (() => { const c = outputCount(batchType, so); return c ? Math.ceil(c.count - 1e-9) : ''; })()
+        (() => {
+            if (!sized) return '';
+            const c = outputCount(batchType, so);
+            return c ? Math.ceil(c.count - 1e-9) : '';
+        })()
     ];
 };
 
@@ -1010,13 +1021,11 @@ const CSV_EMPTY_GROUP_CELLS = new Array(22).fill('');
 const buildCsvRows = (plans, codeNames, itemNames) => {
     const rows = [];
     for (const { batchType, plan } of plans) {
-        const unit = plan.isPieces ? ' bundles' : ' kg';
-        const unitLabel = plan.isPieces ? 'bundles' : 'kg';
         for (const g of plan.groups) {
             const fulfilledIds = new Set(g.fulfilled.map((so) => so.id));
             const itemIds = [...new Set(g.picks.map((p) => p.itemId))];
             const allocation = g.picks
-                .map((p) => `${itemNames.get(num(p.itemId)) || `#${p.itemId}`} ${p.source} ${fmtQty(p.take, plan.isPieces)}${unitLabel}`)
+                .map((p) => `${itemNames.get(num(p.itemId)) || `#${p.itemId}`} ${p.source} ${fmtKg(p.take)}kg`)
                 .join(' | ');
             const groupCells = [
                 batchType, OUTPUT_TYPE[batchType] || '',
@@ -1024,18 +1033,18 @@ const buildCsvRows = (plans, codeNames, itemNames) => {
                 g.matchedCodeId || '',
                 attrText(g.attrs), g.attrs.material || '', g.attrs.colour || '', g.attrs.gsm || '',
                 g.attrs.width || '', g.rollWidth || '',
-                unitLabel, fmtQty(g.requiredQty, plan.isPieces), fmtQty(g.fulfilledQty, plan.isPieces),
-                plan.isPieces ? '' : fmtKg(g.outputQty), plan.isPieces ? '' : fmtKg(g.finishedQty),
+                'kg', fmtKg(g.requiredQty), fmtKg(g.fulfilledQty),
+                fmtKg(g.outputQty), fmtKg(g.finishedQty),
                 Math.ceil(g.requiredCount.count - 1e-9), g.requiredCount.unit,
                 Math.round(overageRate(batchType) * 100),
                 g.priority, PRIORITY_LABEL[g.priority] || '', itemIds.length, allocation,
                 g.postponed.length,
-                fmtQty(Math.max(g.requiredQty - g.fulfilledQty, 0), plan.isPieces)
+                fmtKg(Math.max(g.requiredQty - g.fulfilledQty, 0))
             ];
             for (const so of g.subOrders) {
                 rows.push([
                     ...groupCells,
-                    ...csvSubOrderCells(so, batchType, unit, fulfilledIds.has(so.id) ? 'Fulfilled' : 'Postponed')
+                    ...csvSubOrderCells(so, batchType, fulfilledIds.has(so.id) ? 'Fulfilled' : 'Postponed')
                 ]);
             }
         }
@@ -1046,7 +1055,7 @@ const buildCsvRows = (plans, codeNames, itemNames) => {
         for (const [so, status] of flagged) {
             rows.push([
                 batchType, OUTPUT_TYPE[batchType] || '', ...CSV_EMPTY_GROUP_CELLS,
-                ...csvSubOrderCells(so, batchType, unit, status)
+                ...csvSubOrderCells(so, batchType, status)
             ]);
         }
     }
@@ -1275,7 +1284,7 @@ const SOURCE_TONE = {
 // the sub-orders behind it — everything the operator checks before creating.
 const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map() }) => {
     const [open, setOpen] = useState(false);
-    const unit = plan.isPieces ? ' bundles' : ' kg';
+    const unit = ' kg';
     const subOrders = plan.groups.reduce((s, g) => s + g.subOrders.length, 0);
     return (
         <div className="space-y-2">
@@ -1285,14 +1294,14 @@ const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map() }) => 
                 <Stat label="Sub-orders" value={subOrders} />
                 <Stat label="Jobs" value={plan.jobCount} />
                 {countText(plan.totalRequiredCount) && <Stat label="Output" value={countText(plan.totalRequiredCount)} tone="sky" />}
-                <Stat label={`Planned${plan.isPieces ? ' (bundles)' : ' kg'}`} value={fmtQty(plan.totalPlannedQty, plan.isPieces)} />
-                {!plan.isPieces && plan.totalFinishedQty > 0 && <Stat label="To produce kg" value={fmtKg(plan.totalOutputQty)} tone="green" />}
-                {!plan.isPieces && plan.totalFinishedQty > 0 && <Stat label="From stock kg" value={fmtKg(plan.totalFinishedQty)} tone="sky" />}
+                <Stat label="Planned kg" value={fmtKg(plan.totalPlannedQty)} />
+                {plan.totalFinishedQty > 0 && <Stat label="To produce kg" value={fmtKg(plan.totalOutputQty)} tone="green" />}
+                {plan.totalFinishedQty > 0 && <Stat label="From stock kg" value={fmtKg(plan.totalFinishedQty)} tone="sky" />}
                 <Stat label="Postponed" value={plan.postponedCount} tone={plan.postponedCount ? 'amber' : 'slate'} />
                 {plan.totalPostponedQty > 0 && (
                     <Stat
-                        label={`Postponed${plan.isPieces ? ' (bundles)' : ' kg'}`}
-                        value={fmtQty(plan.totalPostponedQty, plan.isPieces)}
+                        label="Postponed kg"
+                        value={fmtKg(plan.totalPostponedQty)}
                         tone="amber"
                     />
                 )}
@@ -1318,11 +1327,11 @@ const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map() }) => 
                                 <PriorityBadge priority={g.priority} />
                             </div>
                             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
-                                <span className="font-semibold text-slate-700">Required {fmtQty(g.requiredQty, plan.isPieces)}{unit}</span>
+                                <span className="font-semibold text-slate-700">Required {fmtKg(g.requiredQty)}{unit}</span>
                                 {countText(g.requiredCount) && (
                                     <span className="font-medium text-slate-600">Output {countText(g.requiredCount)}</span>
                                 )}
-                                <span>Fulfilled {fmtQty(g.fulfilledQty, plan.isPieces)}{unit}</span>
+                                <span>Fulfilled {fmtKg(g.fulfilledQty)}{unit}</span>
                                 {g.picks.length > 0 && (
                                     <span className="flex items-center gap-1">
                                         <Package size={12} /> {[...new Set(g.picks.map((p) => p.itemId))].length} stock item(s)
@@ -1342,13 +1351,13 @@ const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map() }) => 
                                                 {itemNames.get(num(p.itemId)) || `#${p.itemId}`}
                                             </span>
                                             <span className="tabular-nums">
-                                                {fmtQty(p.take, plan.isPieces)}{unit}
+                                                {fmtKg(p.take)}{unit}
                                             </span>
                                         </span>
                                     ))}
                                 </div>
                             )}
-                            {!plan.isPieces && <QtyBar output={g.outputQty} finished={g.finishedQty} />}
+                            <QtyBar output={g.outputQty} finished={g.finishedQty} />
                             <div className="flex flex-wrap gap-1.5 mt-2">
                                 {g.subOrders.map((so) => (
                                     <SubOrderPill
