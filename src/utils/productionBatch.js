@@ -642,16 +642,15 @@ export const groupAttrs = (batchType, so) => {
     // material is plain white NW VIRGIN, cut to the width the sheet size needs.
     if (batchType === 'ROLLS TO MODEL SHEETS') {
         const rw = requiredRollWidth(batchType, so);
-        const dims = parseSheetSize(so.Sheet_Size);
-        const [sheetW, sheetH] = dims ? [Math.min(...dims), Math.max(...dims)] : ['', ''];
         return {
             material: 'NW VIRGIN',
             colour: so.Bag_Colour || '',          // the model number
             gsm: so.Bag_GSM || '',
             width: typeof rw === 'number' ? String(rw) : '',
-            // Ready model sheets are held at their own size, not the roll's.
-            finishedWidth: String(sheetW),
-            finishedHeight: String(sheetH),
+            // Size is matched per sheet in allocateStock, since one roll width
+            // covers several sheet lengths.
+            finishedWidth: null,
+            finishedHeight: null,
             // The roll behind them is always plain white.
             rollColour: 'WHITE',
             // Failing ready model sheets, a plain white sheet of the same size can
@@ -662,8 +661,8 @@ export const groupAttrs = (batchType, so) => {
                 material: 'NW VIRGIN',
                 colour: 'WHITE',
                 gsm: so.Bag_GSM || '',
-                width: String(sheetW),
-                height: String(sheetH)
+                width: null,
+                height: null
             }
         };
     }
@@ -672,12 +671,17 @@ export const groupAttrs = (batchType, so) => {
     // every sub-order cuttable from the same roll lands in one job.
     if (ROLL_WIDTH_TYPES.has(batchType)) {
         const rw = requiredRollWidth(batchType, so);
-        return {
+        const base = {
             material: so.Roll_Material || '',
             colour: so.Bag_Colour || '',
             gsm: so.Bag_GSM || '',
             width: typeof rw === 'number' ? String(rw) : ''
         };
+        // A sheet batch cuts one roll width into several sheet lengths, so the
+        // group has no single finished size. Ready sheets are matched per size
+        // instead, in allocateStock -- see finishedBySize.
+        if (SHEET_TYPES.has(batchType)) return { ...base, finishedWidth: null, finishedHeight: null };
+        return base;
     }
     return {
         material: so.Roll_Material || '',
@@ -823,9 +827,56 @@ const splitByCapacity = (batchType, subOrders, capacity) => {
 
 // Run the 5-priority ladder for one group. Returns the allocation describing the
 // job to create (if any) and which sub-orders are postponed.
+// The size a finished article is stocked at, for one sub-order. A roll-width job
+// cuts one roll into several of these, which is why finished stock cannot be
+// pooled across the group: a roll makes any length, a ready 16x18 sheet does not
+// become a 16x21 one. null where the type has no size of its own to match on.
+const outputSizeKey = (batchType, so) => {
+    const key = (w, h) => `${Math.min(num(w), num(h))}x${Math.max(num(w), num(h))}`;
+    if (SHEET_TYPES.has(batchType)) {
+        const d = parseSheetSize(so.Sheet_Size);
+        return d ? key(d[0], d[1]) : null;
+    }
+    if (batchType === 'ROLLS TO BOTTOMPATTY SHEETS') {
+        const d = bottomSheetDims(so);
+        return d ? key(d.sheetW, d.sheetH) : null;
+    }
+    return null;
+};
+
+// Cut each stock row down to what its own size is actually wanted for, so ready
+// stock can only ever answer the sub-orders it fits. Rows of a size nobody ordered
+// drop out entirely. Types without a size of their own are left as they were.
+const finishedBySize = (rows, subOrders, batchType) => {
+    const demand = new Map();
+    let sized = false;
+    for (const so of subOrders) {
+        const k = outputSizeKey(batchType, so);
+        if (!k) continue;
+        sized = true;
+        demand.set(k, (demand.get(k) || 0) + effectiveQty(batchType, so));
+    }
+    if (!sized) return rows;
+    const left = new Map(demand);
+    const capped = [];
+    for (const r of rows) {
+        const k = `${Math.min(num(r.width), num(r.height))}x${Math.max(num(r.width), num(r.height))}`;
+        const remaining = left.get(k) ?? 0;
+        if (remaining <= 0) continue;
+        const use = Math.min(r.avail, remaining);
+        left.set(k, remaining - use);
+        capped.push({ ...r, avail: use });
+    }
+    return capped;
+};
+
 export const allocateStock = (attrs, subOrders, inventory, batchType, outputType) => {
     const required = subOrders.reduce((s, so) => s + effectiveQty(batchType, so), 0);
-    const { finished, alternates, rolls } = relevantStock(attrs, inventory, batchType, outputType);
+    const stockLists = relevantStock(attrs, inventory, batchType, outputType);
+    const rolls = stockLists.rolls;
+    // Ready stock is size-specific; the roll it would otherwise be cut from is not.
+    const finished = finishedBySize(stockLists.finished, subOrders, batchType);
+    const alternates = finishedBySize(stockLists.alternates, subOrders, batchType);
     const finishedTotal = finished.reduce((s, r) => s + r.avail, 0);
     const rollsTotal = rolls.reduce((s, r) => s + r.avail, 0);
 
