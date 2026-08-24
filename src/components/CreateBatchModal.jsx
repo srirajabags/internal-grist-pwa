@@ -8,7 +8,7 @@ import { countToKg } from '../utils/txnDisplay';
 import {
     BATCH_TYPES, HARD_START_DATE, OUTPUT_TYPE, PRIORITY_LABEL, buildPlan,
     effectiveQty, needsPieceConversion, cannotConvertQty, cannotSizePieces, cannotSizePatty, BUNDLE_SIZE,
-    typeNeedsSubOrder, missingInfoFields, outputCount, overageRate
+    typeNeedsSubOrder, missingInfoFields, outputCount, overageRate, bottomSheetDims
 } from '../utils/productionBatch';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
@@ -84,6 +84,13 @@ const sizeText = (batchType, so) => {
     const type = String(batchType || '').trim().toUpperCase();
     if (type === 'ROLLS TO SHEETS' || type === 'ROLLS TO MODEL SHEETS') {
         return { label: 'Sheet', value: so.Sheet_Size || '—' };
+    }
+    if (type === 'ROLLS TO BOTTOMPATTY SHEETS') {
+        const d = bottomSheetDims(so);
+        return {
+            label: 'Bottom sheet',
+            value: d ? `${d.sheetW}″ × ${d.sheetH}″ · ${d.piecesPerSheet}/sheet` : '—'
+        };
     }
     if (type === 'ROLLS TO SIDEPATTY') {
         const width = so.Sidepatty_Width;
@@ -328,7 +335,8 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                         `SELECT so.Factory_Updated_Date AS d,
                                 so.Factory_Production_Jobs AS jobs,
                                 so.Model AS Model, so.Material AS Material, so.Print AS Print,
-                                so.Sidepatty_Width AS Sidepatty_Width
+                                so.Sidepatty_Width AS Sidepatty_Width,
+                                so.Sidepatty_Colour AS Sidepatty_Colour
                          FROM Sub_Orders so
                          WHERE so.Status = 'UPDATED TO FACTORY' AND so.Factory_Updated_Date >= ?
                            AND so.Material IN ('NON-WOVEN', 'BOPP LAMINATED')
@@ -346,10 +354,13 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                     .map((r) => ({
                         date: epochToDate(r.d),
                         jobTypes: parseRefList(r.jobs).map((jid) => jobType.get(jid)).filter(Boolean),
-                        // Only the fields typeNeedsSubOrder qualifies on.
+                        // Every field typeNeedsSubOrder reads. A type whose
+                        // qualifier needs something missing here silently counts
+                        // nothing, so this list has to grow with that function.
                         so: {
                             Model: r.Model, Material: r.Material, Print: r.Print,
-                            Sidepatty_Width: r.Sidepatty_Width
+                            Sidepatty_Width: r.Sidepatty_Width,
+                            Sidepatty_Colour: r.Sidepatty_Colour
                         }
                     }))
                     .filter((r) => r.date));

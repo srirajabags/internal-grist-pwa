@@ -32,6 +32,7 @@ const SIZE_DIM = {
     'ROLLS TO UCUT': 'bag',
     'ROLLS TO WCUT': 'bag',
     'ROLLS TO SIDEPATTY': 'patty',
+    'ROLLS TO BOTTOMPATTY SHEETS': 'patty',
     'ROLLS TO HANDLES': 'bag',
     'ROLLS TO PRESSING HANDLES': 'bag'
 };

@@ -12,6 +12,7 @@ export const BATCH_TYPES = [
     'ROLLS TO MODEL SHEETS',
     'ROLLS TO DCUT',
     'ROLLS TO SIDEPATTY',
+    'ROLLS TO BOTTOMPATTY SHEETS',
     'ROLLS TO HANDLES',
     'ROLLS TO PRESSING HANDLES'
 ];
@@ -29,6 +30,7 @@ export const OUTPUT_TYPE = {
     'ROLLS TO UCUT': 'UCUT BAG',
     'ROLLS TO WCUT': 'WCUT BAG',
     'ROLLS TO SIDEPATTY': 'SIDEPATTY',
+    'ROLLS TO BOTTOMPATTY SHEETS': 'BOTTOMPATTY SHEET',
     'ROLLS TO HANDLES': 'HANDLE',
     'ROLLS TO PRESSING HANDLES': 'PRESSING HANDLE'
 };
@@ -120,6 +122,7 @@ export const PRODUCTION_OVERAGE = {
     'ROLLS TO UCUT': 0.10,
     'ROLLS TO WCUT': 0,
     'ROLLS TO SIDEPATTY': 0.10,
+    'ROLLS TO BOTTOMPATTY SHEETS': 0.10,
     'ROLLS TO HANDLES': 0.10,
     'ROLLS TO PRESSING HANDLES': 0.10
 };
@@ -197,11 +200,49 @@ export const pattyDims = (so) => {
     const bw = num(so.Bag_Width);
     if (norm(so.Sidepatty_Colour) === 'PRINTED') {
         if (!bw) return null;                              // need bag width for length
-        return { kind: 'BOTTOMPATTY', width: sw - 0.5, length: bw, gsm: '110', rolls: ROLL_WIDTHS_BOTTOMPATTY };
+        // Bottom patties and the sheets they are cut from are 90 GSM NW REGULAR
+        // throughout the catalogue -- nothing is stocked at 110.
+        return { kind: 'BOTTOMPATTY', width: sw - 0.5, length: bw, gsm: '90', rolls: ROLL_WIDTHS_BOTTOMPATTY };
     }
     const bh = num(so.Bag_Height), gsm = num(so.Sidepatty_GSM);
     if (!bw || !bh || !gsm) return null;                  // need bag dims + GSM
     return { kind: 'SIDEPATTY', width: sw, length: bw + (bh + 1) * 2, gsm: String(gsm), rolls: ROLL_WIDTHS_SIDEPATTY };
+};
+
+// A printed side patty is really a bottom patty, and those are cut from a sheet
+// rather than strip by strip. The sheet is as wide as the roll it comes off and as
+// long as the bag is wide, and it divides into whole strips across its width --
+// 18" / 4.5" = 4 strips, 13" / 6.5" = 2, 17" / 8.5" = 2, matching the floor's
+// cutting table. Returns null when the sub-order cannot be sized, or when no roll
+// width is an exact multiple of the strip.
+export const bottomSheetDims = (so) => {
+    const d = pattyDims(so);
+    if (!d || d.kind !== 'BOTTOMPATTY') return null;
+    const rollWidth = exactMultipleRollWidth(d.width, d.rolls);
+    if (!rollWidth) return null;
+    const piecesPerSheet = Math.round(rollWidth / d.width);
+    if (!(piecesPerSheet >= 1)) return null;
+    // Sheet stock is catalogued smaller x bigger, like every other item size.
+    const [sheetW, sheetH] = [Math.min(rollWidth, d.length), Math.max(rollWidth, d.length)];
+    return {
+        stripWidth: d.width,        // the finished bottom patty's width
+        stripLength: d.length,      // ... which is the bag's width
+        rollWidth,
+        piecesPerSheet,
+        sheetW,
+        sheetH,
+        gsm: d.gsm
+    };
+};
+
+// Sheets a sub-order needs: one bottom patty per bag, divided by what a sheet
+// yields. Null when the geometry does not resolve.
+export const bottomSheetCount = (so) => {
+    const dims = bottomSheetDims(so);
+    const bags = bagPieces(so);
+    if (!dims || bags == null) return null;
+    const perBag = perBagRequirement(so, 'BOTTOMPATTY') ?? 1;
+    return (bags * perBag) / dims.piecesPerSheet;
 };
 
 // The roll width a patty sub-order needs (exact multiple of its strip width), or
@@ -359,7 +400,8 @@ export const missingInfoFields = (batchType, so) => {
 
 // A patty order missing the info needed to size it (strip width, bag dims, GSM).
 export const cannotSizePatty = (batchType, so) =>
-    batchType === 'ROLLS TO SIDEPATTY' && pattyDims(so) == null;
+    (batchType === 'ROLLS TO SIDEPATTY' && pattyDims(so) == null)
+    || (batchType === 'ROLLS TO BOTTOMPATTY SHEETS' && bottomSheetCount(so) == null);
 
 // Kg of roll a patty sub-order consumes: one gusset per bag, each strip weighing
 // width × length × GSM / 1,550,000 kg. A roll of the chosen multiple width cuts
@@ -383,6 +425,7 @@ export const OUTPUT_COUNT_UNIT = {
     'ROLLS TO UCUT': 'bags',
     'ROLLS TO WCUT': 'bags',
     'ROLLS TO SIDEPATTY': 'bundles',
+    'ROLLS TO BOTTOMPATTY SHEETS': 'sheets',
     'ROLLS TO HANDLES': 'bundles',
     'ROLLS TO PRESSING HANDLES': 'bundles'
 };
@@ -423,6 +466,16 @@ const bagCount = (batchType, so) => {
 // bundles. Returns { count, exact } — `exact` is false when the bag count had to
 // be backed out of a weight-quoted order — or null when it can't be derived.
 export const outputCount = (batchType, so) => {
+    // Bottom-patty sheets are counted from the cutting geometry -- so many strips
+    // to a sheet -- rather than by a per-bag requirement.
+    if (batchType === 'ROLLS TO BOTTOMPATTY SHEETS') {
+        const sheets = bottomSheetCount(so);
+        if (sheets == null) return null;
+        return {
+            count: withOverage(batchType, sheets),
+            exact: norm(so.Model) !== 'HANDLE'
+        };
+    }
     const outType = outputTypeFor(batchType, so);
     const perBag = perBagRequirement(so, outType);
     if (perBag == null) return null;
@@ -463,6 +516,12 @@ const orderedQty = (batchType, so) => {
         return (bags * perBag) / BUNDLE_SIZE[batchType];
     }
     if (batchType === 'ROLLS TO SIDEPATTY') return pattyKg(so);
+    if (batchType === 'ROLLS TO BOTTOMPATTY SHEETS') {
+        const dims = bottomSheetDims(so);
+        const sheets = bottomSheetCount(so);
+        if (!dims || sheets == null) return 0;   // un-sizable -> flagged, contributes nothing
+        return sheets * (dims.sheetW * dims.sheetH * num(dims.gsm)) / PIECE_TO_KG_DIVISOR;
+    }
     if (needsPieceConversion(batchType, so)) {
         const kg = sheetPiecesToKg(batchType, so);
         if (kg != null) return kg;
@@ -495,6 +554,9 @@ export const typeNeedsSubOrder = (batchType, so) => {
         // bottom patty when the side patty is PRINTED. Either way needs a width.
         case 'ROLLS TO SIDEPATTY':
             return isSet(so.Sidepatty_Width);
+        // A printed side patty is a bottom patty, and those come off a sheet.
+        case 'ROLLS TO BOTTOMPATTY SHEETS':
+            return isSet(so.Sidepatty_Width) && norm(so.Sidepatty_Colour) === 'PRINTED';
         default: return false;
     }
 };
@@ -528,6 +590,21 @@ export const groupAttrs = (batchType, so) => {
             height: batchType === 'ROLLS TO PRESSING HANDLES' ? '14.5' : '13'
         };
     }
+    // Bottom-patty sheets are grouped by the roll they are cut from, and stocked at
+    // their own sheet size. The patty is printed to match the bag's handle, so the
+    // handle colour is the sheet's colour.
+    if (batchType === 'ROLLS TO BOTTOMPATTY SHEETS') {
+        const dims = bottomSheetDims(so);
+        return {
+            material: 'NW REGULAR',
+            colour: so.Handle_Colour || so.Sidepatty_Colour || '',
+            gsm: dims ? dims.gsm : '110',
+            width: dims ? String(dims.rollWidth) : '',
+            finishedWidth: dims ? String(dims.sheetW) : '',
+            finishedHeight: dims ? String(dims.sheetH) : ''
+        };
+    }
+
     // A model-number sheet is stocked under the customer's model number, which the
     // sub-order carries in Bag_Colour (e.g. K10), so finished stock is searched for
     // on that. Nothing is printed with a model number on a coloured roll: the raw
@@ -837,6 +914,11 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
         // width; flag orders no fixed roll width can satisfy.
         if (batchType === 'ROLLS TO SIDEPATTY') {
             if (pattyRollWidth(so) == null) { unmatched.push(so); continue; }
+            groupable.push(so);
+            continue;
+        }
+        if (batchType === 'ROLLS TO BOTTOMPATTY SHEETS') {
+            if (bottomSheetDims(so) == null) { unmatched.push(so); continue; }
             groupable.push(so);
             continue;
         }
