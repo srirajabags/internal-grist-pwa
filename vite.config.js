@@ -90,6 +90,10 @@ export default defineConfig({
       },
       workbox: {
         navigateFallbackDenylist: [/\/api/],
+        // version.json says which build is deployed, so it must always come from
+        // the network -- precaching it would have the app compare itself against
+        // a copy of its own build and conclude it is up to date forever.
+        globIgnores: ['**/version.json'],
         // The app bundle sits just over Workbox's 2 MiB default, which fails the
         // build rather than warning about it, so a few KB of new code could break
         // a deploy.

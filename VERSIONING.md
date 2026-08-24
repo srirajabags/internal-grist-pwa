@@ -30,9 +30,34 @@ Manually trigger version update without building.
 
 ## Files
 
-- `get-version.js` - Script that generates the version file with UTC and IST timestamps
-- `src/version.js` - Auto-generated file with current commit info and timestamps
+- `get-version.js` - Script that generates the version files with UTC and IST timestamps
+- `src/version.js` - Auto-generated file with current commit info and timestamps, compiled into the bundle: which build is **running**
+- `public/version.json` - Auto-generated and served unhashed next to `index.html`: which build is **deployed**
+- `src/utils/appUpdate.js` - Fetches `version.json`, compares it with the running build, and reloads onto the new one
+- `src/components/UpdateGate.jsx` - Wraps the app and blocks it when the two disagree
 - `src/App.jsx` - Imports and displays the version and IST timestamp in settings modal
+
+## Forced updates
+
+The service worker is registered with `autoUpdate`, which only picks up a new
+build on the next navigation — an installed PWA can sit on one screen for days
+and never navigate. So the running app also checks for itself:
+
+1. `UpdateGate` fetches `/version.json` on load, when the tab becomes visible
+   again, and every 15 minutes.
+2. If the deployed commit differs from the one compiled into the bundle, a
+   modal blocks the app. It cannot be dismissed — a stale bundle writing to a
+   changed schema is the failure this prevents.
+3. **Update now** unregisters the service worker, deletes every cache and
+   reloads, so the next load comes from the network.
+4. If two reloads fail to resolve the mismatch (a half-finished deploy, say),
+   the modal offers a way past rather than leaving the app unusable.
+
+`/track` is exempt: customers see it embedded in the public website.
+
+`version.json` is excluded from the Workbox precache (`globIgnores`). If it were
+precached, the app would compare itself against a cached copy of its own build
+and conclude it was up to date forever.
 
 ## Current Version Display
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users, Boxes, Warehouse, Printer, Scissors, Zap, PackageSearch } from 'lucide-react';
+import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users, Boxes, Warehouse, Printer, Scissors, Zap, PackageSearch, CheckCircle2 } from 'lucide-react';
 import SqlVisualization from './components/SqlVisualization';
 import DashboardList from './components/DashboardList';
 import DashboardView from './components/DashboardView';
@@ -17,6 +17,9 @@ import { APP_VERSION, BUILD_TIMESTAMP_IST_READABLE } from './version.js';
 
 // Import diagnostic service
 import { generateAndDownloadDiagnosticReport } from './utils/diagnosticService';
+
+// Deployed-build check, shared with the update gate that wraps the whole app
+import { fetchDeployedBuild, isDifferentBuild, applyUpdate } from './utils/appUpdate';
 
 // Import role-based page access control
 import { canAccessPage, hasGodRole, PAGE_ROLE_REQUIREMENTS } from './utils/pageAccess';
@@ -190,6 +193,58 @@ const UserImpersonationSelect = ({ value, onChange, options, loading, placeholde
 
 
 // Settings Modal Component
+// Settings: ask the server what is deployed, right now. The update gate polls on
+// its own schedule and blocks when it finds a new build; this is for someone who
+// has been told a fix is out and does not want to wait for the next poll.
+const UpdateCheck = () => {
+  const [state, setState] = useState('idle');   // idle | checking | current | stale | error
+  const [deployed, setDeployed] = useState(null);
+
+  const run = async () => {
+    setState('checking');
+    try {
+      const build = await fetchDeployedBuild();
+      setDeployed(build);
+      setState(isDifferentBuild(build) ? 'stale' : 'current');
+    } catch {
+      setState('error');
+    }
+  };
+
+  return (
+    <div className="mb-4 p-3 bg-slate-50 rounded-lg">
+      <p className="text-xs font-medium text-slate-600 mb-2">App Updates</p>
+      {state === 'stale' ? (
+        <>
+          <p className="text-xs text-slate-500 mb-2">
+            A newer build is on the server{deployed?.buildTimestampIstReadable ? ` (${deployed.buildTimestampIstReadable})` : ''}.
+          </p>
+          <Button variant="primary" icon={RefreshCw} className="w-full text-sm" onClick={applyUpdate}>
+            Update now
+          </Button>
+        </>
+      ) : (
+        <>
+          <p className="text-xs text-slate-500 mb-2">
+            {state === 'current' && 'This app is on the latest build.'}
+            {state === 'error' && 'Could not reach the server to check.'}
+            {(state === 'idle' || state === 'checking') && 'The app checks for new builds on its own; check here to be sure.'}
+          </p>
+          <Button
+            variant="secondary"
+            className="w-full text-sm"
+            disabled={state === 'checking'}
+            icon={state === 'checking' ? Loader2 : (state === 'current' ? CheckCircle2 : RefreshCw)}
+            onClick={run}
+          >
+            {state === 'checking' ? 'Checking…' : 'Check for updates'}
+          </Button>
+        </>
+      )}
+    </div>
+  );
+};
+
 const SettingsModal = ({ onClose, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers, showConsole, setShowConsole, getHeaders, getUrl, generatingReport, setGeneratingReport }) => (
   <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={onClose}>
     <div className="bg-white rounded-xl shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6" onClick={(e) => e.stopPropagation()}>
@@ -293,6 +348,8 @@ const SettingsModal = ({ onClose, user, onLogout, impersonateEmail, setImpersona
         <p className="text-xs font-medium text-slate-600 mb-1">Build Timestamp (IST)</p>
         <p className="text-sm text-slate-800 font-mono break-all">{BUILD_TIMESTAMP_IST_READABLE}</p>
       </div>
+
+      <UpdateCheck />
 
       {/* Diagnostic Report Section */}
       <div className="mb-4 p-4 bg-slate-50 rounded-lg border border-slate-200">
