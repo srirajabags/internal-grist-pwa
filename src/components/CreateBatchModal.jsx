@@ -874,7 +874,12 @@ const qtyLabel = (batchType, so, unit) => {
         if (cannotSizePatty(batchType, so)) return `${qty} pcs · ? kg`;
         return `${qty} pcs · ${effectiveQty(batchType, so).toFixed(2)} kg`;
     }
-    if (!needsPieceConversion(batchType, so)) return `${qty}${unit}`;
+    if (!needsPieceConversion(batchType, so)) {
+        const planned = effectiveQty(batchType, so);
+        return Math.abs(planned - qty) < 0.005
+            ? `${qty}${unit}`
+            : `${qty}${unit} · ${planned.toFixed(2)}${unit}`;
+    }
     if (cannotConvertQty(batchType, so)) return `${qty} pcs · ? kg`;
     return `${qty} pcs · ${effectiveQty(batchType, so).toFixed(2)} kg`;
 };
@@ -890,7 +895,7 @@ const CSV_HEADERS = [
     'Sub-Order Status', 'Sub-Order ID', 'Order ID', 'Shop', 'Model', 'Roll Material',
     'Bag Colour', 'Bag GSM', 'Bag Width', 'Bag Height', 'Sheet Size',
     'Sidepatty Colour', 'Sidepatty GSM', 'Sidepatty Width', 'Handle Colour',
-    'Size Label', 'Size', 'Quantity', 'Quantity Type', 'Planned Quantity',
+    'Size Label', 'Size', 'Quantity', 'Quantity Type', 'Planned Quantity (incl. overage)',
     'Order Form Date', 'Factory Updated Date', 'Previously No-Stock Flagged',
     'Sub-Order Required Count'
 ];
@@ -903,7 +908,8 @@ const csvSubOrderCells = (so, batchType, unit, status) => {
         so.Bag_Colour || '', so.Bag_GSM || '', so.Bag_Width || '', so.Bag_Height || '', so.Sheet_Size || '',
         so.Sidepatty_Colour || '', so.Sidepatty_GSM || '', so.Sidepatty_Width || '', so.Handle_Colour || '',
         size.label, size.value, so.Quantity ?? '', so.Quantity_Type || '',
-        qtyLabel(batchType, so, unit), dateText(so.Order_Form_Date), dateText(so.Factory_Updated_Date),
+        fmtQty(effectiveQty(batchType, so), BUNDLE_SIZE[batchType] != null),
+        dateText(so.Order_Form_Date), dateText(so.Factory_Updated_Date),
         truthy(so.No_Stock_Identified) ? 'Yes' : 'No',
         (() => { const c = outputCount(batchType, so); return c ? Math.ceil(c.count - 1e-9) : ''; })()
     ];
