@@ -128,6 +128,7 @@ export const PRODUCTION_OVERAGE = {
 };
 
 export const overageRate = (batchType) => num(PRODUCTION_OVERAGE[batchType]) || 0;
+
 // Note this lifts the whole requirement, including any part met from finished
 // godown stock — ready stock carries no misprint risk, so if that matters the
 // allowance should be split out to the roll-produced share only.
@@ -319,10 +320,38 @@ const sheetPiecesToKg = (batchType, so) => {
     const gsm = num(so.Bag_GSM);
     if (!dims || !gsm) return null;        // geometry missing -> can't convert
     // A bag is not one sheet: OUTPUT_REQUIREMENTS says how many it takes (a
-    // stitching bag needs a front and a back), and the roll must cover all of them.
-    const perBag = perBagRequirement(so, OUTPUT_TYPE[batchType]) ?? 1;
+    // stitching bag needs a front and a back, unless the sheet is cut double), and
+    // the roll must cover all of them.
+    const perBag = sheetsPerBag(so, OUTPUT_TYPE[batchType]) ?? 1;
     const [w, h] = dims;
     return num(so.Quantity) * perBag * (w * h * gsm) / PIECE_TO_KG_DIVISOR;
+};
+
+// How many bag faces come off one sheet. A face is the bag's width by its height
+// plus an inch for stitching, and the sheet is filled with as many as fit, either
+// way round. This is what decides how many sheets a bag takes:
+//   16x19 sheet, 16x18 bag -> 1 face  -> two sheets per bag, front and back
+//   20x15 sheet, 10x14 bag -> 2 faces -> one sheet covers both faces
+//   16x22 sheet,  8x10 bag -> 4 faces -> one sheet makes two whole bags
+// The last is what the multicolour machine is fed, but nothing here depends on
+// the print type: the sheet size says how many bags come off it.
+export const facesPerSheet = (so) => {
+    const dims = parseSheetSize(so.Sheet_Size);
+    const bw = num(so.Bag_Width), bh = num(so.Bag_Height);
+    if (!dims || !bw || !bh) return 1;
+    const faceW = bw, faceH = bh + 1;
+    const fit = (sw, sh) => Math.floor((sw + 1e-6) / faceW) * Math.floor((sh + 1e-6) / faceH);
+    return Math.max(1, fit(dims[0], dims[1]), fit(dims[1], dims[0]));
+};
+
+// Sheets one bag needs: the faces the bill of materials calls for, divided by the
+// faces a sheet yields. A requirement below two is a plain sheet order rather than
+// a two-sided bag, and is left alone.
+export const sheetsPerBag = (so, outputType) => {
+    const configured = perBagRequirement(so, outputType);
+    if (configured == null) return null;
+    if (configured < 2) return configured;
+    return configured / facesPerSheet(so);
 };
 
 // A STITCHING order quoted in pieces feeds a kg-based sheet batch only after a
@@ -437,7 +466,7 @@ const bagClothKg = (batchType, so) => {
     if (SHEET_TYPES.has(batchType)) {
         const dims = parseSheetSize(so.Sheet_Size);
         const gsm = num(so.Bag_GSM);
-        const perBag = perBagRequirement(so, OUTPUT_TYPE[batchType]);
+        const perBag = sheetsPerBag(so, OUTPUT_TYPE[batchType]);
         if (!dims || !gsm || !perBag) return null;
         return perBag * (dims[0] * dims[1] * gsm) / PIECE_TO_KG_DIVISOR;
     }
@@ -477,7 +506,9 @@ export const outputCount = (batchType, so) => {
         };
     }
     const outType = outputTypeFor(batchType, so);
-    const perBag = perBagRequirement(so, outType);
+    const perBag = SHEET_TYPES.has(batchType)
+        ? sheetsPerBag(so, outType)
+        : perBagRequirement(so, outType);
     if (perBag == null) return null;
     const bags = bagCount(batchType, so);
     if (bags == null) return null;
