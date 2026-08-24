@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
     X, Loader2, AlertCircle, CheckCircle2, ChevronRight, ChevronLeft, ChevronDown,
     Search, Layers, Package, CalendarDays, ClipboardCheck, Maximize2, Download
@@ -244,6 +244,12 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
     const [createdCount, setCreatedCount] = useState(0);
     // Last guard before anything is written to Grist.
     const [confirmOpen, setConfirmOpen] = useState(false);
+    // Rows this attempt has written, kept outside state so the catch can see them.
+    const createdBatchIds = useRef([]).current;
+    const createdJobIds = useRef([]).current;
+    // Set when a failed attempt could not be rolled back: creating again would
+    // duplicate what is already in Grist, so the button stays disabled.
+    const [stranded, setStranded] = useState(false);
 
     const toggleType = (t) =>
         setBatchTypes((prev) => prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]);
@@ -264,6 +270,43 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
         return (data.records || []).map((r) => r.fields);
     };
 
+    // Grist answers an access-rule refusal with a 403 and a terse body, which on its
+    // own reads like a bug in the app. Name the table and say what it means.
+    const writeError = (verb, table, res, body) => {
+        const detail = String(body || '').slice(0, 300);
+        const denied = res.status === 403;
+        return new Error(
+            `${verb} in ${table} failed (${res.status}${res.statusText ? ` ${res.statusText}` : ''})`
+            + (denied ? ` — your Grist access rules do not allow writing to ${table}.` : '')
+            + (detail ? ` ${detail}` : '')
+        );
+    };
+
+    // Delete rows the failed attempt had already created, jobs before the batches
+    // they belong to. Returns what could not be removed.
+    const rollBackWrites = async (jobIds, batchIds) => {
+        const leftover = { jobs: [], batches: [] };
+        const drop = async (table, ids) => {
+            if (ids.length === 0) return [];
+            try {
+                const headers = await getHeaders();
+                const res = await fetch(getUrl(`/api/docs/${DOC_ID}/tables/${table}/data/delete`), {
+                    method: 'POST',
+                    headers: { ...headers, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(ids)
+                });
+                return res.ok ? [] : ids;
+            } catch {
+                return ids;
+            }
+        };
+        leftover.jobs = await drop(JOBS_TABLE, jobIds);
+        // A batch whose jobs could not be deleted is left alone: removing it would
+        // orphan them.
+        leftover.batches = leftover.jobs.length > 0 ? batchIds : await drop(BATCHES_TABLE, batchIds);
+        return leftover;
+    };
+
     const postRecords = async (table, records) => {
         const headers = await getHeaders();
         const res = await fetch(getUrl(`/api/docs/${DOC_ID}/tables/${table}/records`), {
@@ -273,7 +316,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
         });
         if (!res.ok) {
             const t = await res.text().catch(() => '');
-            throw new Error(`Create in ${table} failed: ${res.statusText}${t ? ` - ${t}` : ''}`);
+            throw writeError('Create', table, res, t);
         }
         return (await res.json()).records || [];
     };
@@ -288,7 +331,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
         });
         if (!res.ok) {
             const t = await res.text().catch(() => '');
-            throw new Error(`Update in ${table} failed: ${res.statusText}${t ? ` - ${t}` : ''}`);
+            throw writeError('Update', table, res, t);
         }
     };
 
@@ -557,6 +600,10 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
             const today = todayStr();
 
             let created = 0;
+            // Everything written so far, so a failure part-way can be undone rather
+            // than leaving half a batch behind for the next attempt to duplicate.
+            createdBatchIds.length = 0;
+            createdJobIds.length = 0;
             // Aggregate the No_Stock_Identified decision across all plans: a sub-order
             // is "no stock" only if it's postponed everywhere it appears and fulfilled
             // nowhere. Track fulfilled/postponed/was-flagged per sub-order id.
@@ -573,6 +620,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                 const [batch] = await postRecords(BATCHES_TABLE, [{
                     fields: { Type: batchType, Date: dateToEpoch(today) }
                 }]);
+                createdBatchIds.push(batch.id);
                 created += 1;
 
                 // Two-way refs mean setting Factory_Production_Job_Batch + Sub_Orders
@@ -594,7 +642,10 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                         }
                     };
                 });
-                if (jobRecords.length > 0) await postRecords(JOBS_TABLE, jobRecords);
+                if (jobRecords.length > 0) {
+                    const madeJobs = await postRecords(JOBS_TABLE, jobRecords);
+                    createdJobIds.push(...madeJobs.map((j) => j.id).filter(Boolean));
+                }
 
                 for (const g of plan.groups) {
                     g.fulfilled.forEach((so) => mark(so, 'fulfilled'));
@@ -613,7 +664,22 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
 
             setStep('done');
         } catch (err) {
-            setError(err.message || String(err));
+            // Undo whatever landed. Anything left behind would otherwise be created
+            // a second time the moment the operator pressed the button again.
+            const leftover = await rollBackWrites(createdJobIds, createdBatchIds);
+            const strandedCount = leftover.jobs.length + leftover.batches.length;
+            const undone = createdBatchIds.length > 0 || createdJobIds.length > 0;
+            setError(
+                `${err.message || String(err)}`
+                + (strandedCount === 0
+                    ? undone ? ' Nothing was created — the partial batch has been removed.' : ' Nothing was created.'
+                    : ` WARNING: ${leftover.batches.length} batch(es) and ${leftover.jobs.length} job(s) were created`
+                      + ` and could not be removed (ids ${[...leftover.batches, ...leftover.jobs].join(', ')}).`
+                      + ' Delete them in Grist before trying again, or you will get duplicates.')
+            );
+            setStranded(strandedCount > 0);
+            createdBatchIds.length = 0;
+            createdJobIds.length = 0;
             setStep('review');
         }
     };
@@ -804,7 +870,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                             </Button>
                             <Button
                                 variant="primary" className="bg-green-600 hover:bg-green-700 shrink-0 whitespace-nowrap"
-                                icon={ClipboardCheck} disabled={totalJobs === 0}
+                                icon={ClipboardCheck} disabled={totalJobs === 0 || stranded}
                                 onClick={() => setConfirmOpen(true)}
                             >
                                 <span className="hidden sm:inline">Confirm &amp; </span>Create ({totalJobs} job{totalJobs !== 1 ? 's' : ''})
