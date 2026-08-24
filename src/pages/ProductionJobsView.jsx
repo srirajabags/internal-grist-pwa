@@ -11,7 +11,8 @@ import OverageDriftModal from '../components/OverageDriftModal';
 import { checkOverageDrift } from '../utils/overageDrift';
 import { ItemVisual, Dim } from '../components/itemVisuals';
 import { itemForm, FORM_LABEL, splitJobType } from '../utils/itemForms';
-import { outputTypeFor, ROLL_WIDTH_TYPES, effectiveQty } from '../utils/productionBatch';
+import { outputTypeFor, ROLL_WIDTH_TYPES, effectiveQty, outputSizeLabel } from '../utils/productionBatch';
+import { choiceText, firstChoice } from '../utils/gristValues';
 
 // Grist document holding the factory production tables
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
@@ -36,7 +37,7 @@ const SIZE_DIM = {
     'ROLLS TO HANDLES': 'bag',
     'ROLLS TO PRESSING HANDLES': 'bag'
 };
-const SIZE_TITLE = { sheet: 'Sheet Sizes', bag: 'Bag Sizes', patty: 'Side-Patty Sizes' };
+const SIZE_TITLE = { sheet: 'Sheet Sizes', bag: 'Bag Sizes', patty: 'Patty Sizes' };
 
 // Parse a Grist reference-list (stored as JSON like "[1,2]") into integer ids.
 const parseRefList = (v) => {
@@ -1075,15 +1076,23 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
     // patty, which is cut from rolls) in kg.
     const isPieces = jobType === 'ROLLS TO HANDLES' || jobType === 'ROLLS TO PRESSING HANDLES';
     const cell = (v) => (v === null || v === undefined || v === '' || typeof v === 'object') ? '—' : v;
+    // The floor is ticking off what it has cut, so a patty line has to name the
+    // strip it produces -- width by the length that wraps the bag -- not just the
+    // width the order asked for. Same figure the batch review showed.
+    const pattySize = (so) => outputSizeLabel(jobType, {
+        Sidepatty_Width: so.sidepattyWidth, Sidepatty_Colour: so.sidepattyColour,
+        Sidepatty_GSM: so.sidepattyGsm, Bag_Width: so.bagW, Bag_Height: so.bagH,
+        Sheet_Size: so.sheetSize, Model: so.model
+    }).value;
     const sizeKeyFor = (so) => {
         if (sizeDim === 'sheet') return String(cell(so.sheetSize));
-        if (sizeDim === 'patty') return String(cell(so.sidepattyWidth));
+        if (sizeDim === 'patty') return pattySize(so);
         const bag = `${cell(so.bagW)}×${cell(so.bagH)}`;
         return isDcut ? `${cell(so.model)} | ${bag}` : bag;
     };
     const sizeLabelFor = (so) => {
         if (sizeDim === 'sheet') return String(cell(so.sheetSize));
-        if (sizeDim === 'patty') { const w = cell(so.sidepattyWidth); return w === '—' ? '—' : `${w}″ wide`; }
+        if (sizeDim === 'patty') return pattySize(so);
         const bag = `${cell(so.bagW)}″ × ${cell(so.bagH)}″`;
         return isDcut ? `${cell(so.model)} · ${bag}` : bag;
     };
@@ -1249,7 +1258,7 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
                                 {/* Expected output with highlighted dimensions */}
                                 <div className="flex items-center gap-3 mb-3 pb-3 border-b border-slate-100">
                                     <div className="w-16 shrink-0">
-                                        <ItemVisual colour={so.bagColour || job.colour} type={outputType} size="md" />
+                                        <ItemVisual colour={firstChoice(so.bagColour) || job.colour} type={outputType} size="md" />
                                     </div>
                                     <div className="min-w-0">
                                         <p className="text-xs font-semibold text-slate-600">Output: {FORM_LABEL[outForm]}</p>
@@ -1268,7 +1277,7 @@ const JobDetail = ({ job, updating, onStart, onComplete }) => {
                                     <Field label="Material" value={so.material} />
                                     <Field label="Model" value={so.model} />
                                     <Field label="Roll Material" value={so.rollMaterial} />
-                                    <Field label="Bag Colour" value={so.bagColour} />
+                                    <Field label="Bag Colour" value={choiceText(so.bagColour)} />
                                     <Field label="Bag GSM" value={so.bagGsm} />
                                     <Field label="Sidepatty Colour" value={so.sidepattyColour} />
                                     <Field label="Sidepatty GSM" value={so.sidepattyGsm} />

@@ -43,6 +43,8 @@ export const MATERIAL_MAP = {
     'NW BOPP': 'NW BOPP'
 };
 
+import { parseChoiceList, firstChoice } from './gristValues';
+
 const norm = (v) => String(v ?? '').trim().toUpperCase();
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const isSet = (v) => v !== null && v !== undefined && String(v).trim() !== '';
@@ -138,7 +140,9 @@ const withOverage = (batchType, qty) => qty * (1 + overageRate(batchType));
 // (mirrors InventoryView). Sheets and bags are counted one at a time.
 export const PIECES_PER_BUNDLE = {
     'SIDEPATTY': 50, 'BOTTOMPATTY': 50,
-    'HANDLE': 100, 'PRESSING HANDLE': 100
+    // A stitched handle is stocked in bundles of 100. A pressing handle is not
+    // stocked at all -- it is counted in pieces, two to a bag.
+    'HANDLE': 100
 };
 
 const matchesCombination = (combination, so) =>
@@ -164,9 +168,16 @@ export const perBagRequirement = (so, outputType) => {
 // Types counted in bundles/pieces rather than kg (mirrors the Grist
 // Planned_Count_Bundles_ formula). Side/bottom patty are cut from raw rolls and
 // allocated in kg (see below), so only the handle types are piece-counted.
-const isPieceType = (batchType) =>
-    batchType === 'ROLLS TO HANDLES' ||
-    batchType === 'ROLLS TO PRESSING HANDLES';
+const HANDLE_TYPES = new Set(['ROLLS TO HANDLES', 'ROLLS TO PRESSING HANDLES']);
+
+// A handle is a strip cut from a roll, 2 inches wide at 90 GSM: 13 inches long for
+// a stitched handle, 14.5 for a pressing handle. Planning works in the kg of roll
+// that takes, like every other type -- what varies is only how the output is
+// counted afterwards.
+const HANDLE_DIMS = {
+    'ROLLS TO HANDLES': { width: 2, height: 13, gsm: 90 },
+    'ROLLS TO PRESSING HANDLES': { width: 2, height: 14.5, gsm: 90 }
+};
 
 // --- Roll-width matching ---
 // Some batch types are produced by cutting a roll of a fixed width. A sub-order's
@@ -195,6 +206,10 @@ const exactMultipleRollWidth = (stripWidth, widths) => {
 // patty: 0.5″ narrower, length = bag width, 110 GSM, cut from the bottom-patty
 // roll set. A plain side patty uses its given width, a length that wraps the bag
 // (width + 2×(height+1)), its own GSM, and the side-patty roll set.
+// A handle colour of STICK means the bag is finished with a stick in place of a
+// stitched handle: no handle to make, and the mouth of the bag is shorter.
+const usesStick = (so) => norm(so.Handle_Colour) === 'STICK';
+
 export const pattyDims = (so) => {
     const sw = num(so.Sidepatty_Width);
     if (!sw) return null;                                   // no strip width -> flag
@@ -207,7 +222,11 @@ export const pattyDims = (so) => {
     }
     const bh = num(so.Bag_Height), gsm = num(so.Sidepatty_GSM);
     if (!bw || !bh || !gsm) return null;                  // need bag dims + GSM
-    return { kind: 'SIDEPATTY', width: sw, length: bw + (bh + 1) * 2, gsm: String(gsm), rolls: ROLL_WIDTHS_SIDEPATTY };
+    // The gusset runs up one side, across the bottom and down the other. A stitched
+    // handle needs an inch over the bag's height at each side; a stick bag has no
+    // folded mouth, so it stops two inches short instead.
+    const side = usesStick(so) ? bh - 2 : bh + 1;
+    return { kind: 'SIDEPATTY', width: sw, length: bw + side * 2, gsm: String(gsm), rolls: ROLL_WIDTHS_SIDEPATTY };
 };
 
 // A printed side patty is really a bottom patty, and those are cut from a sheet
@@ -305,6 +324,36 @@ export const requiredRollWidth = (batchType, so) => {
     return null;
 };
 
+// The size of the thing a job actually turns out, for the review and the job
+// sheet. A patty is a strip: its width is what the order asked for (less half an
+// inch when it is printed, which makes it a bottom patty) and its length wraps the
+// bag, so "6 inch" alone does not say what to cut.
+export const outputSizeLabel = (batchType, so) => {
+    if (SHEET_TYPES.has(batchType)) {
+        return { label: 'Sheet', value: so.Sheet_Size || '—' };
+    }
+    if (batchType === 'ROLLS TO BOTTOMPATTY SHEETS') {
+        const d = bottomSheetDims(so);
+        return {
+            label: 'Bottom sheet',
+            value: d ? `${d.sheetW}″ × ${d.sheetH}″ · ${d.piecesPerSheet}/sheet` : '—'
+        };
+    }
+    if (batchType === 'ROLLS TO SIDEPATTY') {
+        const d = pattyDims(so);
+        if (!d) return { label: 'Side patty', value: '—' };
+        return {
+            label: d.kind === 'BOTTOMPATTY' ? 'Bottom patty' : 'Side patty',
+            value: `${d.width}″ × ${d.length}″`
+        };
+    }
+    const w = so.Bag_Width, h = so.Bag_Height;
+    return {
+        label: 'Bag',
+        value: w && h ? `${w}″ × ${h}″` : w ? `${w}″ wide` : h ? `${h}″ high` : '—'
+    };
+};
+
 // --- Quantity normalisation (pieces -> kg) ---
 // Weight-based batches allocate against roll/finished stock measured in kg, but a
 // STITCHING sheet sub-order's Quantity is often a piece COUNT, not kg
@@ -358,7 +407,7 @@ export const sheetsPerBag = (so, outputType) => {
 // pieces -> kg conversion from sheet geometry. Side/bottom patty are kg-based too
 // but convert from their own strip geometry (pattyKg), so they're excluded here.
 export const needsPieceConversion = (batchType, so) =>
-    !isPieceType(batchType) &&
+    !HANDLE_TYPES.has(batchType) &&
     batchType !== 'ROLLS TO SIDEPATTY' &&
     norm(so.Model) === 'STITCHING' &&
     norm(so.Quantity_Type) === 'PIECES';
@@ -396,9 +445,13 @@ const bagPieces = (so) => {
     return num(so.Quantity);
 };
 
+// Bags a sub-order covers, for callers that want to show the count a weight-quoted
+// order works out to. null when the geometry to derive it is missing.
+export const bagPieceCount = (so) => bagPieces(so);
+
 // A handle order that can't be sized (a weight order missing bag geometry).
 export const cannotSizePieces = (batchType, so) =>
-    isPieceType(batchType) && bagPieces(so) == null;
+    HANDLE_TYPES.has(batchType) && bagPieces(so) == null;
 
 // The exact fields a flagged sub-order is missing, so the operator is told which
 // cell to fill rather than a generic list. Returns [] when nothing is missing.
@@ -410,7 +463,7 @@ export const missingInfoFields = (batchType, so) => {
         if (!parseSheetSize(so.Sheet_Size)) gone.push('sheet size');
         if (!num(so.Bag_GSM)) gone.push('bag GSM');
     }
-    if (isPieceType(batchType) && bagPieces(so) == null) {
+    if (HANDLE_TYPES.has(batchType) && bagPieces(so) == null) {
         if (!num(so.Bag_Width)) gone.push('bag width');
         if (!num(so.Bag_Height)) gone.push('bag height');
         if (!num(so.Bag_GSM)) gone.push('bag GSM');
@@ -456,7 +509,7 @@ export const OUTPUT_COUNT_UNIT = {
     'ROLLS TO SIDEPATTY': 'bundles',
     'ROLLS TO BOTTOMPATTY SHEETS': 'sheets',
     'ROLLS TO HANDLES': 'bundles',
-    'ROLLS TO PRESSING HANDLES': 'bundles'
+    'ROLLS TO PRESSING HANDLES': 'pieces'
 };
 
 // Cloth mass of ONE finished bag, used to back a bag count out of a weight-quoted
@@ -501,7 +554,7 @@ export const outputCount = (batchType, so) => {
         const sheets = bottomSheetCount(so);
         if (sheets == null) return null;
         return {
-            count: withOverage(batchType, sheets),
+            count: withOverage(batchType, sheets) * (num(so._share) || 1),
             exact: norm(so.Model) !== 'HANDLE'
         };
     }
@@ -514,7 +567,7 @@ export const outputCount = (batchType, so) => {
     if (bags == null) return null;
     const perBundle = PIECES_PER_BUNDLE[norm(outType)] || 1;
     return {
-        count: withOverage(batchType, (bags * perBag) / perBundle),
+        count: withOverage(batchType, (bags * perBag) / perBundle) * (num(so._share) || 1),
         exact: norm(so.Quantity_Type) === 'PIECES'
     };
 };
@@ -536,15 +589,17 @@ export const groupOutputCount = (batchType, subOrders) => {
 // batch allocates in (bundles for handle batches, kg otherwise). Side/bottom patty
 // convert their strip geometry to kg; a STITCHING sheet order quoted in pieces is
 // converted to kg; everything else as-is.
-export const effectiveQty = (batchType, so) => withOverage(batchType, orderedQty(batchType, so));
+export const effectiveQty = (batchType, so) =>
+    withOverage(batchType, orderedQty(batchType, so)) * (num(so._share) || 1);
 
 // What the orders themselves call for, before any production allowance.
 const orderedQty = (batchType, so) => {
-    if (isPieceType(batchType)) {
+    if (HANDLE_TYPES.has(batchType)) {
         const bags = bagPieces(so);
         if (bags == null) return 0;   // un-sizable -> flagged, contributes nothing
         const perBag = perBagRequirement(so, OUTPUT_TYPE[batchType]) ?? PIECES_PER_BAG[batchType];
-        return (bags * perBag) / BUNDLE_SIZE[batchType];
+        const d = HANDLE_DIMS[batchType];
+        return bags * perBag * (d.width * d.height * d.gsm) / PIECE_TO_KG_DIVISOR;
     }
     if (batchType === 'ROLLS TO SIDEPATTY') return pattyKg(so);
     if (batchType === 'ROLLS TO BOTTOMPATTY SHEETS') {
@@ -577,7 +632,7 @@ export const typeNeedsSubOrder = (batchType, so) => {
     switch (batchType) {
         case 'ROLLS TO DCUT': return model === 'DCUT' || model === 'HANDLE';
         case 'ROLLS TO UCUT': return model === 'UCUT';
-        case 'ROLLS TO HANDLES': return model === 'STITCHING';
+        case 'ROLLS TO HANDLES': return model === 'STITCHING' && !usesStick(so);
         case 'ROLLS TO PRESSING HANDLES': return model === 'HANDLE';
         case 'ROLLS TO SHEETS': return (model === 'STITCHING' || model === 'PLAIN') && !isModelNumberSheet(so);
         case 'ROLLS TO MODEL SHEETS': return isModelNumberSheet(so);
@@ -612,13 +667,14 @@ export const groupAttrs = (batchType, so) => {
     }
     // Both handle types are fixed-spec: NW REGULAR, 90 GSM rolls, 2″ wide. Only the
     // length differs — normal handle 13″, pressing handle 14.5″ — and colour varies.
-    if (batchType === 'ROLLS TO HANDLES' || batchType === 'ROLLS TO PRESSING HANDLES') {
+    if (HANDLE_TYPES.has(batchType)) {
+        const d = HANDLE_DIMS[batchType];
         return {
             material: 'NW REGULAR',
-            colour: so.Handle_Colour || so.Sidepatty_Colour || '',
-            gsm: '90',
-            width: '2',
-            height: batchType === 'ROLLS TO PRESSING HANDLES' ? '14.5' : '13'
+            colour: firstChoice(so.Handle_Colour) || firstChoice(so.Sidepatty_Colour),
+            gsm: String(d.gsm),
+            width: String(d.width),
+            height: String(d.height)
         };
     }
     // Bottom-patty sheets are grouped by the roll they are cut from, and stocked at
@@ -643,15 +699,18 @@ export const groupAttrs = (batchType, so) => {
     if (batchType === 'ROLLS TO MODEL SHEETS') {
         const rw = requiredRollWidth(batchType, so);
         return {
+            // The job is the machine set to a white NW VIRGIN roll. The model
+            // number belongs to the sheets that come off it, not to the roll, so it
+            // stays off the group and is matched per sub-order in allocateStock.
             material: 'NW VIRGIN',
-            colour: so.Bag_Colour || '',          // the model number
+            colour: 'WHITE',
             gsm: so.Bag_GSM || '',
             width: typeof rw === 'number' ? String(rw) : '',
-            // Size is matched per sheet in allocateStock, since one roll width
-            // covers several sheet lengths.
+            // Ready model sheets carry a model and a size of their own; neither
+            // constrains the group.
+            finishedColour: null,
             finishedWidth: null,
             finishedHeight: null,
-            // The roll behind them is always plain white.
             rollColour: 'WHITE',
             // Failing ready model sheets, a plain white sheet of the same size can
             // be printed into one. Either sheet type will do -- what matters is
@@ -673,7 +732,7 @@ export const groupAttrs = (batchType, so) => {
         const rw = requiredRollWidth(batchType, so);
         const base = {
             material: so.Roll_Material || '',
-            colour: so.Bag_Colour || '',
+            colour: firstChoice(so.Bag_Colour),
             gsm: so.Bag_GSM || '',
             width: typeof rw === 'number' ? String(rw) : ''
         };
@@ -685,7 +744,7 @@ export const groupAttrs = (batchType, so) => {
     }
     return {
         material: so.Roll_Material || '',
-        colour: so.Bag_Colour || '',
+        colour: firstChoice(so.Bag_Colour),
         gsm: so.Bag_GSM || '',
         width: so.Bag_Width || ''
     };
@@ -736,8 +795,10 @@ export const softMatchItemCode = (attrs, itemCodes, batchType, outputType) => {
 // matched against its own specification.
 const matchesSpec = (r, spec) => {
     const wantMat = MATERIAL_MAP[norm(spec.material)] || null;
+    // null means "not constrained here" -- a model sheet's colour is its model
+    // number, matched per sub-order rather than across the whole job.
     return (wantMat ? norm(r.material) === norm(wantMat) : false)
-        && norm(r.colour) === norm(spec.colour)
+        && (spec.colour == null || norm(r.colour) === norm(spec.colour))
         && norm(r.gsm) === norm(spec.gsm)
         && (spec.width == null || norm(r.width) === norm(spec.width))
         // Height only where the group asks for it: two model sheets can share a
@@ -746,7 +807,9 @@ const matchesSpec = (r, spec) => {
 };
 
 const relevantStock = (attrs, inventory, batchType, outputType) => {
-    const availOf = (r) => (isPieceType(batchType) ? num(r.availBundles) : num(r.availWeight));
+    // Every type is planned in kg, so stock is measured by weight -- a roll has no
+    // bundle count, which is why a handle job could never draw on one before.
+    const availOf = (r) => num(r.availWeight);
     const outType = norm(outputType || OUTPUT_TYPE[batchType]);
 
     // Finished stock must match the output width too (a 16" sheet ≠ a 32" sheet).
@@ -756,21 +819,28 @@ const relevantStock = (attrs, inventory, batchType, outputType) => {
     const requireRollWidth = ROLL_WIDTH_TYPES.has(batchType);
     const rollWidthWanted = isSet(attrs.rollWidth) ? attrs.rollWidth : (requireRollWidth ? attrs.width : null);
 
+    // An override that is present but null means "not constrained by the group" --
+    // a model sheet's colour and a sheet's size are matched per sub-order instead.
+    // Only an absent override falls back to the group's own attribute.
+    const override = (value, fallback) => (value === undefined ? fallback : value);
     const finishedSpec = {
-        material: attrs.finishedMaterial ?? attrs.material,
-        colour: attrs.finishedColour ?? attrs.colour,
-        gsm: attrs.finishedGsm ?? attrs.gsm,
-        width: attrs.finishedWidth ?? attrs.width,
+        material: override(attrs.finishedMaterial, attrs.material),
+        colour: override(attrs.finishedColour, attrs.colour),
+        gsm: override(attrs.finishedGsm, attrs.gsm),
+        width: override(attrs.finishedWidth, attrs.width),
         height: attrs.finishedHeight
     };
     const rollSpec = {
-        material: attrs.rollMaterial ?? attrs.material,
-        colour: attrs.rollColour ?? attrs.colour,
-        gsm: attrs.rollGsm ?? attrs.gsm,
+        material: override(attrs.rollMaterial, attrs.material),
+        colour: override(attrs.rollColour, attrs.colour),
+        gsm: override(attrs.rollGsm, attrs.gsm),
         width: rollWidthWanted
     };
 
-    const finished = inventory
+    // Pressing handles are printed and cut as the bags are made, so there is no
+    // finished stock of them to draw on -- only the roll.
+    const stocked = batchType !== 'ROLLS TO PRESSING HANDLES';
+    const finished = (stocked ? inventory : [])
         .filter((r) => norm(r.type) === outType && matchesSpec(r, finishedSpec) && availOf(r) > 0)
         .map((r) => ({ ...r, avail: availOf(r) }))
         .sort((a, b) => b.avail - a.avail);
@@ -847,20 +917,28 @@ const outputSizeKey = (batchType, so) => {
 // Cut each stock row down to what its own size is actually wanted for, so ready
 // stock can only ever answer the sub-orders it fits. Rows of a size nobody ordered
 // drop out entirely. Types without a size of their own are left as they were.
-const finishedBySize = (rows, subOrders, batchType) => {
+const sizeOf = (r) => `${Math.min(num(r.width), num(r.height))}x${Math.max(num(r.width), num(r.height))}`;
+
+// Stock is matched on what makes one piece interchangeable with another. Size
+// always counts; for model sheets the model counts too, since a K8 sheet is no use
+// to an M11 order. `byModel` is off for blanks, which are plain white and become
+// whichever model is printed on them.
+const finishedBySize = (rows, subOrders, batchType, byModel = false) => {
+    const key = (size, colour) => (byModel ? `${norm(colour)}|${size}` : size);
     const demand = new Map();
     let sized = false;
     for (const so of subOrders) {
         const k = outputSizeKey(batchType, so);
         if (!k) continue;
         sized = true;
-        demand.set(k, (demand.get(k) || 0) + effectiveQty(batchType, so));
+        const d = key(k, firstChoice(so.Bag_Colour));
+        demand.set(d, (demand.get(d) || 0) + effectiveQty(batchType, so));
     }
     if (!sized) return rows;
     const left = new Map(demand);
     const capped = [];
     for (const r of rows) {
-        const k = `${Math.min(num(r.width), num(r.height))}x${Math.max(num(r.width), num(r.height))}`;
+        const k = key(sizeOf(r), r.colour);
         const remaining = left.get(k) ?? 0;
         if (remaining <= 0) continue;
         const use = Math.min(r.avail, remaining);
@@ -875,7 +953,8 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
     const stockLists = relevantStock(attrs, inventory, batchType, outputType);
     const rolls = stockLists.rolls;
     // Ready stock is size-specific; the roll it would otherwise be cut from is not.
-    const finished = finishedBySize(stockLists.finished, subOrders, batchType);
+    const isModelSheets = batchType === 'ROLLS TO MODEL SHEETS';
+    const finished = finishedBySize(stockLists.finished, subOrders, batchType, isModelSheets);
     const alternates = finishedBySize(stockLists.alternates, subOrders, batchType);
     const finishedTotal = finished.reduce((s, r) => s + r.avail, 0);
     const rollsTotal = rolls.reduce((s, r) => s + r.avail, 0);
@@ -978,8 +1057,44 @@ export const PRIORITY_LABEL = {
 // Orchestrate: qualify -> group -> allocate. Returns { groups, postponedCount,
 // totalPlannedQty } where each group is everything the review UI and the writer
 // need. `inventory` is the joined summary rows described in relevantStock.
+// A model-number sub-order may name several models, each printed on one side of
+// the bag: 300 pieces naming M11 and K8 need 300 M11 sheets and 300 K8 sheets, not
+// 600 of either. Each model becomes its own line carrying a share of the order, so
+// grouping, stock matching and the counts all work per model. The sub-order's id
+// travels with every share, so the job still points back at the one order.
+const splitByModel = (subOrders) => subOrders.flatMap((so) => {
+    const models = parseChoiceList(so.Bag_Colour);
+    if (models.length <= 1) return [so];
+    return models.map((model) => ({
+        ...so,
+        Bag_Colour: model,
+        _share: (num(so._share) || 1) / models.length
+    }));
+});
+
+// Put the split lines back together once the planning maths is done. A sub-order
+// naming two models is one order on the floor and one row in the totals, however
+// many lines it took to work out its sheets: the shares add back to one, so the
+// merged line asks for exactly what the order did.
+const mergeLines = (lines) => {
+    const byId = new Map();
+    for (const so of lines) {
+        const seen = byId.get(so.id);
+        if (!seen) {
+            byId.set(so.id, { ...so, _share: num(so._share) || 1 });
+            continue;
+        }
+        seen._share += num(so._share) || 1;
+        const both = [...new Set([...parseChoiceList(seen.Bag_Colour), ...parseChoiceList(so.Bag_Colour)])];
+        seen.Bag_Colour = JSON.stringify(both);
+    }
+    return [...byId.values()];
+};
+
 export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
-    const eligible = subOrders.filter((so) => typeNeedsSubOrder(batchType, so));
+    const eligible = batchType === 'ROLLS TO MODEL SHEETS'
+        ? splitByModel(subOrders.filter((so) => typeNeedsSubOrder(batchType, so)))
+        : subOrders.filter((so) => typeNeedsSubOrder(batchType, so));
 
     // For roll-width batch types, resolve each sub-order's roll width first: drop
     // the ones with blank/junk geometry ('ignore'), and set aside the ones with a
@@ -1021,7 +1136,7 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
     // Work on a mutable copy of inventory and deduct what each group consumes, so
     // a physical roll/sheet is never allocated to two groups in the same run.
     // Largest-requirement groups are served first.
-    const pieces = isPieceType(batchType);
+    const pieces = false;
     const stock = inventory.map((r) => ({ ...r }));
     const stockById = new Map(stock.map((r) => [r.itemId, r]));
 
@@ -1050,13 +1165,20 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
             const rollTaken = alloc.picks.reduce((s, p) => s + (p.source === 'roll' ? p.take : 0), 0);
             const outputQty = Math.min(rollTaken, alloc.fulfilledQty);
             const finishedQty = Math.max(alloc.fulfilledQty - outputQty, 0);
+            const fulfilled = mergeLines(alloc.fulfilled);
+            const fulfilledIds = new Set(fulfilled.map((so) => so.id));
             return {
                 ...g,
+                subOrders: mergeLines(g.subOrders),
                 rollWidth: usesRollWidth ? num(g.attrs.width) : null,
                 rollCodeId,
                 matchedCodeId: usesRollWidth ? rollCodeId
                     : softMatchItemCode(g.attrs, itemCodes, batchType, outputTypeFor(batchType, g.subOrders[0])),
                 ...alloc,
+                fulfilled,
+                // An order planned for one of its models is a planned order, so it
+                // is not also listed as postponed.
+                postponed: mergeLines(alloc.postponed).filter((so) => !fulfilledIds.has(so.id)),
                 outputQty,
                 finishedQty
             };
@@ -1082,8 +1204,8 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
     return {
         groups, postponedCount, totalPlannedQty, totalPostponedQty, totalFinishedQty, totalOutputQty, jobCount,
         totalRequiredCount,
-        isPieces: isPieceType(batchType),
-        unmatched, unmatchedCount: unmatched.length,
-        missingGsm, missingGsmCount: missingGsm.length
+        isPieces: false,
+        unmatched: mergeLines(unmatched), unmatchedCount: mergeLines(unmatched).length,
+        missingGsm: mergeLines(missingGsm), missingGsmCount: mergeLines(missingGsm).length
     };
 };

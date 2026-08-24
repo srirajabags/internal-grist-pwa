@@ -7,6 +7,7 @@ import Card from '../components/Card';
 import Button from '../components/Button';
 import { ItemVisual } from '../components/itemVisuals';
 import { STAGES, treeSql, queueSql, needsStitching, FINISHED_LOCATION } from '../utils/stageJobs';
+import { firstChoice } from '../utils/gristValues';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 const TXN_TABLE = 'Inventory_Transactions';
@@ -399,7 +400,7 @@ const JobCard = ({ job, cfg, accent, busy, onStart, onComplete }) => (
     <Card className="p-3">
         <div className="flex items-start gap-3">
             <div className="w-10 shrink-0">
-                <ItemVisual colour={job.itemColour || job.so.so_bag_colour} type={job.itemType} name={job.itemName} size="sm" />
+                <ItemVisual colour={job.itemColour || firstChoice(job.so.so_bag_colour)} type={job.itemType} name={job.itemName} size="sm" />
             </div>
             <div className="min-w-0 flex-1">
                 <p className="font-semibold text-slate-800 text-sm leading-tight truncate">

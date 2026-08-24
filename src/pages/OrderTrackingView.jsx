@@ -5,6 +5,7 @@ import {
     Image as ImageIcon
 } from 'lucide-react';
 import { buildTimeline, summarise } from '../utils/orderStages';
+import { choiceText } from '../utils/gristValues';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 const PROXY_URL = import.meta.env.VITE_GRIST_SERVER_URL;
@@ -76,7 +77,7 @@ const SubOrderCard = ({ so, progress, internal, jobs, designIds = [], onViewDesi
                         {[so.model, so.print].filter(Boolean).join(' · ') || 'Item'}
                     </p>
                     <p className="text-xs text-slate-500">
-                        {[sizeText(so), so.bagColour, so.quantity && `${num(so.quantity)} ${String(so.quantityType || '').toUpperCase() === 'PIECES' ? 'pcs' : 'kg'}`]
+                        {[sizeText(so), choiceText(so.bagColour), so.quantity && `${num(so.quantity)} ${String(so.quantityType || '').toUpperCase() === 'PIECES' ? 'pcs' : 'kg'}`]
                             .filter(Boolean).join(' · ')}
                     </p>
                     {internal && <p className="text-[11px] text-slate-400 mt-0.5">Sub-order #{so.id} · {so.status}</p>}
