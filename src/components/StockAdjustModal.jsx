@@ -3,7 +3,7 @@ import { X, Loader2, AlertCircle, Plus, Minus, Clock, ClipboardList } from 'luci
 import Button from './Button';
 import { ItemVisual } from './itemVisuals';
 import { typeName } from '../utils/itemForms';
-import { attrText, countUnitFor } from '../utils/txnDisplay';
+import { attrText, countUnitFor, primaryUnitFor } from '../utils/txnDisplay';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 const TXN_TABLE = 'Inventory_Transactions';
@@ -27,11 +27,12 @@ const StockAdjustModal = ({ row, mode: initialMode, available, availableCount = 
     const isCounted = !/ROLL/i.test(String(row.itype || ''));
     const [mode, setMode] = useState(fromScan && isCounted ? 'RECOUNT' : (initialMode || 'ADD'));
     const [qty, setQty] = useState('');
-    // Rolls are weighed; sheets, patty and handles are counted. Offer the unit the
-    // godown actually uses for this form, with kg still available either way.
+    // Start in the unit the godown actually books this form in -- bags and rolls
+    // are weighed, sheets and patty and handles are counted -- with the other unit
+    // a click away for anything but a roll.
     const isRoll = !isCounted;
     const countUnit = countUnitFor(row.itype, row.name);
-    const [unit, setUnit] = useState(isRoll ? 'kg' : 'count');
+    const [unit, setUnit] = useState(() => primaryUnitFor(row.itype, row.name));
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState(null);
 

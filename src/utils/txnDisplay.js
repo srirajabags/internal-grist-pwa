@@ -11,6 +11,14 @@ export const truthy = (v) => v === true || v === 1 || v === '1' || v === 'true';
 export const SHEET_FORMS = new Set(['sheet', 'bottompattysheet', 'modelsheet']);
 export const countUnitFor = (type, name) => (SHEET_FORMS.has(itemForm(type, name)) ? 'sheets' : 'bundles');
 
+// How the godown actually books each form, from what the transactions show: rolls
+// and finished bags are weighed (ROLL 608/608 by kg, DCUT BAG 292 of 294, HANDLE
+// BAG 101/101), while sheets, patty and handles are counted (SIDEPATTY 490,
+// SHEET 191, MODEL NUMBER SHEET 132, BOTTOMPATTY SHEET 71, all by count). Forms
+// with no history follow their family: a bag is weighed, a handle is counted.
+const WEIGHED_FORMS = new Set(['roll', 'dcut', 'ucut', 'wcut', 'handlebag', 'box']);
+export const primaryUnitFor = (type, name) => (WEIGHED_FORMS.has(itemForm(type, name)) ? 'kg' : 'count');
+
 export const PIECES_PER_BUNDLE = {
     sidepatty: 50, bottompatty: 50,
     manualhandle: 100, readymadehandle: 100, pressinghandle: 100
