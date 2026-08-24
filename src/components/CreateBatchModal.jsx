@@ -695,6 +695,10 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
     const totalJobs = plans.reduce((s, p) => s + p.plan.jobCount, 0);
     const batchesToCreate = plans.filter((p) => p.plan.jobCount > 0);
     const totalPostponed = plans.reduce((s, p) => s + p.plan.postponedCount, 0);
+    // kg only: a piece-type batch counts in bundles and cannot be added to these.
+    const totalPostponedQty = plans.reduce(
+        (s, p) => s + (p.plan.isPieces ? 0 : p.plan.totalPostponedQty), 0
+    );
 
     return (
         <>
@@ -897,6 +901,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                 batches={batchesToCreate}
                 totalJobs={totalJobs}
                 totalPostponed={totalPostponed}
+                totalPostponedQty={totalPostponedQty}
                 onCancel={() => setConfirmOpen(false)}
                 onConfirm={confirmCreate}
             />
@@ -957,7 +962,8 @@ const CSV_HEADERS = [
     'Group', 'Group Material', 'Group Colour', 'Group GSM', 'Group Width (in)', 'Roll Width (in)',
     'Unit', 'Group Required', 'Group Fulfilled', 'Group To Produce', 'Group From Stock',
     'Group Required Count', 'Count Unit', 'Production Overage %',
-    'Priority', 'Priority Label', 'Stock Items', 'Allocation Detail', 'Group Postponed Count',
+    'Priority', 'Priority Label', 'Stock Items', 'Allocation Detail',
+    'Group Postponed Count', 'Group Postponed Qty',
     'Sub-Order Status', 'Sub-Order ID', 'Order ID', 'Shop', 'Model', 'Roll Material',
     'Bag Colour', 'Bag GSM', 'Bag Width', 'Bag Height', 'Sheet Size',
     'Sidepatty Colour', 'Sidepatty GSM', 'Sidepatty Width', 'Handle Colour',
@@ -983,7 +989,7 @@ const csvSubOrderCells = (so, batchType, unit, status) => {
 
 // Blank group/job/allocation cells (everything after Batch Type + Output Type),
 // for sub-orders that never reached a group.
-const CSV_EMPTY_GROUP_CELLS = new Array(21).fill('');
+const CSV_EMPTY_GROUP_CELLS = new Array(22).fill('');
 
 const buildCsvRows = (plans, codeNames) => {
     const rows = [];
@@ -1006,7 +1012,9 @@ const buildCsvRows = (plans, codeNames) => {
                 plan.isPieces ? '' : fmtKg(g.outputQty), plan.isPieces ? '' : fmtKg(g.finishedQty),
                 Math.ceil(g.requiredCount.count - 1e-9), g.requiredCount.unit,
                 Math.round(overageRate(batchType) * 100),
-                g.priority, PRIORITY_LABEL[g.priority] || '', itemIds.length, allocation, g.postponed.length
+                g.priority, PRIORITY_LABEL[g.priority] || '', itemIds.length, allocation,
+                g.postponed.length,
+                fmtQty(Math.max(g.requiredQty - g.fulfilledQty, 0), plan.isPieces)
             ];
             for (const so of g.subOrders) {
                 rows.push([
@@ -1123,7 +1131,7 @@ const MissingGsmPanel = ({ subOrders, batchType, unit, onViewForm }) => (
 
 // Last-chance guard before the batch, jobs and sub-order flags are written.
 // Nothing is written until this is accepted.
-const ConfirmCreateDialog = ({ batches, totalJobs, totalPostponed, onCancel, onConfirm }) => (
+const ConfirmCreateDialog = ({ batches, totalJobs, totalPostponed, totalPostponedQty, onCancel, onConfirm }) => (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4" onClick={onCancel}>
         <div className="bg-white w-full max-w-sm rounded-2xl shadow-xl p-5" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start gap-3">
@@ -1148,7 +1156,7 @@ const ConfirmCreateDialog = ({ batches, totalJobs, totalPostponed, onCancel, onC
             </ul>
             {totalPostponed > 0 && (
                 <p className="mt-2 text-[11px] text-amber-700 bg-amber-50 rounded px-2 py-1.5">
-                    {totalPostponed} sub-order(s) will be flagged No_Stock_Identified.
+                    {totalPostponed} sub-order(s){totalPostponedQty > 0 ? ` — ${fmtKg(totalPostponedQty)} kg` : ''} will be flagged No_Stock_Identified.
                 </p>
             )}
             <div className="mt-4 flex gap-2">
@@ -1257,6 +1265,13 @@ const PlanSection = ({ batchType, plan, onViewForm }) => {
                 {!plan.isPieces && plan.totalFinishedQty > 0 && <Stat label="To produce kg" value={fmtKg(plan.totalOutputQty)} tone="green" />}
                 {!plan.isPieces && plan.totalFinishedQty > 0 && <Stat label="From stock kg" value={fmtKg(plan.totalFinishedQty)} tone="sky" />}
                 <Stat label="Postponed" value={plan.postponedCount} tone={plan.postponedCount ? 'amber' : 'slate'} />
+                {plan.totalPostponedQty > 0 && (
+                    <Stat
+                        label={`Postponed${plan.isPieces ? ' (bundles)' : ' kg'}`}
+                        value={fmtQty(plan.totalPostponedQty, plan.isPieces)}
+                        tone="amber"
+                    />
+                )}
                 {plan.unmatchedCount > 0 && <Stat label="No roll width" value={plan.unmatchedCount} tone="red" />}
                 {plan.missingGsmCount > 0 && <Stat label="Missing info" value={plan.missingGsmCount} tone="red" />}
             </div>

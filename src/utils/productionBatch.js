@@ -1013,6 +1013,10 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
 
     const postponedCount = groups.reduce((s, g) => s + g.postponed.length, 0);
     const totalPlannedQty = groups.reduce((s, g) => s + g.fulfilledQty, 0);
+    // What the orders asked for and no stock could cover, in the same unit as the
+    // planned figure. Sub-orders flagged out of every group (no roll width, or too
+    // little information to size) are counted separately, not here.
+    const totalPostponedQty = groups.reduce((s, g) => s + Math.max(g.requiredQty - g.fulfilledQty, 0), 0);
     const totalFinishedQty = groups.reduce((s, g) => s + g.finishedQty, 0);
     const totalOutputQty = groups.reduce((s, g) => s + g.outputQty, 0);
     const jobCount = groups.filter((g) => g.fulfilled.length > 0).length;
@@ -1025,7 +1029,7 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
     };
 
     return {
-        groups, postponedCount, totalPlannedQty, totalFinishedQty, totalOutputQty, jobCount,
+        groups, postponedCount, totalPlannedQty, totalPostponedQty, totalFinishedQty, totalOutputQty, jobCount,
         totalRequiredCount,
         isPieces: isPieceType(batchType),
         unmatched, unmatchedCount: unmatched.length,
