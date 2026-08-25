@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
     X, Loader2, AlertCircle, CheckCircle2, ChevronRight, ChevronLeft, ChevronDown,
-    Search, Layers, Package, CalendarDays, ClipboardCheck, Maximize2, Download, AlertTriangle
+    Search, Layers, Package, CalendarDays, ClipboardCheck, Maximize2, Download, AlertTriangle,
+    Wrench
 } from 'lucide-react';
 import Button from './Button';
 import WriteFailureModal from './WriteFailureModal';
 import ImagePreviewModal from './ImagePreviewModal';
+import AssignRollModal from './AssignRollModal';
 import { parseAttachmentId } from '../utils/attachments';
 import { countToKg } from '../utils/txnDisplay';
 import { choiceText } from '../utils/gristValues';
@@ -82,6 +84,43 @@ const dateText = (v) => epochToDate(v) || '—';
 // sheet -- a patty is a strip whose length wraps the bag, not just a width.
 const sizeText = (batchType, so) => outputSizeLabel(String(batchType || '').trim().toUpperCase(), so);
 
+
+// Build one plan per chosen type against a single working copy of the godown, so a
+// physical roll consumed by an earlier type is not offered again to a later one.
+// Kept pure and separate from the fetch: revising a plan after a roll is assigned
+// by hand is then a re-run over data already in hand, not another round trip.
+const runPlans = ({ batchTypes, eligibleBy, itemCodes, inventory, overrides }) => {
+    const working = inventory.map((r) => ({ ...r }));
+    const workingById = new Map(working.map((r) => [r.itemId, r]));
+    const builtPlans = [];
+    for (const bt of batchTypes) {
+        const built = buildPlan({
+            batchType: bt,
+            subOrders: eligibleBy[bt] || [],
+            itemCodes,
+            inventory: working,
+            overrides: overrides?.[bt]
+        });
+        for (const g of built.groups) {
+            for (const p of g.picks) {
+                const row = workingById.get(p.itemId);
+                if (!row) continue;
+                // A roll goes to one job only, whichever type claimed it first --
+                // deducting the slice it plans to use left the rest on the shelf
+                // for the next type in the same run. Ready stock is a pool, so
+                // there only the slice goes.
+                if (p.whole != null) {
+                    row.availWeight = 0;
+                    row.availBundles = 0;
+                } else {
+                    row.availWeight = num(row.availWeight) - p.take;
+                }
+            }
+        }
+        builtPlans.push({ batchType: bt, plan: built });
+    }
+    return builtPlans;
+};
 
 const PriorityBadge = ({ priority }) => {
     const tone = priority <= 2 ? 'green' : priority === 3 ? 'blue' : priority === 4 ? 'amber' : 'slate';
@@ -242,6 +281,14 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
     const [plans, setPlans] = useState([]); // [{ batchType, plan }] — one per chosen type
+    // Rolls put on a group by hand when the matcher found none:
+    // { [batchType]: { [groupKey]: [itemId, ...] } }. Cleared on every fresh search.
+    const [overrides, setOverrides] = useState({});
+    // The group whose roll assignment is open, or null.
+    const [assigning, setAssigning] = useState(null);
+    // Everything the planner needs, kept from the last search so a revision is a
+    // re-run rather than another round trip to Grist.
+    const planInputs = useRef(null);
     const [codeNames, setCodeNames] = useState(new Map()); // item-code id -> readable code
     const [itemNames, setItemNames] = useState(new Map()); // item row id -> printed item id
     const [createdCount, setCreatedCount] = useState(0);
@@ -651,35 +698,52 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
             //    physical roll/sheet consumed by an earlier type isn't offered again
             //    to a later one. (A sub-order can still feed several types — e.g. a
             //    STITCHING bag needs both a sheet and a side patty — that's intended.)
-            const working = inventory.map((r) => ({ ...r }));
-            const workingById = new Map(working.map((r) => [r.itemId, r]));
-            const builtPlans = [];
-            for (const bt of batchTypes) {
-                const built = buildPlan({ batchType: bt, subOrders: eligibleFor(bt), itemCodes, inventory: working });
-                for (const g of built.groups) {
-                    for (const p of g.picks) {
-                        const row = workingById.get(p.itemId);
-                        if (!row) continue;
-                        // A roll goes to one job only, whichever type claimed it
-                        // first -- deducting the slice it plans to use left the
-                        // rest on the shelf for the next type in the same run.
-                        // Ready stock is a pool, so there only the slice goes.
-                        if (p.whole != null) {
-                            row.availWeight = 0;
-                            row.availBundles = 0;
-                        } else {
-                            row.availWeight = num(row.availWeight) - p.take;
-                        }
-                    }
-                }
-                builtPlans.push({ batchType: bt, plan: built });
-            }
-            setPlans(builtPlans);
+            const eligibleBy = Object.fromEntries(batchTypes.map((bt) => [bt, eligibleFor(bt)]));
+            // Held so a hand-assigned roll can rebuild the plan without fetching
+            // again: nothing upstream of the allocation has changed.
+            planInputs.current = { batchTypes, eligibleBy, itemCodes, inventory };
+            setOverrides({});
+            setPlans(runPlans({ batchTypes, eligibleBy, itemCodes, inventory, overrides: {} }));
             setStep('review');
         } catch (err) {
             setError(err.message || String(err));
         } finally {
             setLoading(false);
+        }
+    };
+
+    // Rolls that may still be offered: everything in the godown that no group in
+    // this run has already been given, plus whatever this group itself holds, so an
+    // existing assignment can be edited rather than only cleared.
+    const rollsFor = (batchType, groupKey) => {
+        const inputs = planInputs.current;
+        if (!inputs) return [];
+        const mine = new Set((overrides[batchType]?.[groupKey] || []).map(num));
+        const taken = new Set();
+        for (const { plan } of plans) {
+            for (const g of plan.groups) {
+                for (const pick of g.picks) {
+                    if (pick.whole != null) taken.add(num(pick.itemId));
+                }
+            }
+        }
+        return inputs.inventory.filter((r) => norm(r.type) === 'ROLL'
+            && num(r.availWeight) > 0
+            && (mine.has(num(r.itemId)) || !taken.has(num(r.itemId))));
+    };
+
+    // Assign (or clear) the rolls on one group and rebuild every plan around the
+    // decision. Nothing is written to Grist here -- the revised plan goes back on
+    // screen to be reviewed exactly like the original one.
+    const assignRolls = (batchType, groupKey, itemIds) => {
+        setAssigning(null);
+        const forType = { ...(overrides[batchType] || {}) };
+        if (itemIds.length === 0) delete forType[groupKey];
+        else forType[groupKey] = itemIds.map(num);
+        const next = { ...overrides, [batchType]: forType };
+        setOverrides(next);
+        if (planInputs.current) {
+            setPlans(runPlans({ ...planInputs.current, overrides: next }));
         }
     };
 
@@ -972,6 +1036,8 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                                 <PlanSection
                                     key={batchType} batchType={batchType} plan={plan}
                                     onViewForm={viewOrderForm} itemNames={itemNames}
+                                    assigned={overrides[batchType] || {}}
+                                    onAssign={step === 'review' ? (g) => setAssigning({ batchType, group: g }) : null}
                                 />
                             ))}
                         </div>
@@ -1033,6 +1099,16 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
         )}
         {(loadingPreview || previewImage) && (
             <ImagePreviewModal src={previewImage} loading={loadingPreview && !previewImage} onClose={closePreview} />
+        )}
+        {assigning && (
+            <AssignRollModal
+                group={assigning.group}
+                batchType={assigning.batchType}
+                rolls={rollsFor(assigning.batchType, assigning.group.key)}
+                assigned={overrides[assigning.batchType]?.[assigning.group.key] || []}
+                onClose={() => setAssigning(null)}
+                onSave={(itemIds) => assignRolls(assigning.batchType, assigning.group.key, itemIds)}
+            />
         )}
         {writeFailure && (
             <WriteFailureModal
@@ -1118,6 +1194,7 @@ const CSV_HEADERS = [
     'Unit', 'Group Required', 'Group Fulfilled', 'Group To Produce', 'Group From Stock',
     'Group Required Count', 'Count Unit', 'Production Overage %',
     'Priority', 'Priority Label', 'Stock Items', 'Allocation Detail',
+    'Rolls Assigned By Hand', 'Assigned But Unused', 'Assigned But Refused',
     'Group Postponed Count', 'Group Postponed Qty',
     'Sub-Order Status', 'Sub-Order ID', 'Order ID', 'Shop', 'Model', 'Roll Material',
     'Bag Colour', 'Bag GSM', 'Bag Width', 'Bag Height', 'Sheet Size',
@@ -1154,7 +1231,7 @@ const csvSubOrderCells = (so, batchType, status) => {
 
 // Blank group/job/allocation cells (everything after Batch Type + Output Type),
 // for sub-orders that never reached a group.
-const CSV_EMPTY_GROUP_CELLS = new Array(22).fill('');
+const CSV_EMPTY_GROUP_CELLS = new Array(25).fill('');
 
 const buildCsvRows = (plans, codeNames, itemNames) => {
     const rows = [];
@@ -1163,7 +1240,17 @@ const buildCsvRows = (plans, codeNames, itemNames) => {
             const fulfilledIds = new Set(g.fulfilled.map((so) => so.id));
             const itemIds = [...new Set(g.picks.map((p) => p.itemId))];
             const allocation = g.picks
-                .map((p) => `${itemNames.get(num(p.itemId)) || `#${p.itemId}`} ${p.source} ${fmtKg(p.take)}kg`)
+                .map((p) => [
+                    itemNames.get(num(p.itemId)) || `#${p.itemId}`,
+                    p.source,
+                    `${fmtKg(p.take)}kg`,
+                    // A roll the matcher would not have chosen is worth being able
+                    // to find again in the file, not just on screen.
+                    p.manual ? '(assigned by hand)' : null
+                ].filter(Boolean).join(' '))
+                .join(' | ');
+            const named = (ids) => (ids || [])
+                .map((id) => itemNames.get(num(id)) || `#${id}`)
                 .join(' | ');
             const groupCells = [
                 batchType, OUTPUT_TYPE[batchType] || '',
@@ -1176,6 +1263,9 @@ const buildCsvRows = (plans, codeNames, itemNames) => {
                 Math.ceil(g.requiredCount.count - 1e-9), g.requiredCount.unit,
                 Math.round(overageRate(batchType) * 100),
                 g.priority, PRIORITY_LABEL[g.priority] || '', itemIds.length, allocation,
+                named(g.picks.filter((p) => p.manual).map((p) => p.itemId)),
+                named(g.manualUnused),
+                named(g.manualRejected),
                 g.postponed.length,
                 fmtKg(Math.max(g.requiredQty - g.fulfilledQty, 0))
             ];
@@ -1398,7 +1488,7 @@ const SOURCE_TONE = {
 
 // One chosen type's plan: the groups, what each needs, what stock covers it, and
 // the sub-orders behind it — everything the operator checks before creating.
-const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map() }) => {
+const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map(), assigned = {}, onAssign }) => {
     const [open, setOpen] = useState(false);
     const unit = ' kg';
     const subOrders = plan.groups.reduce((s, g) => s + g.subOrders.length, 0);
@@ -1430,6 +1520,8 @@ const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map() }) => 
                         <Empty label="No qualifying sub-orders for this type and date." />
                     ) : plan.groups.map((g) => {
                         const postponedIds = new Set(g.postponed.map((so) => so.id));
+                        const short = Math.max(num(g.requiredQty) - num(g.fulfilledQty), 0);
+                        const assignedHere = assigned[g.key] || [];
                         return (
                         <div key={g.key} className="bg-white rounded-xl border border-slate-200 p-3">
                             <div className="flex items-start justify-between gap-2 mb-1.5">
@@ -1470,9 +1562,10 @@ const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map() }) => 
                                     {g.picks.map((p, i) => (
                                         <span
                                             key={`${p.itemId}-${p.source}-${i}`}
-                                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] ring-1 ${SOURCE_TONE[p.source] || SOURCE_TONE.finished}`}
-                                            title={`${p.source} stock`}
+                                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] ring-1 ${p.manual ? 'text-amber-800 bg-amber-50 ring-amber-300' : SOURCE_TONE[p.source] || SOURCE_TONE.finished}`}
+                                            title={p.manual ? 'assigned by hand' : `${p.source} stock`}
                                         >
+                                            {p.manual && <Wrench size={10} className="shrink-0" />}
                                             <span className="font-mono font-medium">
                                                 {itemNames.get(num(p.itemId)) || `#${p.itemId}`}
                                             </span>
@@ -1497,6 +1590,42 @@ const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map() }) => 
                                 <p className="mt-1.5 text-[11px] text-amber-700 bg-amber-50 rounded px-2 py-1">
                                     {g.postponed.length} sub-order(s) postponed → No_Stock_Identified (marked amber above)
                                 </p>
+                            )}
+                            {/* A roll the matcher rejected may still do the job, and
+                                only the person at the shelf can say so. Offered
+                                wherever stock fell short, and kept available after
+                                the fact so an assignment can be changed or undone
+                                before anything is written. */}
+                            {onAssign && (short > 0 || assignedHere.length > 0) && (
+                                <div className="mt-2 pt-2 border-t border-dashed border-slate-200 flex flex-wrap items-center gap-2">
+                                    <Button
+                                        variant="outline"
+                                        onClick={() => onAssign(g)}
+                                        className="!px-2.5 !py-1 !text-[11px] border-amber-300 text-amber-800 hover:bg-amber-50"
+                                    >
+                                        <Wrench size={12} />
+                                        {assignedHere.length > 0
+                                            ? `${assignedHere.length} roll${assignedHere.length === 1 ? '' : 's'} assigned by hand`
+                                            : 'Assign a roll by hand'}
+                                    </Button>
+                                    {short > 0 && (
+                                        <span className="text-[11px] text-slate-500 tabular-nums">
+                                            {fmtKg(short)}{unit} short
+                                        </span>
+                                    )}
+                                    {g.manualUnused?.length > 0 && (
+                                        <span className="text-[11px] text-slate-500">
+                                            {g.manualUnused.length} assigned roll{g.manualUnused.length === 1 ? '' : 's'} not needed —
+                                            the plan covered it without {g.manualUnused.length === 1 ? 'it' : 'them'}.
+                                        </span>
+                                    )}
+                                    {g.manualRejected?.length > 0 && (
+                                        <span className="text-[11px] text-red-700 bg-red-50 rounded px-1.5 py-0.5">
+                                            {g.manualRejected.length} assigned roll{g.manualRejected.length === 1 ? '' : 's'} refused —
+                                            wrong colour for this group.
+                                        </span>
+                                    )}
+                                </div>
                             )}
                         </div>
                         );

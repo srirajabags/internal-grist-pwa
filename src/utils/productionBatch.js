@@ -947,7 +947,13 @@ const takeRolls = (stock, need, source) => {
         const chosen = vintage.find((s) => num(s.avail) >= remaining - 1e-9) ?? vintage[vintage.length - 1];
         left.splice(left.indexOf(chosen), 1);
         // The whole roll is committed, however little of it this job will use.
-        picks.push({ itemId: chosen.itemId, codeId: chosen.codeId, take: Math.min(num(chosen.avail), remaining), source, whole: num(chosen.avail) });
+        picks.push({
+            itemId: chosen.itemId, codeId: chosen.codeId,
+            take: Math.min(num(chosen.avail), remaining), source, whole: num(chosen.avail),
+            // Carried through so the review can show which rolls were chosen by a
+            // person rather than by the matcher.
+            ...(chosen.manual ? { manual: true } : {})
+        });
         covered += num(chosen.avail);
     }
     // Never report more covered than was asked for: the surplus goes back.
@@ -1024,10 +1030,52 @@ const finishedBySize = (rows, subOrders, batchType, byModel = false) => {
     return capped;
 };
 
-export const allocateStock = (attrs, subOrders, inventory, batchType, outputType) => {
+// The colour a group's roll has to be. Mirrors relevantStock's own resolution: an
+// override that is present but null means the group does not constrain colour.
+export const forcedRollColour = (attrs) =>
+    (attrs?.rollColour === undefined ? attrs?.colour : attrs?.rollColour);
+
+// Whether a roll may be put on a group by hand. Material, GSM and width are all
+// negotiable -- a wider roll is slit down, a heavier GSM still makes the bag, and
+// the catalogue spells materials in ways the matcher takes too literally. Colour
+// is not: blue fabric does not become a red bag, so a colour that does not match
+// is refused however it was chosen.
+export const canForceRoll = (roll, attrs) => {
+    const want = forcedRollColour(attrs);
+    return !isSet(want) || norm(roll?.colour) === norm(want);
+};
+
+// A roll put on a job by hand, because the matcher found nothing and the person
+// looking at the shelf knows a roll that will do -- a slightly wider one to slit
+// down, a heavier GSM, a material the catalogue spells differently.
+//
+// It is not a special kind of pick: it is an ordinary roll that always sorts
+// oldest, so takeRolls reaches for it before anything the matcher found, and it is
+// committed whole and deducted from the same pool like any other. That is what
+// keeps a hand-assigned roll from also being handed to a second job.
+//
+// Giving them all one intake makes them a single vintage, so best-fit still
+// applies among them: assign three rolls for a small job and it opens the one that
+// covers it, not the heaviest.
+const FORCED_INTAKE = -1e12;
+const withForcedRolls = (rolls, forced) => {
+    if (!forced || forced.length === 0) return rolls;
+    const rest = new Map(rolls.map((r) => [r.itemId, r]));
+    const first = [];
+    for (const r of forced) {
+        const avail = num(r.avail ?? r.availWeight);
+        if (avail <= 0) continue;
+        // A roll the matcher also found must not appear twice.
+        rest.delete(r.itemId);
+        first.push({ ...r, avail, intakeAt: FORCED_INTAKE, manual: true });
+    }
+    return [...first, ...rest.values()];
+};
+
+export const allocateStock = (attrs, subOrders, inventory, batchType, outputType, forcedRolls) => {
     const required = subOrders.reduce((s, so) => s + effectiveQty(batchType, so), 0);
     const stockLists = relevantStock(attrs, inventory, batchType, outputType);
-    const rolls = stockLists.rolls;
+    const rolls = withForcedRolls(stockLists.rolls, forcedRolls);
     // Ready stock is size-specific; the roll it would otherwise be cut from is not.
     const isModelSheets = batchType === 'ROLLS TO MODEL SHEETS';
     const finished = finishedBySize(stockLists.finished, subOrders, batchType, isModelSheets);
@@ -1173,7 +1221,10 @@ const mergeLines = (lines) => {
     return [...byId.values()];
 };
 
-export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
+// `overrides` maps a group key to the ids of physical rolls assigned to it by
+// hand: { 'NW BOPP|WHITE|90|38': [412, 418] }. Everything else about the plan is
+// computed the same way, so a revised plan can be reviewed exactly like a fresh one.
+export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, overrides }) => {
     const eligible = batchType === 'ROLLS TO MODEL SHEETS'
         ? splitByModel(subOrders.filter((so) => typeNeedsSubOrder(batchType, so)))
         : subOrders.filter((so) => typeNeedsSubOrder(batchType, so));
@@ -1230,7 +1281,17 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
         }))
         .sort((a, b) => b.requiredQty - a.requiredQty)
         .map((g) => {
-            const alloc = allocateStock(g.attrs, g.subOrders, stock, batchType);
+            // Rolls named for this group by hand. Read from the working copy, so an
+            // assigned roll another group has already consumed is simply gone.
+            const candidates = (overrides?.[g.key] || [])
+                .map((id) => stockById.get(num(id)))
+                .filter((r) => r && num(r.availWeight) > 0);
+            // Wrong colour is refused here too, not only hidden in the picker: an
+            // assignment made before the plan was revised must not slip through on
+            // a second pass.
+            const manualRejected = candidates.filter((r) => !canForceRoll(r, g.attrs)).map((r) => r.itemId);
+            const forced = candidates.filter((r) => canForceRoll(r, g.attrs));
+            const alloc = allocateStock(g.attrs, g.subOrders, stock, batchType, undefined, forced);
             for (const p of alloc.picks) {
                 const row = stockById.get(p.itemId);
                 if (!row) continue;
@@ -1263,7 +1324,17 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
                 // is not also listed as postponed.
                 postponed: mergeLines(alloc.postponed).filter((so) => !fulfilledIds.has(so.id)),
                 outputQty,
-                finishedQty
+                finishedQty,
+                // What was assigned by hand, and which of those the plan did not
+                // need after all -- a roll quietly left out would otherwise look
+                // like the assignment had failed.
+                manualAssigned: forced.map((r) => r.itemId),
+                manualUnused: forced
+                    .map((r) => r.itemId)
+                    .filter((id) => !alloc.picks.some((p) => p.itemId === id)),
+                // Assigned but refused outright -- a wrong-colour roll. Reported so
+                // the review can say why it was not used.
+                manualRejected
             };
         });
 

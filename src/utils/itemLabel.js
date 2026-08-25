@@ -33,9 +33,9 @@ const FONT = (px) => `bold ${px}px ui-monospace, SFMono-Regular, Menlo, Consolas
 // so those labels show the item type and specification instead.
 const upper = (v) => String(v ?? '').trim().toUpperCase();
 
-export const itemLabelSpec = (item, { size } = {}) => {
+export const itemLabelSpec = (item, { size, material } = {}) => {
     if (!item) return '';
-    return [item.col, item.gsm && `${item.gsm} GSM`, size]
+    return [material && item.mat, item.col, item.gsm && `${item.gsm} GSM`, size]
         .filter(Boolean)
         .map(upper)
         .join(' - ');
@@ -44,14 +44,18 @@ export const itemLabelSpec = (item, { size } = {}) => {
 export const itemLabelLines = (item) => {
     if (!item) return [];
     const isRoll = /ROLL/i.test(String(item.itype || ''));
+    // Material (NW BOPP, NW VIRGIN, NW REGULAR) is what the racks are organised by
+    // and the first thing anyone checks against an order, so every label carries it
+    // on a row of its own rather than leaving it to whoever remembers.
     if (isRoll) {
         return [
             itemLabelText(item.iid),
+            upper(item.mat),
             itemLabelSpec(item, { size: item.w && `${item.w}"` })
         ].filter(Boolean);
     }
     const size = item.w && item.h ? `${item.w}X${item.h}` : item.w ? `${item.w}"` : '';
-    return [upper(item.itype), itemLabelSpec(item, { size })].filter(Boolean);
+    return [upper(item.itype), upper(item.mat), itemLabelSpec(item, { size })].filter(Boolean);
 };
 
 // Returns { blob, url } for a PNG of the label. Revoke the url when finished.
@@ -62,8 +66,10 @@ export const makeItemLabelPng = async (itemId, lines) => {
     const rows = (Array.isArray(lines) && lines.length > 0 ? lines : [text])
         .map((l) => String(l || '').trim())
         .filter(Boolean);
-    const [headline, ...rest] = rows;
-    const sub = rest.join('  ');
+    // The id is the headline; everything after it is printed on its own row below,
+    // so a roll's material and specification stay legible instead of being run
+    // together into one long line that has to shrink to fit.
+    const [headline, ...subs] = rows;
     // The browser build is CommonJS, so depending on interop the exports land on
     // .default or on the namespace itself.
     const mod = await import('qrcode');
@@ -93,19 +99,21 @@ export const makeItemLabelPng = async (itemId, lines) => {
         fontPx = Math.max(12, Math.floor((fontPx * maxTextWidth) / naturalWidth));
     }
 
-    // The specification line sits below the id, smaller, and is fitted the same way.
+    // The rows below the id are smaller and share one size, fitted to whichever of
+    // them is widest so they read as a set rather than a ransom note.
     let subPx = 0;
-    if (sub) {
+    if (subs.length > 0) {
         subPx = Math.round(fontPx * 0.62);
         ctx.font = FONT(subPx);
-        const subWidth = ctx.measureText(sub).width;
-        if (subWidth > maxTextWidth) {
-            subPx = Math.max(10, Math.floor((subPx * maxTextWidth) / subWidth));
+        const widest = Math.max(...subs.map((line) => ctx.measureText(line).width));
+        if (widest > maxTextWidth) {
+            subPx = Math.max(10, Math.floor((subPx * maxTextWidth) / widest));
         }
     }
+    const subLead = Math.round(subPx * 1.35);
 
     canvas.height = PAD + QR_PX + Math.round(fontPx * 1.6)
-        + (sub ? Math.round(subPx * 1.5) : 0) + PAD;
+        + subs.length * subLead + PAD;
     // Sizing the canvas resets the context, so everything is set after this point.
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -120,10 +128,14 @@ export const makeItemLabelPng = async (itemId, lines) => {
     const idBaseline = PAD + QR_PX + Math.round(fontPx * 0.9);
     ctx.fillText(headline, canvas.width / 2, idBaseline, maxTextWidth);
 
-    if (sub) {
+    if (subs.length > 0) {
         ctx.font = FONT(subPx);
         ctx.fillStyle = '#333333';
-        ctx.fillText(sub, canvas.width / 2, idBaseline + Math.round(fontPx * 0.75) + Math.round(subPx * 0.5), maxTextWidth);
+        let y = idBaseline + Math.round(fontPx * 0.75) + Math.round(subPx * 0.5);
+        for (const line of subs) {
+            ctx.fillText(line, canvas.width / 2, y, maxTextWidth);
+            y += subLead;
+        }
     }
 
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
@@ -136,7 +148,7 @@ export const makeItemLabelPng = async (itemId, lines) => {
 //
 // `items` are { iid, subtitle } pairs. `onProgress(done, total)` runs as each
 // label is drawn -- a few hundred take a moment, and silence looks like a hang.
-export const makeLabelsZip = async (items, onProgress) => {
+export const makeLabelsZip = async (items, onProgress, { filename } = {}) => {
     const JSZip = (await import('jszip')).default;
     const zip = new JSZip();
     const seen = new Set();
@@ -160,6 +172,6 @@ export const makeLabelsZip = async (items, onProgress) => {
     const stamp = new Date().toLocaleDateString('en-CA');
     return {
         blob: await zip.generateAsync({ type: 'blob' }),
-        filename: `item-labels_${stamp}.zip`
+        filename: filename || `item-labels_${stamp}.zip`
     };
 };

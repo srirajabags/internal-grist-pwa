@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
     ArrowLeft, Warehouse, AlertCircle, Loader2, RefreshCw, Search, X, Package,
-    LayoutGrid, List, ChevronDown, ShieldAlert, Plus, Minus, ScanLine, PackagePlus, QrCode, Download
+    LayoutGrid, List, ChevronDown, ShieldAlert, Plus, Minus, ScanLine, PackagePlus, QrCode, Download,
+    CalendarRange
 } from 'lucide-react';
 import Card from '../components/Card';
 import InventoryTxnModal from '../components/InventoryTxnModal';
@@ -10,6 +11,7 @@ import StockAdjustModal from '../components/StockAdjustModal';
 import RollPickerModal from '../components/RollPickerModal';
 import QrScanModal from '../components/QrScanModal';
 import NewRollStockModal from '../components/NewRollStockModal';
+import RollMovementsModal from '../components/RollMovementsModal';
 import ItemLabelModal from '../components/ItemLabelModal';
 import { makeItemLabelPng, itemLabelLines, makeLabelsZip } from '../utils/itemLabel';
 import Button from '../components/Button';
@@ -398,6 +400,8 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     const [pickingRoll, setPickingRoll] = useState(null);
     const [scanning, setScanning] = useState(false);
     const [newStock, setNewStock] = useState(false);
+    // The date-range delta view over roll transactions, opened from the rolls tab.
+    const [movements, setMovements] = useState(false);
     const [labelFor, setLabelFor] = useState(null);
     const [label, setLabel] = useState(null);   // { iid, url, filename }
     const [bulk, setBulk] = useState(null);     // { done, total }
@@ -807,6 +811,16 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                         </Button>
                         {tab === 'id' && (
                             <Button
+                                variant="secondary"
+                                onClick={() => setMovements(true)}
+                                className="!px-2.5 shrink-0"
+                                title="What moved between two dates"
+                            >
+                                <CalendarRange size={18} />
+                            </Button>
+                        )}
+                        {tab === 'id' && (
+                            <Button
                                 variant="primary"
                                 onClick={() => setNewStock(true)}
                                 className="!px-2.5 shrink-0 bg-sky-600 hover:bg-sky-700"
@@ -1156,6 +1170,14 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                 <NewRollStockModal
                     onClose={() => setNewStock(false)}
                     onSaved={() => refresh(tab)}
+                    getHeaders={getHeaders}
+                    getUrl={getUrl}
+                />
+            )}
+
+            {movements && (
+                <RollMovementsModal
+                    onClose={() => setMovements(false)}
                     getHeaders={getHeaders}
                     getUrl={getUrl}
                 />
