@@ -1,11 +1,30 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import { copyFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
+// GitHub Pages serves files, not routes: /inventory is not a file, so it answers
+// with its own 404. The service worker normally hides this by handling
+// navigations itself -- which is why a deep path works right up until the forced
+// update unregisters the worker and reloads, and why a first visit or a shared
+// link to /inventory has never worked at all. Publishing index.html as 404.html
+// too means every unknown path loads the app, which then reads the URL and shows
+// the right page. Copied after the build so it always matches the hashed assets.
+const spaFallback = () => ({
+  name: 'spa-404-fallback',
+  apply: 'build',
+  closeBundle() {
+    const out = resolve(process.cwd(), 'dist')
+    copyFileSync(resolve(out, 'index.html'), resolve(out, '404.html'))
+  }
+})
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
     react(),
+    spaFallback(),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'masked-icon.svg'],
