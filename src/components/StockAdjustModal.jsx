@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Loader2, AlertCircle, Plus, Minus, Clock, ClipboardList } from 'lucide-react';
 import Button from './Button';
 import { ItemVisual } from './itemVisuals';
@@ -36,6 +36,36 @@ const StockAdjustModal = ({ row, mode: initialMode, available, availableCount = 
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState(null);
 
+    // A roll only ever gets lighter. Its opening weight is the ceiling: what goes
+    // back can only be what was taken out, and booking more would invent fabric
+    // that never existed -- which then shows up as a negative leftover when the
+    // job that borrowed it is completed.
+    const [openingKg, setOpeningKg] = useState(null);
+    useEffect(() => {
+        if (!isRoll || !num(row.item_ref)) return;
+        (async () => {
+            try {
+                const headers = await getHeaders();
+                const res = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
+                    method: 'POST',
+                    headers: { ...headers, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sql: `SELECT ROUND(SUM(t.Weight_Kg_), 3) AS kg FROM ${TXN_TABLE} t
+                              WHERE t.Item_ID = ? AND UPPER(TRIM(t.Transaction_Type)) = 'NEW STOCK'`,
+                        args: [num(row.item_ref)]
+                    })
+                });
+                if (!res.ok) return;
+                const data = await res.json();
+                const kg = num(data.records?.[0]?.fields?.kg);
+                if (kg > 0) setOpeningKg(kg);
+            } catch {
+                // No ceiling known: the save still refuses anything obviously wrong.
+            }
+        })();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [row.item_ref, isRoll]);
+
     const recount = mode === 'RECOUNT';
     const byCount = unit === 'count';
     const entered = num(qty);
@@ -49,9 +79,17 @@ const StockAdjustModal = ({ row, mode: initialMode, available, availableCount = 
     const isAdd = effectiveMode === 'ADD';
     const weight = recount ? Math.abs(delta) : entered;
     const after = recount ? entered : (isAdd ? base + weight : base - weight);
-    const valid = weight > 0 && (!recount || entered >= 0) && !saving;
+    // Booking a roll above its opening weight is refused; there is no such fabric.
+    const headroom = openingKg == null ? null : Math.max(openingKg - num(available), 0);
+    const overOpening = isRoll && isAdd && openingKg != null && after > openingKg + 1e-6;
+    const valid = weight > 0 && (!recount || entered >= 0) && !saving && !overOpening;
 
     const submit = async () => {
+        if (overOpening) {
+            setError(`This roll opened at ${fmtKg(openingKg)} kg. Booking ${fmtKg(weight)} kg would put it at `
+                + `${fmtKg(after)} kg — a roll cannot gain weight. At most ${fmtKg(headroom)} kg can go back on.`);
+            return;
+        }
         setSaving(true);
         setError(null);
         try {
@@ -213,6 +251,23 @@ const StockAdjustModal = ({ row, mode: initialMode, available, availableCount = 
                                 {byCount ? `${Math.round(after)} ${countUnit}` : `${fmtKg(after)} kg`}
                             </span>
                             {after < 0 && <span className="text-red-600"> — more than is on hand</span>}
+                        </p>
+                    )}
+
+                    {overOpening && (
+                        <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-2.5 py-2 flex items-start gap-1.5">
+                            <AlertCircle size={14} className="mt-px shrink-0" />
+                            <span>
+                                This roll opened at <span className="font-semibold">{fmtKg(openingKg)} kg</span> and a roll
+                                cannot gain weight. At most <span className="font-semibold">{fmtKg(headroom)} kg</span> can
+                                go back on it.
+                            </span>
+                        </p>
+                    )}
+
+                    {isRoll && isAdd && !overOpening && headroom != null && weight > 0 && (
+                        <p className="text-[11px] text-slate-400">
+                            Opened at {fmtKg(openingKg)} kg · {fmtKg(headroom)} kg can go back on.
                         </p>
                     )}
 

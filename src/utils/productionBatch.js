@@ -44,6 +44,7 @@ export const MATERIAL_MAP = {
 };
 
 import { parseChoiceList, firstChoice } from './gristValues';
+import { sameVintage } from './stockAge';
 
 const norm = (v) => String(v ?? '').trim().toUpperCase();
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
@@ -917,6 +918,42 @@ const takeFrom = (stock, need, source) => {
     return { picks, covered };
 };
 
+// A job takes as many rolls as the work needs -- capping it would postpone a
+// large order for ever, since a sub-order is fulfilled whole or not at all. Past
+// this many the review says so, because every extra roll is a changeover
+// mid-run and the planner should see it coming.
+export const ROLLS_PER_JOB_NOTICE = 10;
+
+// Choosing which physical rolls a job gets.
+//
+// A roll leaves the shelf whole, so it belongs to exactly one job -- taking a
+// slice and leaving the rest "available" let two jobs be handed the same roll.
+//
+// Oldest stock goes first, or it sits in the godown until the fabric is no use.
+// Within one vintage the best fit wins: the smallest roll that covers what is
+// left, so a 5 kg job does not open the heaviest roll on the shelf. Where no
+// single roll covers it, the largest goes on -- fewest rolls, fewest changeovers.
+const takeRolls = (stock, need, source) => {
+    const left = stock.filter((s) => num(s.avail) > 0)
+        .sort((a, b) => num(a.intakeAt) - num(b.intakeAt) || num(a.avail) - num(b.avail));
+    const picks = [];
+    let covered = 0;
+    while (covered < need - 1e-9 && left.length > 0) {
+        const oldest = num(left[0].intakeAt);
+        const vintage = left.filter((s) => sameVintage(num(s.intakeAt), oldest));
+        const remaining = need - covered;
+        // `vintage` is already smallest-first, so the first roll that covers the
+        // remainder is the best fit; failing that the heaviest makes most progress.
+        const chosen = vintage.find((s) => num(s.avail) >= remaining - 1e-9) ?? vintage[vintage.length - 1];
+        left.splice(left.indexOf(chosen), 1);
+        // The whole roll is committed, however little of it this job will use.
+        picks.push({ itemId: chosen.itemId, codeId: chosen.codeId, take: Math.min(num(chosen.avail), remaining), source, whole: num(chosen.avail) });
+        covered += num(chosen.avail);
+    }
+    // Never report more covered than was asked for: the surplus goes back.
+    return { picks, covered: Math.min(covered, need) };
+};
+
 // Split sub-orders (oldest first) into the prefix that fits within `capacity`
 // and the remainder that must be postponed.
 const splitByCapacity = (batchType, subOrders, capacity) => {
@@ -1016,7 +1053,7 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
                 ? takeFrom(alternates, Math.min(shortfall, alternatesTotal), 'blank')
                 : { picks: [], covered: 0 };
             shortfall -= fromBlanks.covered;
-            const fromRolls = shortfall > 0 ? takeFrom(rolls, shortfall, 'roll') : { picks: [], covered: 0 };
+            const fromRolls = shortfall > 0 ? takeRolls(rolls, shortfall, 'roll') : { picks: [], covered: 0 };
             return {
                 picks: [...fromFinished.picks, ...fromBlanks.picks, ...fromRolls.picks],
                 covered: fromFinished.covered + fromBlanks.covered + fromRolls.covered,
@@ -1051,12 +1088,12 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
     }
     // Priority 2 — a raw roll (or rolls) covers the whole requirement.
     if (rollsTotal >= required && required > 0) {
-        const { picks } = takeFrom(rolls, required, 'roll');
+        const { picks } = takeRolls(rolls, required, 'roll');
         return { priority: 2, picks, fulfilledQty: required, fulfilled: subOrders, postponed: [] };
     }
     // Priority 3 — mix: rolls take the major share, finished covers the rest.
     if (rollsTotal > 0 && rollsTotal + finishedTotal >= required && required > 0) {
-        const fromRolls = takeFrom(rolls, required, 'roll');
+        const fromRolls = takeRolls(rolls, required, 'roll');
         const fromFinished = takeFrom(finished, required - fromRolls.covered, 'finished');
         return {
             priority: 3,
@@ -1076,7 +1113,7 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
             // shelf: taking the full capacity deducted stock that later groups in
             // the same run then could not see, and left the review claiming a job
             // had drawn several times the weight it was actually planned for.
-            const fromRolls = takeFrom(rolls, fulfilledQty, 'roll');
+            const fromRolls = takeRolls(rolls, fulfilledQty, 'roll');
             const fromFinished = takeFrom(finished, fulfilledQty - fromRolls.covered, 'finished');
             return {
                 priority: 4,
@@ -1197,7 +1234,10 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory }) => {
             for (const p of alloc.picks) {
                 const row = stockById.get(p.itemId);
                 if (!row) continue;
-                row.availWeight = num(row.availWeight) - p.take;
+                // A roll leaves the shelf whole, so it is committed to this job
+                // entirely -- deducting only the slice it will use let the very
+                // same roll be handed to a second job in the same run.
+                row.availWeight = p.whole != null ? 0 : num(row.availWeight) - p.take;
             }
             // Roll-width jobs are identified by the roll they consume (one roll code
             // per group), so output codes can be resolved per model at completion.

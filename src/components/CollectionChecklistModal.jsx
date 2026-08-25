@@ -1,5 +1,7 @@
 import React, { useMemo, useState } from 'react';
-import { X, Package, CheckCircle2, Circle, Loader2, AlertTriangle, CheckSquare, Warehouse, Boxes } from 'lucide-react';
+import {
+    X, Package, CheckCircle2, Circle, Loader2, AlertTriangle, CheckSquare, Warehouse, Boxes, Repeat
+} from 'lucide-react';
 import Button from './Button';
 import { ItemVisual } from './itemVisuals';
 import { attrText } from '../utils/txnDisplay';
@@ -41,7 +43,7 @@ const buildLines = (batch) => (batch?.jobs || []).flatMap((job) => {
 // actually have in hand, so a missing roll is found at the shelf rather than half
 // way through a run.
 const CollectionChecklistModal = ({
-    batch, updating, onClose, onConfirm,
+    batch, updating, onClose, onConfirm, onSwap,
     // The finished-stock trip supplies its own lines, already carrying the amount
     // each item will be drawn down by, so the sheet shows exactly what is written.
     lines: givenLines, title = 'Collect the raw roll', note,
@@ -49,6 +51,9 @@ const CollectionChecklistModal = ({
 }) => {
     const lines = useMemo(() => givenLines ?? buildLines(batch), [givenLines, batch]);
     const [ticked, setTicked] = useState(() => new Set());
+    // Which line has its substitutes open. The pick was made days ago; by now a
+    // roll can be buried or damaged, and the crew needs a way to take another.
+    const [swapping, setSwapping] = useState(null);
 
     // Grouped by godown, because collecting is one trip per shelf.
     const sections = useMemo(() => [ROLLS, BAGS]
@@ -192,6 +197,41 @@ const CollectionChecklistModal = ({
                                                     {whole && line.take == null && (
                                                         <span className="block text-[10px] text-slate-400 mt-1">
                                                             Take the whole roll — what is left goes back when the job is done.
+                                                        </span>
+                                                    )}
+                                                    {onSwap && item?.swaps?.length > 0 && (
+                                                        <span className="block mt-1.5">
+                                                            <button
+                                                                type="button"
+                                                                onClick={(e) => {
+                                                                    e.preventDefault();
+                                                                    setSwapping(swapping === line.key ? null : line.key);
+                                                                }}
+                                                                className="inline-flex items-center gap-1 text-[10px] font-semibold text-teal-700 hover:text-teal-800"
+                                                            >
+                                                                <Repeat size={11} />
+                                                                {swapping === line.key ? 'Keep this roll' : 'Not on the shelf? Take another'}
+                                                            </button>
+                                                            {swapping === line.key && (
+                                                                <span className="block mt-1.5 rounded-lg border border-slate-200 divide-y divide-slate-100 max-h-44 overflow-y-auto">
+                                                                    {item.swaps.map((alt) => (
+                                                                        <button
+                                                                            key={alt.id}
+                                                                            type="button"
+                                                                            disabled={updating}
+                                                                            onClick={(e) => {
+                                                                                e.preventDefault();
+                                                                                setSwapping(null);
+                                                                                onSwap(line.job, item.id, alt.id);
+                                                                            }}
+                                                                            className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 text-left hover:bg-slate-50 disabled:opacity-50"
+                                                                        >
+                                                                            <span className="font-mono text-[11px] text-slate-700 break-all">{alt.itemId}</span>
+                                                                            <span className="text-[10px] font-semibold text-slate-500 shrink-0">{fmtKg(alt.kg)} kg</span>
+                                                                        </button>
+                                                                    ))}
+                                                                </span>
+                                                            )}
                                                         </span>
                                                     )}
                                                 </span>

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
     X, Loader2, AlertCircle, CheckCircle2, ChevronRight, ChevronLeft, ChevronDown,
-    Search, Layers, Package, CalendarDays, ClipboardCheck, Maximize2, Download
+    Search, Layers, Package, CalendarDays, ClipboardCheck, Maximize2, Download, AlertTriangle
 } from 'lucide-react';
 import Button from './Button';
 import WriteFailureModal from './WriteFailureModal';
@@ -10,11 +10,13 @@ import { parseAttachmentId } from '../utils/attachments';
 import { countToKg } from '../utils/txnDisplay';
 import { choiceText } from '../utils/gristValues';
 import { writableRecords } from '../utils/gristWrites';
+import { intakeOrder } from '../utils/stockAge';
 import { newJournal } from '../utils/writeJournal';
 import {
     BATCH_TYPES, HARD_START_DATE, OUTPUT_TYPE, PRIORITY_LABEL, buildPlan,
     effectiveQty, needsPieceConversion, cannotConvertQty, cannotSizePieces, cannotSizePatty, BUNDLE_SIZE,
     typeNeedsSubOrder, missingInfoFields, outputCount, overageRate, outputSizeLabel, OUTPUT_COUNT_UNIT,
+    ROLLS_PER_JOB_NOTICE,
     bagPieceCount
 } from '../utils/productionBatch';
 
@@ -28,6 +30,7 @@ const ACKED_GODOWN_FILTER = `
 `;
 const SUMMARY_BY_ID_TABLE = 'Inventory_Transactions_summary_Incharge_Ack_Item_Code_Item_ID_Location';
 const SUMMARY_BY_CODE_TABLE = 'Inventory_Transactions_summary_Incharge_Ack_Item_Code_Location';
+const TXN_TABLE = 'Inventory_Transactions';
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const norm = (v) => String(v ?? '').trim().toUpperCase();
@@ -511,7 +514,11 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
             // 2. Map every existing job -> its batch type so we can drop sub-orders
             //    that already have a job of a given type (checked per type below).
             const jobs = await runSql(
-                `SELECT j.id AS id, b.Type AS type, j.Sub_Orders AS subOrders
+                `SELECT j.id AS id, b.Type AS type, j.Sub_Orders AS subOrders,
+                        j.Inventory_Items AS invItems, j.Job_Overage AS overage,
+                        COALESCE(b.Remaining_Inventory_Returned, 0) AS returned,
+                        (SELECT ROUND(SUM(ABS(tx.Weight_Kg_)), 3) FROM ${TXN_TABLE} tx
+                         WHERE tx.Production_Job = j.id AND tx.Transaction_Type = 'LESS') AS drawn
                  FROM Factory_Production_Jobs j
                  LEFT JOIN Factory_Production_Job_Batches b ON b.id = j.Factory_Production_Job_Batch`
             );
@@ -538,7 +545,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
             // order fell through to cutting a fresh roll.
             const invRows = await runSql(
                 `SELECT s.Item_ID AS itemId, s.Item_Code AS codeId,
-                        it.Item_ID AS itemName,
+                        it.Item_ID AS itemName, it.Created_at AS intakeAt,
                         ic.Type AS type, ic.Material AS material, ic.Colour AS colour,
                         ic.GSM AS gsm, ic.Width_Inches_ AS width,
                         ic.Height_Inches_ AS height,
@@ -557,7 +564,27 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                  LEFT JOIN Inventory_Item_Codes ic ON ic.id = s.Item_Code
                  LEFT JOIN Inventory_Items it ON it.id = s.Item_ID
                  WHERE s.Item_Code != 0
-                    AND ${ACKED_GODOWN_FILTER}`
+                    AND ${ACKED_GODOWN_FILTER}
+                    -- A ROLL promised to an open batch is not on the shelf,
+                    -- whatever the summary says: it leaves whole and belongs to one
+                    -- job. Between creating a batch and collecting it the godown
+                    -- balance is untouched, so without this the next batch plans
+                    -- the very same rolls again.
+                    --
+                    -- Ready-made stock is a POOL, not one object -- 2,900 sheets can
+                    -- fund several jobs -- so it is not excluded here. What open
+                    -- jobs have claimed of it is deducted below instead.
+                    AND NOT (
+                        UPPER(COALESCE(ic.Type, '')) = 'ROLL'
+                        AND EXISTS (
+                            SELECT 1 FROM Factory_Production_Jobs j
+                            JOIN Factory_Production_Job_Batches b ON b.id = j.Factory_Production_Job_Batch
+                            JOIN json_each(CASE WHEN json_valid(j.Inventory_Items)
+                                                THEN j.Inventory_Items ELSE '[]' END) ji
+                              ON ji.value = s.Item_ID
+                            WHERE COALESCE(b.Remaining_Inventory_Returned, 0) = 0
+                        )
+                    )`
             );
             // Row id -> the id printed on the roll or the stock label, so the
             // review can name what it picked instead of pointing at a row number.
@@ -568,8 +595,14 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                 return {
                     itemId: num(r.itemId),
                     codeId: num(r.codeId),
+                    itemName: r.itemName,
                     type: r.type, material: r.material, colour: r.colour, gsm: r.gsm,
                     width: r.width, height: r.height,
+                    // Oldest stock is issued first, so the allocator needs to know
+                    // how old each roll is. The date the business wrote into the
+                    // item id is the intake it means; Created_at is the fallback
+                    // for anything registered without one.
+                    intakeAt: intakeOrder(r.itemName, r.intakeAt),
                     // Booked weight leads; a count-only line converts from geometry.
                     availWeight: booked > 0
                         ? booked
@@ -580,6 +613,39 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                     availBundles: count
                 };
             }).filter((r) => r.availWeight > 0 || r.availBundles > 0);
+
+            // Ready-made stock is a pool, so an open job does not take it off the
+            // shelf -- it takes a slice. Until that slice is actually drawn (the
+            // LESS at collection) the summary still shows it, and the next batch
+            // would fund itself from stock already spoken for. Deduct what open
+            // jobs are still holding, spread across the pooled items each one was
+            // given. Rolls are already excluded outright, so this only touches
+            // ready stock.
+            const soById = new Map(subOrders.map((so) => [num(so.id), so]));
+            const stockById = new Map(inventory.map((r) => [r.itemId, r]));
+            for (const j of jobs) {
+                if (truthy(j.returned)) continue;
+                const pooled = parseRefList(j.invItems)
+                    .map((id) => stockById.get(num(id)))
+                    .filter((r) => r && norm(r.type) !== 'ROLL');
+                if (pooled.length === 0) continue;
+                // What the job still needs from the shelf: its requirement, less
+                // whatever it has already physically drawn.
+                const need = parseRefList(j.subOrders)
+                    .map((id) => soById.get(num(id)))
+                    .filter(Boolean)
+                    .reduce((t, so) => t + effectiveQty(j.type, so, num(j.overage) > 0 ? num(j.overage) : undefined), 0);
+                let claim = Math.max(need - num(j.drawn), 0);
+                // Take it from the items it was given, largest first, so a small
+                // claim does not empty every pool it touches.
+                for (const row of [...pooled].sort((a, b) => b.availWeight - a.availWeight)) {
+                    if (claim <= 0) break;
+                    const cut = Math.min(row.availWeight, claim);
+                    row.availWeight -= cut;
+                    if (row.availBundles > 0 && row.availWeight <= 0) row.availBundles = 0;
+                    claim -= cut;
+                }
+            }
 
             // 4. Build a plan per chosen type, sharing one working inventory so a
             //    physical roll/sheet consumed by an earlier type isn't offered again
@@ -594,7 +660,16 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                     for (const p of g.picks) {
                         const row = workingById.get(p.itemId);
                         if (!row) continue;
-                        row.availWeight = num(row.availWeight) - p.take;
+                        // A roll goes to one job only, whichever type claimed it
+                        // first -- deducting the slice it plans to use left the
+                        // rest on the shelf for the next type in the same run.
+                        // Ready stock is a pool, so there only the slice goes.
+                        if (p.whole != null) {
+                            row.availWeight = 0;
+                            row.availBundles = 0;
+                        } else {
+                            row.availWeight = num(row.availWeight) - p.take;
+                        }
                     }
                 }
                 builtPlans.push({ batchType: bt, plan: built });
@@ -1376,6 +1451,16 @@ const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map() }) => 
                                 {g.picks.length > 0 && (
                                     <span className="flex items-center gap-1">
                                         <Package size={12} /> {[...new Set(g.picks.map((p) => p.itemId))].length} stock item(s)
+                                    </span>
+                                )}
+                                {/* A job takes as many rolls as the work needs, but
+                                    every roll past the first is a changeover mid-run,
+                                    so a long list is worth seeing before the batch is
+                                    created rather than on the floor. */}
+                                {g.picks.filter((p) => p.source === 'roll').length >= ROLLS_PER_JOB_NOTICE && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium text-amber-800 bg-amber-50 ring-1 ring-amber-200">
+                                        <AlertTriangle size={12} />
+                                        {g.picks.filter((p) => p.source === 'roll').length} roll changeovers
                                     </span>
                                 )}
                             </div>

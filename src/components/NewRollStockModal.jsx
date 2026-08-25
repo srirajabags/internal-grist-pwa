@@ -111,7 +111,35 @@ const NewRollStockModal = ({ onClose, onSaved, getHeaders, getUrl }) => {
         resets.forEach((r) => r(''));
     };
 
-    const valid = code && norm(itemId) && num(weight) > 0 && !saving;
+    // An id is checked as it is typed, not only on save: the operator should be
+    // told the roll already exists before filling the rest of the form in, and
+    // the same id twice would put two physical rolls behind one record -- the
+    // very thing per-roll ids exist to prevent.
+    const [taken, setTaken] = useState(null);      // null = unknown / checking
+    const [checking, setChecking] = useState(false);
+    useEffect(() => {
+        const id = norm(itemId).toUpperCase();
+        if (!id) { setTaken(null); return undefined; }
+        setChecking(true);
+        const timer = setTimeout(async () => {
+            try {
+                const hit = await runSql(
+                    `SELECT id FROM ${ITEMS_TABLE} WHERE upper(Item_ID) = ? LIMIT 1`, [id]
+                );
+                setTaken(hit.length > 0 ? id : '');
+            } catch {
+                // A failed lookup is not proof the id is free; save still checks.
+                setTaken(null);
+            } finally {
+                setChecking(false);
+            }
+        }, 300);
+        return () => clearTimeout(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [itemId]);
+
+    const idClash = taken === norm(itemId).toUpperCase() && taken !== '';
+    const valid = code && norm(itemId) && num(weight) > 0 && !saving && !checking && !idClash;
 
     const submit = async () => {
         setSaving(true);
@@ -316,11 +344,26 @@ const NewRollStockModal = ({ onClose, onSaved, getHeaders, getUrl }) => {
                                     value={itemId}
                                     onChange={(e) => setItemId(e.target.value)}
                                     placeholder="ROLL_23-08-2026_0001"
-                                    className="w-full px-3 py-2 border border-slate-300 rounded-lg font-mono text-sm outline-none focus:ring-2 focus:ring-teal-500"
+                                    className={`w-full px-3 py-2 border rounded-lg font-mono text-sm outline-none focus:ring-2 ${idClash
+                                        ? 'border-red-300 focus:ring-red-500 bg-red-50'
+                                        : 'border-slate-300 focus:ring-teal-500'}`}
                                 />
-                                <span className="block text-[11px] text-slate-400 mt-1">
-                                    Suggested from today&apos;s rolls — change it if the label says otherwise.
-                                </span>
+                                {idClash ? (
+                                    <span className="flex items-start gap-1.5 text-[11px] text-red-700 mt-1">
+                                        <AlertCircle size={13} className="shrink-0 mt-px" />
+                                        <span>
+                                            That roll id already exists. Every roll needs its own id — use the
+                                            roll&apos;s <span className="font-semibold">Add</span> button to book more
+                                            weight onto it, or change this id.
+                                        </span>
+                                    </span>
+                                ) : (
+                                    <span className="block text-[11px] text-slate-400 mt-1">
+                                        {checking && norm(itemId)
+                                            ? 'Checking the id…'
+                                            : 'Suggested from today\u2019s rolls — change it if the label says otherwise.'}
+                                    </span>
+                                )}
                             </label>
 
                             <label className="block">

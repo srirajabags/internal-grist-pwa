@@ -72,6 +72,16 @@ const parseRefList = (v) => {
     return a.filter((x) => x !== 'L').map(Number).filter(Number.isInteger);
 };
 
+// The alternates come back as a nested JSON array from the item subquery.
+const parseSwaps = (v) => {
+    let parsed = v;
+    if (typeof v === 'string') { try { parsed = JSON.parse(v); } catch { return []; } }
+    return Array.isArray(parsed)
+        ? parsed.map((x) => ({ id: num(x?.id), itemId: x?.itemId || `Item #${num(x?.id)}`, kg: num(x?.kg) }))
+            .filter((x) => Number.isInteger(x.id) && x.id > 0)
+        : [];
+};
+
 const parseInventoryItemOptions = (v, fallbackIds = []) => {
     let parsed = v;
     if (typeof v === 'string') { try { parsed = JSON.parse(v); } catch { parsed = []; } }
@@ -95,6 +105,7 @@ const parseInventoryItemOptions = (v, fallbackIds = []) => {
                 count: num(item?.count),
                 collectedKg: item?.collectedKg == null ? null : num(item.collectedKg),
                 returnedKg: item?.returnedKg == null ? null : num(item.returnedKg),
+                swaps: parseSwaps(item?.swaps),
                 returnPending: num(item?.returnedAcked) > 0,
                 location: item?.location || null
             }))
@@ -151,6 +162,17 @@ const TREE_SQL = `
                                    FROM ${SUMMARY_BY_CODE_TABLE} c
                                    WHERE c.Item_Code = it.Item_Code AND c.Incharge_Ack = 1
                                    LIMIT 1), 0),
+                -- Other rolls of the same code the operator could take instead,
+                -- when the planned one is buried or damaged. Oldest first, since
+                -- that is the order the godown should be clearing.
+                'swaps', (SELECT json_group_array(json_object('id', a.id, 'itemId', a.Item_ID, 'kg', ak.kg))
+                          FROM Inventory_Items a
+                          JOIN (SELECT s3.Item_ID AS iid, ROUND(SUM(s3.Available_Weight_Kg_), 2) AS kg
+                                FROM ${SUMMARY_BY_ID_TABLE} s3
+                                WHERE s3.Incharge_Ack = 1 AND s3.Location = 'ROLLS GODOWN'
+                                GROUP BY s3.Item_ID HAVING SUM(s3.Available_Weight_Kg_) > 0) ak ON ak.iid = a.id
+                          WHERE a.Item_Code = it.Item_Code AND a.id != it.id
+                          ORDER BY a.Item_ID LIMIT 40),
                 -- Which godown to walk to. Where an item has stock in more than
                 -- one, the heaviest holding is the one worth sending them to.
                 'location', (SELECT s2.Location
@@ -524,6 +546,36 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
         if (previewImage) URL.revokeObjectURL(previewImage);
         setPreviewImage(null);
         setLoadingPreview(false);
+    };
+
+    // Swap one planned roll for another of the same item code. The pick is made
+    // days before anyone walks the shelf, and by then a roll can be buried,
+    // damaged or already gone -- so the floor can substitute rather than abandon
+    // the job. Restricted to the same code, so the job still gets its material.
+    const swapRoll = async (job, fromId, toId) => {
+        setUpdatingBatchId(collectingBatch?.id ?? null);
+        const journal = newJournal();
+        try {
+            const ids = (job.invItems || []).map(num).filter(Number.isInteger);
+            const next = ids.map((id) => (id === num(fromId) ? num(toId) : id));
+            await journal.run(
+                `Swap a roll on ${jobLabel(job)}`,
+                () => writeRecords(JOBS_TABLE, 'PATCH', {
+                    records: writableRecords(JOBS_TABLE, [
+                        { id: job.id, fields: { Inventory_Items: ['L', ...next] } }
+                    ])
+                })
+            );
+            await fetchData(true);
+        } catch (err) {
+            setWriteFailure({
+                title: 'The roll could not be swapped',
+                error: err.message || String(err),
+                steps: journal.steps
+            });
+        } finally {
+            setUpdatingBatchId(null);
+        }
     };
 
     // The job row behind an id, so a message can name it the way Grist does.
@@ -1197,6 +1249,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                     batch={collectingBatch}
                     updating={updatingBatchId === collectingBatch.id}
                     onClose={() => setCollectingBatch(null)}
+                    onSwap={swapRoll}
                     onConfirm={async () => {
                         await markInventoryCollected(collectingBatch);
                         setCollectingBatch(null);
@@ -2500,7 +2553,13 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
 
     const touched = () => { setWastageAccepted(false); setErr(''); };
 
-    const outputKg = (o) => (Number(counts[o.outputType]) || 0) * o.kgPerItem;
+    // A bag is held in kg, so a bag job is entered in kg -- asking for a count and
+    // converting would put a derived figure into the books where the real one was
+    // already on the scale. Counted forms stay as counts.
+    const byWeight = (o) => primaryUnitFor(o.outputType) === 'kg';
+    const entered = (o) => Number(counts[o.outputType]) || 0;
+    const outputKg = (o) => (byWeight(o) ? entered(o) : entered(o) * o.kgPerItem);
+    const outputCountOf = (o) => (byWeight(o) ? 0 : entered(o));
     const totalOut = roundWeight(outputs.reduce((s, o) => s + outputKg(o), 0));
     const returnedRows = rollOptions
         .map((item) => ({ itemId: item.id, weight: Number(returns[item.id]) || 0 }))
@@ -2535,7 +2594,7 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
                 outputs: nothingToProduce ? [] : outputs.map((o) => ({
                     outputType: o.outputType,
                     planned: o.planned,
-                    count: Number(counts[o.outputType]) || 0,
+                    count: outputCountOf(o),
                     unit: countUnit,
                     weight: roundWeight(outputKg(o)),
                     allToPrinting: neverStocked
@@ -2585,11 +2644,12 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
                     )}
 
                     {!nothingToProduce && outputs.map((o) => {
-                        const count = Number(counts[o.outputType]) || 0;
+                        const inKg = byWeight(o);
+                        const typed = entered(o);
                         const kg = outputKg(o);
                         const split = outputSplit({
                             outputType: o.outputType, unit: countUnit, planned: o.planned,
-                            count, weight: kg, allToPrinting: neverStocked
+                            count: outputCountOf(o), weight: kg, allToPrinting: neverStocked
                         });
                         // What the godown will call these: sheets one at a time,
                         // everything else in bundles.
@@ -2603,7 +2663,9 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
                                     <span className="min-w-0 flex-1">
                                         <span className="block text-sm font-semibold text-slate-800 break-words">{o.outputType}</span>
                                         <span className="block text-[11px] text-slate-400">
-                                            {o.plannedCount > 0 ? `${o.plannedCount.toLocaleString('en-IN')} ${countUnit} to produce` : `${fmtKg(o.planned)} kg to produce`}
+                                            {inKg || !(o.plannedCount > 0)
+                                                ? `${fmtKg(o.planned)} kg to produce`
+                                                : `${o.plannedCount.toLocaleString('en-IN')} ${countUnit} to produce`}
                                             {o.planned < o.required && <span className="text-sky-600"> · {fmtKg(o.required - o.planned)} kg from stock</span>}
                                         </span>
                                     </span>
@@ -2613,20 +2675,26 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
                                         type="number" inputMode="numeric" min="0" step="any"
                                         value={counts[o.outputType] ?? ''}
                                         onChange={(e) => { touched(); setCounts((c) => ({ ...c, [o.outputType]: e.target.value })); }}
-                                        placeholder={`Produced ${countUnit}`}
+                                        placeholder={inKg ? 'Produced kg' : `Produced ${countUnit}`}
                                         className="w-full px-3 py-2 pr-20 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none"
                                     />
-                                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-slate-400">{countUnit}</span>
+                                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-slate-400">{inKg ? 'kg' : countUnit}</span>
                                 </div>
-                                {count > 0 && (
+                                {typed > 0 && (
                                     <>
                                         <p className="text-[11px] text-slate-500 mt-1.5">
-                                            ≈ <span className="font-semibold text-slate-700">{fmtKg(kg)} kg</span> of roll
-                                            {countDivisor(o.outputType, countUnit) > 1 && (
-                                                <> · booked as <span className="font-semibold text-slate-700">
-                                                    {(count / countDivisor(o.outputType, countUnit)).toFixed(2)} bundles
-                                                </span></>
-                                            )}
+                                            {inKg
+                                                ? (o.kgPerItem > 0 && (
+                                                    <>≈ <span className="font-semibold text-slate-700">
+                                                        {Math.round(kg / o.kgPerItem).toLocaleString('en-IN')} {countUnit}
+                                                    </span></>
+                                                ))
+                                                : (<>≈ <span className="font-semibold text-slate-700">{fmtKg(kg)} kg</span> of roll
+                                                    {countDivisor(o.outputType, countUnit) > 1 && (
+                                                        <> · booked as <span className="font-semibold text-slate-700">
+                                                            {(outputCountOf(o) / countDivisor(o.outputType, countUnit)).toFixed(2)} bundles
+                                                        </span></>
+                                                    )}</>)}
                                         </p>
                                         {/* Exactly the lines that will be written, in
                                             the unit each is stored in. */}
