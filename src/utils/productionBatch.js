@@ -134,7 +134,11 @@ export const overageRate = (batchType) => num(PRODUCTION_OVERAGE[batchType]) || 
 // Note this lifts the whole requirement, including any part met from finished
 // godown stock — ready stock carries no misprint risk, so if that matters the
 // allowance should be split out to the roll-produced share only.
-const withOverage = (batchType, qty) => qty * (1 + overageRate(batchType));
+// `rate` lets a job apply the overage it was actually planned with, stored on the
+// job when the batch was created. Without it a change to PRODUCTION_OVERAGE would
+// silently re-price every job ever run.
+const withOverage = (batchType, qty, rate) =>
+    qty * (1 + (rate == null ? overageRate(batchType) : num(rate)));
 
 // Pieces per bundle, by output item type — how the godown counts that form
 // (mirrors InventoryView). Sheets and bags are counted one at a time.
@@ -176,7 +180,7 @@ const HANDLE_TYPES = new Set(['ROLLS TO HANDLES', 'ROLLS TO PRESSING HANDLES']);
 // counted afterwards.
 const HANDLE_DIMS = {
     'ROLLS TO HANDLES': { width: 2, height: 13, gsm: 90 },
-    'ROLLS TO PRESSING HANDLES': { width: 2, height: 14.5, gsm: 90 }
+    'ROLLS TO PRESSING HANDLES': { width: 2, height: 13, gsm: 90 }
 };
 
 // --- Roll-width matching ---
@@ -347,11 +351,38 @@ export const outputSizeLabel = (batchType, so) => {
             value: `${d.width}″ × ${d.length}″`
         };
     }
+    // A handle is a fixed strip, the same for every bag on the job -- its size is
+    // the strip, never the bag it will end up on.
+    if (HANDLE_TYPES.has(batchType)) {
+        const d = HANDLE_DIMS[batchType];
+        return {
+            label: batchType === 'ROLLS TO PRESSING HANDLES' ? 'Pressing handle' : 'Handle',
+            value: `${d.width}″ × ${d.height}″`
+        };
+    }
     const w = so.Bag_Width, h = so.Bag_Height;
     return {
         label: 'Bag',
         value: w && h ? `${w}″ × ${h}″` : w ? `${w}″ wide` : h ? `${h}″ high` : '—'
     };
+};
+
+// The colour the OUTPUT is, which is not always the bag's: a handle is the handle
+// colour, a printed side patty takes the handle colour it is printed to match.
+// This is what an output visual has to be tinted with.
+export const outputColour = (batchType, so) => {
+    if (HANDLE_TYPES.has(batchType)) {
+        return firstChoice(so.Handle_Colour) || firstChoice(so.Sidepatty_Colour) || '';
+    }
+    if (batchType === 'ROLLS TO SIDEPATTY') {
+        return norm(so.Sidepatty_Colour) === 'PRINTED'
+            ? (firstChoice(so.Handle_Colour) || '')
+            : (firstChoice(so.Sidepatty_Colour) || '');
+    }
+    if (batchType === 'ROLLS TO BOTTOMPATTY SHEETS') {
+        return firstChoice(so.Handle_Colour) || firstChoice(so.Sidepatty_Colour) || '';
+    }
+    return firstChoice(so.Bag_Colour) || '';
 };
 
 // --- Quantity normalisation (pieces -> kg) ---
@@ -551,14 +582,14 @@ const bagCount = (batchType, so) => {
 // bags × the per-bag requirement, divided into bundles where the godown counts in
 // bundles. Returns { count, exact } — `exact` is false when the bag count had to
 // be backed out of a weight-quoted order — or null when it can't be derived.
-export const outputCount = (batchType, so) => {
+export const outputCount = (batchType, so, rate) => {
     // Bottom-patty sheets are counted from the cutting geometry -- so many strips
     // to a sheet -- rather than by a per-bag requirement.
     if (batchType === 'ROLLS TO BOTTOMPATTY SHEETS') {
         const sheets = bottomSheetCount(so);
         if (sheets == null) return null;
         return {
-            count: withOverage(batchType, sheets) * (num(so._share) || 1),
+            count: withOverage(batchType, sheets, rate) * (num(so._share) || 1),
             exact: norm(so.Model) !== 'HANDLE'
         };
     }
@@ -571,17 +602,17 @@ export const outputCount = (batchType, so) => {
     if (bags == null) return null;
     const perBundle = PIECES_PER_BUNDLE[norm(outType)] || 1;
     return {
-        count: withOverage(batchType, (bags * perBag) / perBundle) * (num(so._share) || 1),
+        count: withOverage(batchType, (bags * perBag) / perBundle, rate) * (num(so._share) || 1),
         exact: norm(so.Quantity_Type) === 'PIECES'
     };
 };
 
 // Roll the per-sub-order counts up to a group: the total, whether every part of it
 // is exact, and how many sub-orders could not be counted at all.
-export const groupOutputCount = (batchType, subOrders) => {
+export const groupOutputCount = (batchType, subOrders, rate) => {
     let count = 0, exact = true, unknown = 0;
     for (const so of subOrders) {
-        const c = outputCount(batchType, so);
+        const c = outputCount(batchType, so, rate);
         if (!c) { unknown += 1; exact = false; continue; }
         count += c.count;
         if (!c.exact) exact = false;
@@ -593,8 +624,8 @@ export const groupOutputCount = (batchType, subOrders) => {
 // batch allocates in (bundles for handle batches, kg otherwise). Side/bottom patty
 // convert their strip geometry to kg; a STITCHING sheet order quoted in pieces is
 // converted to kg; everything else as-is.
-export const effectiveQty = (batchType, so) =>
-    withOverage(batchType, orderedQty(batchType, so)) * (num(so._share) || 1);
+export const effectiveQty = (batchType, so, rate) =>
+    withOverage(batchType, orderedQty(batchType, so), rate) * (num(so._share) || 1);
 
 // What the orders themselves call for, before any production allowance.
 const orderedQty = (batchType, so) => {
@@ -669,8 +700,8 @@ export const groupAttrs = (batchType, so) => {
             rollWidth: d ? String(exactMultipleRollWidth(d.width, d.rolls) ?? '') : ''
         };
     }
-    // Both handle types are fixed-spec: NW REGULAR, 90 GSM rolls, 2″ wide. Only the
-    // length differs — normal handle 13″, pressing handle 14.5″ — and colour varies.
+    // Both handle types are fixed-spec: NW REGULAR, 90 GSM, cut 2″ × 13″ from a 2″
+    // slit roll. Only the colour varies.
     if (HANDLE_TYPES.has(batchType)) {
         const d = HANDLE_DIMS[batchType];
         return {
@@ -678,7 +709,11 @@ export const groupAttrs = (batchType, so) => {
             colour: firstChoice(so.Handle_Colour) || firstChoice(so.Sidepatty_Colour),
             gsm: String(d.gsm),
             width: String(d.width),
-            height: String(d.height)
+            height: String(d.height),
+            // The handle machine runs a 2″ slit roll: a handle is not cut down from
+            // a wide roll the way a bag is. Without this the roll width was left
+            // free and a job could be issued a 17″ roll it cannot use.
+            rollWidth: String(d.width)
         };
     }
     // Bottom-patty sheets are grouped by the roll they are cut from, and stocked at

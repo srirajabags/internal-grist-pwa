@@ -4,8 +4,13 @@ import {
     Search, Layers, Package, CalendarDays, ClipboardCheck, Maximize2, Download
 } from 'lucide-react';
 import Button from './Button';
+import WriteFailureModal from './WriteFailureModal';
+import ImagePreviewModal from './ImagePreviewModal';
+import { parseAttachmentId } from '../utils/attachments';
 import { countToKg } from '../utils/txnDisplay';
 import { choiceText } from '../utils/gristValues';
+import { writableRecords } from '../utils/gristWrites';
+import { newJournal } from '../utils/writeJournal';
 import {
     BATCH_TYPES, HARD_START_DATE, OUTPUT_TYPE, PRIORITY_LABEL, buildPlan,
     effectiveQty, needsPieceConversion, cannotConvertQty, cannotSizePieces, cannotSizePatty, BUNDLE_SIZE,
@@ -65,18 +70,6 @@ const toRefList = (ids) => ['L', ...ids];
 
 // Grist attachment fields come through as a stringified array (e.g. "[24526]").
 // Return the first attachment id, or null.
-const parseAttachmentId = (val) => {
-    if (!val) return null;
-    if (typeof val === 'number') return val;
-    if (Array.isArray(val)) return val[0] ?? null;
-    try {
-        const parsed = JSON.parse(val);
-        if (Array.isArray(parsed)) return parsed[0] ?? null;
-        if (typeof parsed === 'number') return parsed;
-    } catch { /* not parseable */ }
-    return null;
-};
-
 const attrText = (a) => [a.material, a.colour, a.gsm && `${a.gsm} GSM`, a.width && `${a.width}"`]
     .filter(Boolean).join(' · ') || '—';
 
@@ -206,6 +199,27 @@ const AvailabilityCalendar = ({ counts, from, to, minDate, maxDate, onPick, load
     );
 };
 
+// Which batch types a sub-order already has a job for.
+//
+// Both directions of the two-way reference are consulted. The forward one — the
+// job's own Sub_Orders list — is what this app writes and is therefore always
+// there; the reverse column on the sub-order is populated by Grist and would be
+// silently empty if that write were ever refused by an access rule. Trusting only
+// the reverse side would make planned sub-orders look unplanned and let a second
+// batch pick them up again.
+const plannedTypesBySubOrder = (jobRows) => {
+    const byId = new Map();
+    const add = (soId, type) => {
+        if (!type || !Number.isInteger(soId)) return;
+        if (!byId.has(soId)) byId.set(soId, new Set());
+        byId.get(soId).add(type);
+    };
+    for (const j of jobRows) {
+        for (const soId of parseRefList(j.subOrders)) add(soId, j.type);
+    }
+    return byId;
+};
+
 const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
     const [step, setStep] = useState('setup'); // setup | review | writing | done
     // Default to building every type — the from-date is the only real input; the
@@ -236,6 +250,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
     // Set when a failed attempt could not be rolled back: creating again would
     // duplicate what is already in Grist, so the button stays disabled.
     const [stranded, setStranded] = useState(false);
+    const [writeFailure, setWriteFailure] = useState(null);
 
     const toggleType = (t) =>
         setBatchTypes((prev) => prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]);
@@ -293,12 +308,14 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
         return leftover;
     };
 
+    // Every write goes out through here, so stripping the columns Grist computes
+    // for itself is done once rather than remembered at each call site.
     const postRecords = async (table, records) => {
         const headers = await getHeaders();
         const res = await fetch(getUrl(`/api/docs/${DOC_ID}/tables/${table}/records`), {
             method: 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ records })
+            body: JSON.stringify({ records: writableRecords(table, records) })
         });
         if (!res.ok) {
             const t = await res.text().catch(() => '');
@@ -313,7 +330,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
         const res = await fetch(getUrl(`/api/docs/${DOC_ID}/tables/${table}/records`), {
             method: 'PATCH',
             headers: { ...headers, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ records })
+            body: JSON.stringify({ records: writableRecords(table, records) })
         });
         if (!res.ok) {
             const t = await res.text().catch(() => '');
@@ -361,7 +378,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
             try {
                 const [rows, jobs] = await Promise.all([
                     runSql(
-                        `SELECT so.Factory_Updated_Date AS d,
+                        `SELECT so.id AS id, so.Factory_Updated_Date AS d,
                                 so.Factory_Production_Jobs AS jobs,
                                 so.Model AS Model, so.Material AS Material, so.Print AS Print,
                                 so.Sidepatty_Width AS Sidepatty_Width,
@@ -374,16 +391,20 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                         [dateToEpoch(HARD_START_DATE)]
                     ),
                     runSql(
-                        `SELECT j.id AS id, b.Type AS type
+                        `SELECT j.id AS id, b.Type AS type, j.Sub_Orders AS subOrders
                          FROM Factory_Production_Jobs j
                          LEFT JOIN Factory_Production_Job_Batches b ON b.id = j.Factory_Production_Job_Batch`
                     )
                 ]);
                 const jobType = new Map(jobs.map((j) => [num(j.id), j.type]));
+                const plannedTypes = plannedTypesBySubOrder(jobs);
                 setDateRows(rows
                     .map((r) => ({
                         date: epochToDate(r.d),
-                        jobTypes: parseRefList(r.jobs).map((jid) => jobType.get(jid)).filter(Boolean),
+                        jobTypes: [...new Set([
+                            ...parseRefList(r.jobs).map((jid) => jobType.get(jid)),
+                            ...(plannedTypes.get(num(r.id)) || [])
+                        ])].filter(Boolean),
                         // Every field typeNeedsSubOrder reads. A type whose
                         // qualifier needs something missing here silently counts
                         // nothing, so this list has to grow with that function.
@@ -490,14 +511,17 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
             // 2. Map every existing job -> its batch type so we can drop sub-orders
             //    that already have a job of a given type (checked per type below).
             const jobs = await runSql(
-                `SELECT j.id AS id, b.Type AS type
+                `SELECT j.id AS id, b.Type AS type, j.Sub_Orders AS subOrders
                  FROM Factory_Production_Jobs j
                  LEFT JOIN Factory_Production_Job_Batches b ON b.id = j.Factory_Production_Job_Batch`
             );
             const jobType = new Map(jobs.map((j) => [num(j.id), j.type]));
+            const plannedTypes = plannedTypesBySubOrder(jobs);
+            // A sub-order is out of scope for a type the moment either side of the
+            // reference says it already has a job of that type.
             const eligibleFor = (bt) => subOrders.filter((so) => {
-                const myJobs = parseRefList(so.Factory_Production_Jobs);
-                return !myJobs.some((jid) => jobType.get(jid) === bt);
+                if (plannedTypes.get(num(so.id))?.has(bt)) return false;
+                return !parseRefList(so.Factory_Production_Jobs).some((jid) => jobType.get(jid) === bt);
             });
 
             // 3. Inventory item codes + available stock per physical item.
@@ -588,6 +612,9 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
         setConfirmOpen(false);
         setStep('writing');
         setError(null);
+        // Every write, in order, so a refusal part-way can be reported as an
+        // account of what landed rather than a single line of red text.
+        const journal = newJournal();
         try {
             const today = todayStr();
 
@@ -609,9 +636,10 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
             // 1. One batch per chosen type, each with a job per fulfilled group.
             for (const { batchType, plan } of plans) {
                 if (plan.jobCount === 0) continue;
-                const [batch] = await postRecords(BATCHES_TABLE, [{
-                    fields: { Type: batchType, Date: dateToEpoch(today) }
-                }]);
+                const [batch] = await journal.run(
+                    `Create the ${batchType} batch record`,
+                    () => postRecords(BATCHES_TABLE, [{ fields: { Type: batchType, Date: dateToEpoch(today) } }])
+                );
                 createdBatchIds.push(batch.id);
                 created += 1;
 
@@ -619,23 +647,24 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                 // auto-populates batch.Jobs and each sub-order's Factory_Production_Jobs.
                 const jobRecords = plan.groups.filter((g) => g.fulfilled.length > 0).map((g) => {
                     const itemIds = [...new Set(g.picks.map((p) => p.itemId))];
-                    const assignedWeight = g.picks.reduce((s, p) => s + p.take, 0);
                     return {
                         fields: {
                             Factory_Production_Job_Batch: batch.id,
                             Sub_Orders: toRefList(g.fulfilled.map((so) => so.id)),
-                            Inventory_Item_Code: g.matchedCodeId || null,
                             Inventory_Items: toRefList(itemIds),
-                            Available_Weight_Kg_: assignedWeight,
-                            // Kg met from finished godown stock; the rest is the planned
-                            // output to actually produce (Planned_Output is a Grist formula
-                            // = Required − this). Every batch type plans in kg.
-                            Finished_Stock_Quantity_Kg_: Math.round((g.finishedQty || 0) * 1000) / 1000
+                            // The allowance this job was planned with. Storing the
+                            // rate rather than the resulting kg means a later change
+                            // to the config cannot re-price work already run, and
+                            // there is no second copy of the maths to drift from.
+                            Job_Overage: overageRate(batchType)
                         }
                     };
                 });
                 if (jobRecords.length > 0) {
-                    const madeJobs = await postRecords(JOBS_TABLE, jobRecords);
+                    const madeJobs = await journal.run(
+                        `Create ${jobRecords.length} ${batchType} job(s)`,
+                        () => postRecords(JOBS_TABLE, jobRecords)
+                    );
                     createdJobIds.push(...madeJobs.map((j) => j.id).filter(Boolean));
                 }
 
@@ -652,7 +681,14 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                 if (s.fulfilled) { if (s.wasFlagged) patches.push({ id, fields: { No_Stock_Identified: false } }); }
                 else if (s.postponed) { patches.push({ id, fields: { No_Stock_Identified: true } }); }
             }
-            await patchRecords(SUB_ORDERS_TABLE, patches);
+            if (patches.length > 0) {
+                await journal.run(
+                    `Update the no-stock flag on ${patches.length} sub-order(s)`,
+                    () => patchRecords(SUB_ORDERS_TABLE, patches)
+                );
+            } else {
+                journal.skip('Update no-stock flags', 'No sub-order needed its flag changed');
+            }
 
             setStep('done');
         } catch (err) {
@@ -670,6 +706,25 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                       + ' Delete them in Grist before trying again, or you will get duplicates.')
             );
             setStranded(strandedCount > 0);
+            // The rollback is part of the account too: whether it cleaned up is
+            // exactly what decides if a manager has to step in.
+            if (undone) {
+                journal.skip(
+                    strandedCount === 0
+                        ? 'Roll back what had been created — succeeded, nothing was left behind'
+                        : `Roll back what had been created — FAILED for ids ${[...leftover.batches, ...leftover.jobs].join(', ')}`,
+                    strandedCount === 0 ? undefined : 'These records are still in Grist and must be deleted before trying again'
+                );
+            }
+            setWriteFailure({
+                title: 'The batch was not created',
+                error: err.message || String(err),
+                // A rolled-back write did not "go through", so only genuinely
+                // stranded records are reported as needing reversal.
+                steps: strandedCount === 0
+                    ? journal.steps.map((st) => (st.status === 'done' ? { ...st, status: 'skipped', detail: 'rolled back' } : st))
+                    : journal.steps
+            });
             createdBatchIds.length = 0;
             createdJobIds.length = 0;
             setStep('review');
@@ -903,6 +958,14 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
         )}
         {(loadingPreview || previewImage) && (
             <ImagePreviewModal src={previewImage} loading={loadingPreview && !previewImage} onClose={closePreview} />
+        )}
+        {writeFailure && (
+            <WriteFailureModal
+                title={writeFailure.title}
+                error={writeFailure.error}
+                steps={writeFailure.steps}
+                onClose={() => setWriteFailure(null)}
+            />
         )}
         </>
     );
@@ -1198,28 +1261,6 @@ const ConfirmCreateDialog = ({ batches, totalJobs, totalPostponed, totalPostpone
 );
 
 // Full-screen order-form image preview (mirrors FactoryView's modal).
-const ImagePreviewModal = ({ src, loading, onClose }) => (
-    <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-[60] p-4" onClick={onClose}>
-        <button onClick={onClose} className="absolute top-4 right-4 text-white hover:text-slate-300 p-2">
-            <X size={32} />
-        </button>
-        <div className="max-w-4xl max-h-[90vh] w-full flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
-            {loading ? (
-                <div className="text-white flex flex-col items-center">
-                    <Loader2 size={48} className="animate-spin mb-4" />
-                    <p>Loading order form…</p>
-                </div>
-            ) : src ? (
-                <img src={src} alt="Order form" className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl" />
-            ) : (
-                <div className="text-white text-center">
-                    <AlertCircle size={48} className="mx-auto mb-4 text-red-400" />
-                    <p>Order form not available</p>
-                </div>
-            )}
-        </div>
-    </div>
-);
 
 const Empty = ({ label }) => (
     <div className="text-center py-12 text-slate-500 bg-white rounded-xl border border-dashed border-slate-300">

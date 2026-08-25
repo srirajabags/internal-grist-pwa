@@ -8,7 +8,7 @@ export const PAGE_ROLE_REQUIREMENTS = {
   salesman: ['SALESMAN'],
   sql: ['SQL USER'],
   // factory: ['FACTORY PRINTING'],
-  production: ['FACTORY PRODUCTION'],
+  production: ['FACTORY PRODUCTION', 'ROLLS TO SHEETS OPERATOR'],
   inventory: ['FACTORY INVENTORY'],
   telecaller: ['TELECALLER', 'SENIOR TELECALLER'],
   design: ['DESIGN CONFIRMATION'],

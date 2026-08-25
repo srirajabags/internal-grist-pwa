@@ -1,80 +1,15 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Loader2, AlertCircle, ArrowDownLeft, ArrowUpRight, Sparkles, Check, ShieldCheck, Factory, Trash2 } from 'lucide-react';
 import { ItemVisual } from './itemVisuals';
+import HoldToAct, { DESTRUCTIVE_HOLD_MS } from './HoldToAct';
 import { typeName } from '../utils/itemForms';
 import { num, dayKey, changeText, isOutward, toneFor, attrText, countUnitFor } from '../utils/txnDisplay';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 const TXN_TABLE = 'Inventory_Transactions';
 
-// Long enough that a stray tap cannot get through, short enough not to be a chore.
-const HOLD_MS = 650;
-// Rejecting destroys the record rather than just parking it, so it asks for a
-// noticeably longer, more deliberate press.
-const REJECT_HOLD_MS = 1600;
-
 const TYPE_ICON = { 'ADD': ArrowDownLeft, 'NEW STOCK': Sparkles, 'LESS': ArrowUpRight };
 const iconFor = (type) => TYPE_ICON[String(type || '').toUpperCase()] || ArrowDownLeft;
-
-// Press-and-hold confirm. The fill is a CSS transition over exactly HOLD_MS, so
-// what the operator sees filling up IS the timer — release early and it drains
-// back with nothing committed.
-const HoldToAct = ({
-    onConfirm, busy, done, holdMs = HOLD_MS,
-    label = 'Hold to acknowledge', holdingLabel = 'Keep holding…',
-    icon, tone = 'teal'
-}) => {
-    const Icon = icon || ShieldCheck;
-    const [holding, setHolding] = useState(false);
-    const timer = useRef(null);
-
-    useEffect(() => () => clearTimeout(timer.current), []);
-
-    const start = () => {
-        if (busy || done || holding) return;
-        setHolding(true);
-        timer.current = setTimeout(() => { setHolding(false); onConfirm(); }, holdMs);
-    };
-    const cancel = () => {
-        clearTimeout(timer.current);
-        setHolding(false);
-    };
-
-    if (done) return null;
-
-    const tones = {
-        teal: { idle: 'border-teal-300 text-teal-700 hover:border-teal-500 active:border-teal-600', fill: 'bg-teal-500/20' },
-        rose: { idle: 'border-rose-300 text-rose-700 hover:border-rose-500 active:border-rose-600', fill: 'bg-rose-500/25' }
-    }[tone];
-
-    return (
-        <button
-            type="button"
-            disabled={busy}
-            onPointerDown={start}
-            onPointerUp={cancel}
-            onPointerLeave={cancel}
-            onPointerCancel={cancel}
-            onContextMenu={(e) => e.preventDefault()}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); start(); } }}
-            onKeyUp={cancel}
-            className={`relative overflow-hidden select-none touch-none inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${busy
-                ? 'border-slate-200 text-slate-400'
-                : tones.idle}`}
-            title={`Press and hold to ${label.replace(/^Hold to /, '')}`}
-        >
-            <span
-                className={`absolute inset-y-0 left-0 ${tones.fill}`}
-                style={{ width: holding ? '100%' : '0%', transition: `width ${holding ? holdMs : 160}ms linear` }}
-                aria-hidden="true"
-            />
-            <span className="relative inline-flex items-center gap-1.5">
-                {busy ? <Loader2 size={14} className="animate-spin" /> : <Icon size={14} />}
-                {busy ? 'Working…' : holding ? holdingLabel : label}
-            </span>
-        </button>
-    );
-};
 
 // Everything booked into the godown that the incharge has not signed off yet.
 // Until a transaction is acknowledged it does not count towards stock, so this is
@@ -99,12 +34,11 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
                        ic.Item_Code AS name, ic.Type AS itype, ic.Material AS mat,
                        ic.Colour AS col, ic.GSM AS gsm,
                        ic.Width_Inches_ AS w, ic.Height_Inches_ AS h,
-                       t.Production_Job AS jobId, b.Type AS batchType, tm.Name AS who
+                       t.Production_Job AS jobId, j.Job_ID AS jobName, tm.Name AS who
                 FROM ${TXN_TABLE} t
                 LEFT JOIN Inventory_Items it ON it.id = t.Item_ID
                 LEFT JOIN Inventory_Item_Codes ic ON ic.id = t.Item_Code
                 LEFT JOIN Factory_Production_Jobs j ON j.id = t.Production_Job
-                LEFT JOIN Factory_Production_Job_Batches b ON b.id = j.Factory_Production_Job_Batch
                 LEFT JOIN Team tm ON tm.id = t.Created_by
                 WHERE t.Incharge_Ack IS NULL OR t.Incharge_Ack = 0
                 ORDER BY t.Transaction_Time DESC, t.id DESC`;
@@ -247,8 +181,8 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
                                                         <span>{t.location || '—'}</span>
                                                         {t.iid && <span className="font-medium text-slate-600">{t.iid}</span>}
                                                         {num(t.jobId) > 0 && (
-                                                            <span className="inline-flex items-center gap-1 text-indigo-700">
-                                                                <Factory size={11} /> {t.batchType || 'Production job'} #{num(t.jobId)}
+                                                            <span className="inline-flex items-center gap-1 text-indigo-700 min-w-0 break-all">
+                                                                <Factory size={11} className="shrink-0" /> {t.jobName || `Production job #${num(t.jobId)}`}
                                                             </span>
                                                         )}
                                                         {t.who && <span>{t.who}</span>}
@@ -279,7 +213,7 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
                                                         <HoldToAct
                                                             busy={savingId === t.id}
                                                             onConfirm={() => reject(t.id)}
-                                                            holdMs={REJECT_HOLD_MS}
+                                                            holdMs={DESTRUCTIVE_HOLD_MS}
                                                             label="Hold to reject"
                                                             holdingLabel="Keep holding to delete…"
                                                             icon={Trash2}

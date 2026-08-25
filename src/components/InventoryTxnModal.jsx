@@ -59,11 +59,10 @@ const InventoryTxnModal = ({ row, qty, onClose, getHeaders, getUrl }) => {
                     SELECT t.id AS id, t.Transaction_Time AS ts, t.Transaction_Type AS type,
                            t.Weight_Change_Kg_ AS wkg, t.Count_Change_Bundle_ AS cbund,
                            t.Incharge_Ack AS ack, it.Item_ID AS iid,
-                           t.Production_Job AS jobId, b.Type AS batchType, tm.Name AS who
+                           t.Production_Job AS jobId, j.Job_ID AS jobName, tm.Name AS who
                     FROM Inventory_Transactions t
                     LEFT JOIN Inventory_Items it ON it.id = t.Item_ID
                     LEFT JOIN Factory_Production_Jobs j ON j.id = t.Production_Job
-                    LEFT JOIN Factory_Production_Job_Batches b ON b.id = j.Factory_Production_Job_Batch
                     LEFT JOIN Team tm ON tm.id = t.Created_by
                     WHERE t.Item_Code = ? AND t.Location = ?
                       ${byItem ? 'AND t.Item_ID = ?' : ''}
@@ -209,8 +208,8 @@ const InventoryTxnModal = ({ row, qty, onClose, getHeaders, getUrl }) => {
                                                     </span>}
                                                 {showItemId && t.iid && <span className="font-medium text-slate-600">{t.iid}</span>}
                                                 {num(t.jobId) > 0 && (
-                                                    <span className="inline-flex items-center gap-1 text-indigo-700">
-                                                        <Factory size={11} /> {t.batchType || 'Production job'} #{num(t.jobId)}
+                                                    <span className="inline-flex items-center gap-1 text-indigo-700 min-w-0 break-all">
+                                                        <Factory size={11} className="shrink-0" /> {t.jobName || `Production job #${num(t.jobId)}`}
                                                     </span>
                                                 )}
                                                 {t.who && <span>{t.who}</span>}

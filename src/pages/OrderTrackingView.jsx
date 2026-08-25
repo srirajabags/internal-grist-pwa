@@ -125,7 +125,9 @@ const SubOrderCard = ({ so, progress, internal, jobs, designIds = [], onViewDesi
                                     <span className="font-medium text-slate-700">{j.jobType || j.stage}</span>
                                     <span className="text-slate-500">
                                         {j.completedAt ? `done ${fmtDate(j.completedAt)}` : j.startedAt ? `started ${fmtDate(j.startedAt)}` : 'not started'}
-                                        {j.jobId ? ` · job #${j.jobId}` : ''}
+                                        {/* Production jobs carry Grist's Job_ID; the
+                                            stage tables have no such column. */}
+                                        {j.jobName ? ` · ${j.jobName}` : j.jobId ? ` · job #${j.jobId}` : ''}
                                     </span>
                                 </div>
                             ))}
@@ -182,6 +184,7 @@ const OrderTrackingView = ({ embedded = false, getHeaders, getUrl, isStaff = fal
             );
             const production = await ask(
                 `SELECT so.value AS subOrderId, j.id AS jobId, b.Type AS jobType,
+                        j.Job_ID AS jobName,
                         j.Production_Started_At AS startedAt, j.Production_Completed_At AS completedAt
                  FROM Factory_Production_Jobs j
                  JOIN json_each(CASE WHEN json_valid(j.Sub_Orders) THEN j.Sub_Orders ELSE '[]' END) so

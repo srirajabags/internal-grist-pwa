@@ -9,3 +9,46 @@
 .no-scrollbar::-webkit-scrollbar {
     display: none;              /* Chrome / Safari */
 }
+/* A job that is running right now. The floor glances at this screen from a few
+   feet away, so the cue has to read without being looked at directly: a slow
+   sweep across the card, plus a live edge on the left. */
+@keyframes job-running-sweep {
+    0%   { transform: translateX(-60%); }
+    100% { transform: translateX(160%); }
+}
+
+.job-running {
+    position: relative;
+    overflow: hidden;
+}
+
+.job-running::before {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    left: 0;
+    width: 3px;
+    background: rgb(37 99 235);     /* blue-600 */
+    z-index: 1;
+}
+
+.job-running::after {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    left: 0;
+    width: 45%;
+    background: linear-gradient(90deg, transparent, rgb(59 130 246 / 0.13), transparent);
+    animation: job-running-sweep 2.6s ease-in-out infinite;
+    pointer-events: none;
+}
+
+/* Motion is a nice-to-have; the blue edge and the tint carry the meaning on
+   their own for anyone who has asked the system to stop animating. */
+@media (prefers-reduced-motion: reduce) {
+    .job-running::after {
+        animation: none;
+        width: 100%;
+        background: rgb(59 130 246 / 0.07);
+    }
+}
