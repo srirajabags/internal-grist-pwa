@@ -7,6 +7,7 @@ import Card from '../components/Card';
 import InventoryTxnModal from '../components/InventoryTxnModal';
 import PendingAckModal from '../components/PendingAckModal';
 import StockAdjustModal from '../components/StockAdjustModal';
+import RollPickerModal from '../components/RollPickerModal';
 import QrScanModal from '../components/QrScanModal';
 import NewRollStockModal from '../components/NewRollStockModal';
 import ItemLabelModal from '../components/ItemLabelModal';
@@ -392,6 +393,9 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     const [ackOpen, setAckOpen] = useState(false);
     // Roll being booked in or out, with the direction: { row, mode }.
     const [adjusting, setAdjusting] = useState(null);
+    // An item code covers many physical rolls; booking against one means saying
+    // which. Holds { row, mode, options } while the operator picks.
+    const [pickingRoll, setPickingRoll] = useState(null);
     const [scanning, setScanning] = useState(false);
     const [newStock, setNewStock] = useState(false);
     const [labelFor, setLabelFor] = useState(null);
@@ -536,11 +540,53 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
         };
     };
 
+    // Every physical roll under one item code, for the picker below.
+    const rollsForCode = async (codeRef, location) => {
+        const headers = await getHeaders();
+        const res = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sql: `SELECT it.id AS item_ref, it.Item_ID AS iid,
+                             ic.id AS code_ref, ic.Item_Code AS name, ic.Type AS itype,
+                             ic.Material AS mat, ic.Colour AS col, ic.GSM AS gsm,
+                             ic.Width_Inches_ AS w, ic.Height_Inches_ AS h,
+                             ? AS location,
+                             COALESCE(s.Available_Weight_Kg_, 0) AS avail,
+                             0 AS bundles
+                      FROM Inventory_Items it
+                      LEFT JOIN Inventory_Item_Codes ic ON ic.id = it.Item_Code
+                      LEFT JOIN ${SUMMARY_BY_ID_TABLE} s
+                             ON s.Item_ID = it.id AND s.Incharge_Ack = 1 AND s.Location = ?
+                      WHERE it.Item_Code = ?
+                      ORDER BY it.Item_ID`,
+                args: [location, location, num(codeRef)]
+            })
+        });
+        if (!res.ok) throw new Error(`Lookup failed (${res.status})`);
+        return ((await res.json()).records || []).map((r) => r.fields);
+    };
+
     // A by-code row has no physical item on it, so resolve one before booking.
+    // For rolls there is nothing to resolve: a code covers many individual rolls
+    // and only the operator knows which one is in front of them, so they choose.
     const adjustRow = async (row, mode) => {
         setScanError(null);
         if (row.item_ref != null) { setAdjusting({ row, mode }); return; }
         try {
+            if (/ROLL/i.test(String(row.itype || ''))) {
+                const options = await rollsForCode(row.code_ref, row.location);
+                if (options.length === 0) {
+                    setScanError(`No rolls are registered under ${row.name || 'this item code'} yet.`);
+                    return;
+                }
+                if (options.length === 1) {
+                    setAdjusting({ row: options[0], mode });
+                    return;
+                }
+                setPickingRoll({ row, mode, options });
+                return;
+            }
             const resolved = await lookupItem({ codeRef: row.code_ref, location: row.location });
             if (!resolved) {
                 setScanError(`No physical item exists for ${row.name || 'this item code'} yet.`);
@@ -1112,6 +1158,19 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                     onSaved={() => refresh(tab)}
                     getHeaders={getHeaders}
                     getUrl={getUrl}
+                />
+            )}
+
+            {pickingRoll && (
+                <RollPickerModal
+                    code={pickingRoll.row}
+                    mode={pickingRoll.mode}
+                    options={pickingRoll.options}
+                    onClose={() => setPickingRoll(null)}
+                    onPick={(roll) => {
+                        setPickingRoll(null);
+                        setAdjusting({ row: roll, mode: pickingRoll.mode });
+                    }}
                 />
             )}
 
