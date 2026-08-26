@@ -695,9 +695,14 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
 
     // Compact, deterministic Item_ID label for a freshly produced output item,
     // mirroring the existing finished-goods convention (e.g. "DB_W_NN_110_36").
-    const outputItemSlug = (job, outputType) => {
+    // `sizeTag` separates articles that share one item code -- a 14x18 DCUT bag and
+    // a 16x20 one are stocked under the same code, and without it the two would be
+    // booked onto the same row and the size would be lost the moment it was typed.
+    // Stock still totals by code; the size stays legible on the item, its label and
+    // the movement history.
+    const outputItemSlug = (job, outputType, sizeTag = '') => {
         const abbr = (s) => String(s ?? '').trim().split(/\s+/).filter(Boolean).map((w) => w[0]).join('').toUpperCase();
-        return [abbr(outputType), abbr(job.colour), abbr(job.material), job.gsm, job.width]
+        return [abbr(outputType), abbr(job.colour), abbr(job.material), job.gsm, job.width, sizeTag]
             .filter((v) => v !== '' && v !== null && v !== undefined)
             .join('_');
     };
@@ -709,26 +714,21 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     // The item code for a produced output, resolved from what the job is made of
     // rather than a column on the job. The output's identity is its type plus the
     // material it came from, which the assigned stock already carries.
-    const resolveOutputCode = async (headers, job, outputType) => {
+    // `dims` are the finished article's own measurements, when the line knows
+    // them. Sheets are stocked under a code per size, so a job cutting three sheet
+    // sizes has three codes to find; bags and patty share one code per
+    // specification, and fall through to the job-level match as before.
+    const resolveOutputCode = async (headers, job, outputType, dims = null) => {
         const resp = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
             method: 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                sql: 'SELECT id, GSM, Width_Inches_ FROM Inventory_Item_Codes WHERE Type = ? AND Material = ? AND Colour = ?',
+                sql: 'SELECT id, GSM, Width_Inches_, Height_Inches_ FROM Inventory_Item_Codes WHERE Type = ? AND Material = ? AND Colour = ?',
                 args: [outputType, job.material, job.colour]
             })
         });
         if (!resp.ok) return null;
-        const data = await resp.json();
-        const same = (a, b) => String(a ?? '').trim().toUpperCase() === String(b ?? '').trim().toUpperCase();
-        const rows = data.records || [];
-        // Prefer an exact GSM + width match; a code that leaves either blank is
-        // treated as "any", which is how the patty and handle codes are set up.
-        return (
-            rows.find((r) => same(r.fields.GSM, job.gsm) && same(r.fields.Width_Inches_, job.width))
-            ?? rows.find((r) => same(r.fields.GSM, job.gsm))
-            ?? rows[0]
-        )?.fields?.id ?? null;
+        return pickOutputCode((await resp.json()).records || [], job, dims);
     };
 
     // Finished goods are tracked as one Inventory_Items row per output code. Reuse
@@ -737,7 +737,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
         const sqlResp = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
             method: 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sql: 'SELECT id FROM Inventory_Items WHERE Item_Code = ? LIMIT 1', args: [codeId] })
+            body: JSON.stringify({ sql: 'SELECT id FROM Inventory_Items WHERE Item_ID = ? LIMIT 1', args: [slug] })
         });
         if (sqlResp.ok) {
             const data = await sqlResp.json();
@@ -777,15 +777,15 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
             for (const o of form.outputs) {
                 const output = num(o.weight);
                 if (output <= 0) continue;
-                const codeId = await resolveOutputCode(headers, job, o.outputType);
+                const codeId = await resolveOutputCode(headers, job, o.outputType, o.dims);
                 if (!codeId) {
-                    throw new Error(`No ${o.outputType} item code for ${[job.material, job.colour, job.gsm && `${job.gsm} GSM`, job.width && `${job.width}″`].filter(Boolean).join(' · ')} — add it to Inventory_Item_Codes first.`);
+                    throw new Error(`No ${o.outputType} item code for ${[job.material, job.colour, job.gsm && `${job.gsm} GSM`, o.sizeLabel].filter(Boolean).join(' · ')} — add it to Inventory_Item_Codes first.`);
                 }
                 // This can create an Inventory_Items row, so it is a write worth
                 // recording: a later failure leaves it behind.
                 const outItemId = await journal.run(
-                    `Find or create the ${o.outputType} stock item`,
-                    () => findOrCreateOutputItem(headers, codeId, outputItemSlug(job, o.outputType))
+                    `Find or create the stock item for ${o.sizeLabel || o.outputType}`,
+                    () => findOrCreateOutputItem(headers, codeId, outputItemSlug(job, o.outputType, o.sizeTag))
                 );
                 for (const half of outputSplit(o)) {
                     txnRecords.push({
@@ -2052,6 +2052,34 @@ const countDivisor = (outputType, unit) => {
     return PIECES_PER_BUNDLE[itemForm(outputType)] || 1;
 };
 
+// Which of the candidate item codes an output belongs to.
+//
+// `dims` are the finished article's own measurements, where the line knows them.
+// A code matching those is unambiguously the right one -- a 16x20 sheet is not a
+// 16x24 sheet -- so size leads. Bags and patty share one code per specification
+// and leave the size fields blank, which means "any"; those fall through to the
+// job-level ladder that has always been used.
+const pickOutputCode = (rows, job, dims = null) => {
+    const same = (a, b) => String(a ?? '').trim().toUpperCase() === String(b ?? '').trim().toUpperCase();
+    const dim = (a, b) => num(a) > 0 && num(b) > 0 && Math.abs(num(a) - num(b)) < 1e-6;
+    const blank = (v) => !String(v ?? '').trim();
+    const f = (r) => r.fields ?? r;
+    const ladder = [
+        ...(dims ? [
+            (r) => same(f(r).GSM, job.gsm) && dim(f(r).Width_Inches_, dims.w) && dim(f(r).Height_Inches_, dims.h),
+            (r) => dim(f(r).Width_Inches_, dims.w) && dim(f(r).Height_Inches_, dims.h),
+            (r) => same(f(r).GSM, job.gsm) && dim(f(r).Width_Inches_, dims.w) && blank(f(r).Height_Inches_)
+        ] : []),
+        (r) => same(f(r).GSM, job.gsm) && same(f(r).Width_Inches_, job.width),
+        (r) => same(f(r).GSM, job.gsm)
+    ];
+    for (const test of ladder) {
+        const hit = (rows || []).find(test);
+        if (hit) return f(hit).id ?? null;
+    }
+    return f((rows || [])[0] ?? {}).id ?? null;
+};
+
 // Why a job cannot be started yet, or null when it can. The stock has to be off
 // the shelf before the machine runs, and the machine runs one job at a time.
 const startBlocker = ({ batch, job, runningJob }) => {
@@ -2081,6 +2109,35 @@ const jobWorkPlan = (job) => {
     // strip it produces -- width by the length that wraps the bag -- not just the
     // width the order asked for. Same figure the batch review showed.
     const pattySize = (so) => outputSizeLabel(jobType, planShape(so)).value;
+    // The dimensions of the thing this line turns out -- not of the roll it comes
+    // from. Used to find the right item code (a 16x20 sheet and a 16x24 sheet are
+    // different codes) and to name the stock item where one code covers every size.
+    const dimsFor = (so) => {
+        if (sizeDim === 'sheet') {
+            const m = String(so.sheetSize ?? '').toLowerCase().match(/(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)/);
+            return m ? { w: Number(m[1]), h: Number(m[2]) } : null;
+        }
+        if (sizeDim === 'patty') {
+            if (jobType === 'ROLLS TO BOTTOMPATTY SHEETS') {
+                const d = bottomSheetDims(planShape(so));
+                return d ? { w: num(d.sheetW), h: num(d.sheetH) } : null;
+            }
+            // A side patty's code is keyed on the strip width; the length that
+            // wraps the bag varies by line and lives in the stock item's name.
+            const d = pattyDims(planShape(so));
+            return d ? { w: num(d.width), h: null } : null;
+        }
+        // A handle is the same strip whatever bag it goes on, so its lines carry
+        // no size of their own.
+        if (sizeDim === 'suborder') return null;
+        return { w: num(so.bagW), h: num(so.bagH) };
+    };
+    // A token safe to put in an item id, from the label the operator sees.
+    const tagFor = (so) => {
+        const d = dimsFor(so);
+        if (!d || !d.w) return '';
+        return d.h ? `${d.w}X${d.h}` : `${d.w}`;
+    };
     const sizeKeyFor = (so) => {
         if (sizeDim === 'suborder') return String(so.id);
         if (sizeDim === 'sheet') return String(cell(so.sheetSize));
@@ -2120,6 +2177,11 @@ const jobWorkPlan = (job) => {
         if (!map.has(key)) {
             map.set(key, {
                 key, label: sizeLabelFor(so), qty: 0, made: 0, count: 0,
+                // Constant within a line: DCUT splits DCUT BAG from HANDLE BAG on
+                // model, and model is part of the key, so a line never mixes them.
+                outputType: outputTypeFor(job.type, planShape(so)),
+                dims: dimsFor(so),
+                sizeTag: tagFor(so),
                 // On a per-sub-order list the label is the shop, so the bag size
                 // is what tells two lines apart on the machine.
                 chip: sizeDim === 'suborder' && so.bagW && so.bagH ? `${so.bagW}″ × ${so.bagH}″` : null
@@ -2486,7 +2548,7 @@ const RollRow = ({ item, value, onChange, children }) => (
 );
 
 const OutputModal = ({ job, updating, onClose, onSubmit }) => {
-    const { jobType, countUnit, soQty, rate } = jobWorkPlan(job);
+    const { jobType, countUnit, soQty, sizeGroups, sizeTitle, sizeNoun } = jobWorkPlan(job);
     // A pressing handle is pressed straight onto the bag, so it is never shelved:
     // everything produced belongs to the run, with no surplus to the bags godown.
     // It is counted and entered like any other output.
@@ -2500,35 +2562,29 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
     const outRatio = requiredKg > 0
         ? Math.max(requiredKg - num(job.finishedTakenKg), 0) / requiredKg
         : 1;
-    const outputs = (() => {
-        const map = new Map();
-        for (const so of job.subOrders) {
-            const shaped = planShape(so);
-            const ot = outputTypeFor(job.type, shaped);
-            if (!map.has(ot)) {
-                map.set(ot, { outputType: ot, required: 0, requiredCount: 0, colour: outputColour(jobType, shaped) });
-            }
-            const o = map.get(ot);
-            o.required += soQty(so);
-            const c = outputCount(jobType, shaped, rate);
-            if (c) o.requiredCount += c.count;
-        }
-        return [...map.values()]
-            .map((o) => {
-                const planned = roundWeight(o.required * outRatio);
-                const plannedCount = Math.ceil(o.requiredCount * outRatio - 1e-9);
-                return {
-                    ...o,
-                    required: roundWeight(o.required),
-                    planned,
-                    plannedCount,
-                    // The operator counts items; the godown books kg. One item's
-                    // share of the planned weight converts between the two.
-                    kgPerItem: plannedCount > 0 ? planned / plannedCount : 0
-                };
-            })
-            .sort((a, b) => b.planned - a.planned);
-    })();
+    // One line per size, exactly the lines the job page ticks off. A job that cuts
+    // three sheet sizes made three different articles, and a single total for all
+    // of them cannot say how many of each -- so each size is entered on its own and
+    // is booked on its own.
+    const outputs = sizeGroups.map((g) => {
+        const planned = roundWeight(num(g.qty) * outRatio);
+        const plannedCount = Math.ceil(num(g.made) * outRatio - 1e-9);
+        return {
+            key: g.key,
+            label: g.label,
+            chip: g.chip,
+            outputType: g.outputType,
+            dims: g.dims,
+            sizeTag: g.sizeTag,
+            colour: g.colour,
+            required: roundWeight(num(g.qty)),
+            planned,
+            plannedCount,
+            // The operator counts items; the godown books kg. One item's share of
+            // the planned weight converts between the two.
+            kgPerItem: plannedCount > 0 ? planned / plannedCount : 0
+        };
+    });
 
     // Only raw stock can be left over. Ready-made items were pulled to the
     // printing area to be used, not cut from -- offering them here invited the
@@ -2557,7 +2613,7 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
     // converting would put a derived figure into the books where the real one was
     // already on the scale. Counted forms stay as counts.
     const byWeight = (o) => primaryUnitFor(o.outputType) === 'kg';
-    const entered = (o) => Number(counts[o.outputType]) || 0;
+    const entered = (o) => Number(counts[o.key]) || 0;
     const outputKg = (o) => (byWeight(o) ? entered(o) : entered(o) * o.kgPerItem);
     const outputCountOf = (o) => (byWeight(o) ? 0 : entered(o));
     const totalOut = roundWeight(outputs.reduce((s, o) => s + outputKg(o), 0));
@@ -2591,14 +2647,22 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
         }
         try {
             await onSubmit({
-                outputs: nothingToProduce ? [] : outputs.map((o) => ({
-                    outputType: o.outputType,
-                    planned: o.planned,
-                    count: outputCountOf(o),
-                    unit: countUnit,
-                    weight: roundWeight(outputKg(o)),
-                    allToPrinting: neverStocked
-                })),
+                outputs: nothingToProduce ? [] : outputs
+                    // A size nobody made is not booked at all.
+                    .filter((o) => outputKg(o) > 0 || outputCountOf(o) > 0)
+                    .map((o) => ({
+                        outputType: o.outputType,
+                        planned: o.planned,
+                        count: outputCountOf(o),
+                        unit: countUnit,
+                        weight: roundWeight(outputKg(o)),
+                        allToPrinting: neverStocked,
+                        // What was made, so the booking can find the right item
+                        // code and name the stock item by its size.
+                        sizeTag: o.sizeTag,
+                        sizeLabel: o.label,
+                        dims: o.dims
+                    })),
                 remainingRolls: returnRoll ? returnedRows : [],
                 wastageKg
             });
@@ -2616,7 +2680,9 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
                         <p className="text-xs text-slate-500">
                             {nothingToProduce
                                 ? 'Nothing to make — the stock came ready'
-                                : `Record produced output${outputs.length > 1 ? ' per product' : ''}`}
+                                : outputs.length > 1
+                                    ? `Record what was produced — one figure per ${sizeNoun}`
+                                    : 'Record produced output'}
                         </p>
                     </div>
                     <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1 shrink-0"><X size={20} /></button>
@@ -2655,13 +2721,23 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
                         // everything else in bundles.
                         const bookedUnit = countUnitFor(o.outputType);
                         return (
-                            <div key={o.outputType} className="rounded-lg border border-slate-200 p-3">
+                            <div key={o.key} className="rounded-lg border border-slate-200 p-3">
                                 <div className="flex items-center gap-2.5 mb-2">
                                     <span className="w-10 shrink-0">
                                         <ItemVisual colour={o.colour || job.colour} type={o.outputType} size="sm" />
                                     </span>
                                     <span className="min-w-0 flex-1">
-                                        <span className="block text-sm font-semibold text-slate-800 break-words">{o.outputType}</span>
+                                        <span className="block text-sm font-semibold text-slate-800 break-words">{o.label}</span>
+                                        <span className="flex flex-wrap items-center gap-1.5 mb-0.5">
+                                            <span className="inline-block px-1.5 py-0.5 rounded bg-slate-100 text-[10px] font-medium text-slate-600">
+                                                {o.outputType}
+                                            </span>
+                                            {o.chip && (
+                                                <span className="inline-block px-1.5 py-0.5 rounded bg-slate-100 text-[10px] font-medium text-slate-600">
+                                                    {o.chip}
+                                                </span>
+                                            )}
+                                        </span>
                                         <span className="block text-[11px] text-slate-400">
                                             {inKg || !(o.plannedCount > 0)
                                                 ? `${fmtKg(o.planned)} kg to produce`
@@ -2673,8 +2749,8 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
                                 <div className="relative">
                                     <input
                                         type="number" inputMode="numeric" min="0" step="any"
-                                        value={counts[o.outputType] ?? ''}
-                                        onChange={(e) => { touched(); setCounts((c) => ({ ...c, [o.outputType]: e.target.value })); }}
+                                        value={counts[o.key] ?? ''}
+                                        onChange={(e) => { touched(); setCounts((c) => ({ ...c, [o.key]: e.target.value })); }}
                                         placeholder={inKg ? 'Produced kg' : `Produced ${countUnit}`}
                                         className="w-full px-3 py-2 pr-20 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none"
                                     />
@@ -2754,6 +2830,15 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
                                     </p>
                                 </div>
                             )}
+                        </div>
+                    )}
+
+                    {!nothingToProduce && outputs.length > 1 && (
+                        <div className="flex justify-between items-baseline rounded-lg bg-slate-100 px-3 py-2 text-xs">
+                            <span className="text-slate-500">
+                                {outputs.filter((o) => entered(o) > 0).length} of {outputs.length} {sizeTitle.toLowerCase()} entered
+                            </span>
+                            <span className="font-bold text-slate-800 tabular-nums">{fmtKg(totalOut)} kg in all</span>
                         </div>
                     )}
 
