@@ -733,11 +733,23 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
 
     // Finished goods are tracked as one Inventory_Items row per output code. Reuse
     // the existing row for a code, or create one labelled by `slug`.
+    // Found by item code, not by the name this app would have given it.
+    //
+    // Finished goods carry the article's size on the ITEM CODE -- a 16x20 DCUT bag
+    // and a 14x18 one are different codes -- and every such code has exactly one
+    // physical item behind it. So the code identifies the row outright.
+    //
+    // Looking it up by a generated name instead does not work: the rows in the
+    // document are named DCUT_BAG_NW_REGULAR_BISCUIT_IVORY_70_16X20, which no
+    // abbreviation this file produces will ever equal. Every lookup missed, every
+    // completion tried to create a row instead, and an operator without create
+    // rights on Inventory_Items could not finish a job at all. `slug` is now only
+    // the name given to a row that genuinely does not exist yet.
     const findOrCreateOutputItem = async (headers, codeId, slug) => {
         const sqlResp = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
             method: 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sql: 'SELECT id FROM Inventory_Items WHERE Item_ID = ? LIMIT 1', args: [slug] })
+            body: JSON.stringify({ sql: 'SELECT id FROM Inventory_Items WHERE Item_Code = ? LIMIT 1', args: [codeId] })
         });
         if (sqlResp.ok) {
             const data = await sqlResp.json();
