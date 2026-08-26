@@ -1,10 +1,12 @@
 import React, { useMemo, useState } from 'react';
 import {
-    X, Package, CheckCircle2, Circle, Loader2, AlertTriangle, CheckSquare, Warehouse, Boxes, Repeat
+    X, Package, CheckCircle2, Circle, Loader2, AlertTriangle, CheckSquare, Warehouse, Boxes, Repeat,
+    Download
 } from 'lucide-react';
 import Button from './Button';
 import { ItemVisual } from './itemVisuals';
 import { attrText } from '../utils/txnDisplay';
+import { makeLabelsZip, itemLabelLines } from '../utils/itemLabel';
 import { ROLLS_GODOWN, BAGS_GODOWN, godownOf, godownForJob, splitStock } from '../utils/godown';
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
@@ -12,6 +14,17 @@ const fmtKg = (v) => num(v).toFixed(2);
 
 const ROLLS = ROLLS_GODOWN;
 const BAGS = BAGS_GODOWN;
+
+// The checklist names an item's fields differently from the inventory views, so
+// translate before asking for a label. The label itself is then identical to the
+// one the godown printed when the roll was booked in.
+const labelItem = (item) => ({
+    iid: item.itemId, itype: item.type, mat: item.material,
+    col: item.colour, gsm: item.gsm, w: item.w, h: item.h
+});
+
+const fileStem = (batch) => String(batch?.name || 'batch')
+    .trim().replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '') || 'batch';
 
 const GODOWN_STYLE = {
     [ROLLS]: { icon: Warehouse, ring: 'ring-amber-200', chip: 'bg-amber-100 text-amber-800' },
@@ -51,6 +64,10 @@ const CollectionChecklistModal = ({
 }) => {
     const lines = useMemo(() => givenLines ?? buildLines(batch), [givenLines, batch]);
     const [ticked, setTicked] = useState(() => new Set());
+    // Labels for the rolls on this trip, as one archive: the crew relabels what
+    // they carry, and the sticker on a roll is what the scanner reads later.
+    const [bulk, setBulk] = useState(null);      // { done, total }
+    const [labelError, setLabelError] = useState(null);
     // Which line has its substitutes open. The pick was made days ago; by now a
     // roll can be buried or damaged, and the crew needs a way to take another.
     const [swapping, setSwapping] = useState(null);
@@ -67,6 +84,41 @@ const CollectionChecklistModal = ({
     });
     const allTicked = lines.length > 0 && lines.every((l) => ticked.has(l.key));
     const tickAll = () => setTicked(allTicked ? new Set() : new Set(lines.map((l) => l.key)));
+
+    // One label per physical roll, however many lines mention it.
+    const rollLabels = useMemo(() => {
+        const seen = new Set();
+        const out = [];
+        for (const l of lines) {
+            if (l.godown !== ROLLS || !l.item?.itemId || seen.has(l.item.itemId)) continue;
+            seen.add(l.item.itemId);
+            out.push({ iid: l.item.itemId, lines: itemLabelLines(labelItem(l.item)) });
+        }
+        return out;
+    }, [lines]);
+
+    const downloadRollLabels = async () => {
+        setLabelError(null);
+        try {
+            const zip = await makeLabelsZip(
+                rollLabels,
+                (done, total) => setBulk({ done, total }),
+                { filename: `roll-labels_${fileStem(batch)}.zip` }
+            );
+            const url = URL.createObjectURL(zip.blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = zip.filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            setLabelError(`Could not build the labels: ${err.message || String(err)}`);
+        } finally {
+            setBulk(null);
+        }
+    };
 
     const anyUnrecorded = lines.some((l) => l.unrecorded);
     // A roll leaves the shelf whole, so the weight to carry is the roll's, not the
@@ -126,8 +178,23 @@ const CollectionChecklistModal = ({
                                     <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-bold tracking-wide ${style.chip}`}>
                                         <GodownIcon size={13} /> {godown}
                                     </span>
-                                    <span className="text-[11px] font-semibold text-slate-500">
-                                        {doneHere} / {sectionLines.length}
+                                    <span className="flex items-center gap-2 shrink-0">
+                                        {godown === ROLLS && rollLabels.length > 0 && (
+                                            <button
+                                                type="button"
+                                                onClick={downloadRollLabels}
+                                                disabled={Boolean(bulk)}
+                                                title="Download a zip of QR labels for these rolls"
+                                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-teal-700 hover:text-teal-800 disabled:text-slate-300"
+                                            >
+                                                {bulk
+                                                    ? <><Loader2 size={12} className="animate-spin" /> {bulk.done}/{bulk.total}</>
+                                                    : <><Download size={12} /> QR labels ({rollLabels.length})</>}
+                                            </button>
+                                        )}
+                                        <span className="text-[11px] font-semibold text-slate-500">
+                                            {doneHere} / {sectionLines.length}
+                                        </span>
                                     </span>
                                 </header>
 
@@ -248,6 +315,11 @@ const CollectionChecklistModal = ({
                     {note && (
                         <p className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2">
                             {note}
+                        </p>
+                    )}
+                    {labelError && (
+                        <p className="text-[11px] text-red-700 bg-red-50 border border-red-200 rounded-lg px-2.5 py-2">
+                            {labelError}
                         </p>
                     )}
                     {anyUnrecorded && (
