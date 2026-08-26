@@ -1021,20 +1021,6 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
         }
     };
 
-    const markInventoryCollected = (batch) => {
-        const finished = batch.jobs.flatMap((job) => splitStock(job.invItemOptions).finished);
-        const unacked = batch.jobs.reduce((t, job) => t + num(job.finishedUnacked), 0);
-        if (finished.length > 0 && !batch.finCollected) {
-            setError('Collect the finished stock first — it leaves the bags godown before the roll does.');
-            return Promise.resolve();
-        }
-        if (unacked > 0) {
-            setError(`The incharge has not acknowledged ${unacked} finished item(s) yet, so the books still show them in the bags godown.`);
-            return Promise.resolve();
-        }
-        return collectRawStock(batch);
-    };
-
     const collectRawStock = (batch) => runInventoryAction(batch, {
         boolField: 'Required_Inventory_Collected',
         localDone: 'invCollected',
@@ -1251,7 +1237,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                     onClose={() => setCollectingBatch(null)}
                     onSwap={swapRoll}
                     onConfirm={async () => {
-                        await markInventoryCollected(collectingBatch);
+                        await collectRawStock(collectingBatch);
                         setCollectingBatch(null);
                     }}
                 />
