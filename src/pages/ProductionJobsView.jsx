@@ -1631,11 +1631,13 @@ const BatchInventory = ({ batch, updating, onCollect, onCollectFinished, onRetur
     const allJobsCompleted = batch.jobs.length > 0 && batch.jobs.every((job) => job.completed);
     const finishedItems = batch.jobs.flatMap((job) => splitStock(job.invItemOptions).finished);
     const finishedAt = formatDateTime(batch.finCollectedAt);
-    // Ready stock leaves the godown before the roll does, and the incharge has to
-    // have signed for it: until then the books still show it on the shelf, so the
-    // roll trip has nothing to add to.
-    const finishedUnacked = batch.jobs.reduce((t, job) => t + num(job.finishedUnacked), 0);
-    const rawBlocked = finishedItems.length > 0 && (!batch.finCollected || finishedUnacked > 0);
+    // The two trips are to different godowns and are made by different people, in
+    // whichever order the floor manages. Neither waits on the other.
+    //
+    // Nothing is lost by letting them run independently: a job still cannot START
+    // until every item assigned to it has an acknowledged collection, finished
+    // stock included -- see startBlocker. That gate is where the real protection
+    // is, and it does not care which trip was made first.
 
     return (
         <Card className="p-4 mb-3">
@@ -1658,17 +1660,12 @@ const BatchInventory = ({ batch, updating, onCollect, onCollectFinished, onRetur
                 )}
                 <InventoryAction
                     label="Raw roll collected"
-                    hint={rawBlocked
-                        ? (batch.finCollected
-                            ? `Waiting on the incharge to acknowledge ${finishedUnacked} finished item${finishedUnacked === 1 ? '' : 's'}`
-                            : 'Collect the finished stock first')
-                        : undefined}
+                    hint="From the rolls godown"
                     done={batch.invCollected}
                     at={collectedAt}
                     actionLabel="Mark Collected"
                     doneLabel="Collected"
                     updating={updating}
-                    disabled={rawBlocked}
                     onClick={onCollect}
                 />
                 <InventoryAction
