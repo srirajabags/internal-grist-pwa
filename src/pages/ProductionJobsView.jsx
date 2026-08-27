@@ -108,6 +108,7 @@ const parseInventoryItemOptions = (v, fallbackIds = []) => {
                 id: num(item?.id),
                 itemId: item?.itemId || `Item #${num(item?.id)}`,
                 code: item?.code || null,
+                codeId: num(item?.codeId),
                 type: item?.type || null,
                 material: item?.material || null,
                 colour: item?.colour || null,
@@ -188,17 +189,13 @@ const treeSql = (scope) => `
                                    FROM ${SUMMARY_BY_CODE_TABLE} c
                                    WHERE c.Item_Code = it.Item_Code AND c.Incharge_Ack = 1
                                    LIMIT 1), 0),
-                -- Other rolls of the same code the operator could take instead,
-                -- when the planned one is buried or damaged. Oldest first, since
-                -- that is the order the godown should be clearing.
-                'swaps', (SELECT json_group_array(json_object('id', a.id, 'itemId', a.Item_ID, 'kg', ak.kg))
-                          FROM Inventory_Items a
-                          JOIN (SELECT s3.Item_ID AS iid, ROUND(SUM(s3.Available_Weight_Kg_), 2) AS kg
-                                FROM ${SUMMARY_BY_ID_TABLE} s3
-                                WHERE s3.Incharge_Ack = 1 AND s3.Location = 'ROLLS GODOWN'
-                                GROUP BY s3.Item_ID HAVING SUM(s3.Available_Weight_Kg_) > 0) ak ON ak.iid = a.id
-                          WHERE a.Item_Code = it.Item_Code AND a.id != it.id
-                          ORDER BY a.Item_ID LIMIT 40),
+                -- The item's code, so the alternatives it could be swapped for can
+                -- be looked up when they are actually wanted. They used to be
+                -- fetched here, which meant aggregating the whole stock summary
+                -- once per item per job -- over half the time this query took, for
+                -- a list only ever read inside the collection sheet. See
+                -- loadSwaps.
+                'codeId', it.Item_Code,
                 -- Which godown to walk to. Where an item has stock in more than
                 -- one, the heaviest holding is the one worth sending them to.
                 'location', (SELECT s2.Location
@@ -921,6 +918,57 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     // days before anyone walks the shelf, and by then a roll can be buried,
     // damaged or already gone -- so the floor can substitute rather than abandon
     // the job. Restricted to the same code, so the job still gets its material.
+    // The rolls a batch's own rolls could be swapped for: same item code, still
+    // has weight on the shelf. Fetched when the collection sheet is opened rather
+    // than with the job tree -- one aggregate over a handful of codes, instead of
+    // the whole summary re-aggregated for every item on the page.
+    const loadSwaps = async (batch) => {
+        const rolls = (batch.jobs || []).flatMap((j) => splitStock(j.invItemOptions).raw);
+        const codeIds = [...new Set(rolls.map((r) => num(r.codeId)).filter(Boolean))];
+        if (codeIds.length === 0) return batch;
+        try {
+            const headers = await getHeaders();
+            const res = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
+                method: 'POST',
+                headers: { ...headers, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sql: `SELECT a.id AS id, a.Item_ID AS itemId, a.Item_Code AS codeId,
+                                 ROUND(SUM(s.Available_Weight_Kg_), 2) AS kg
+                          FROM Inventory_Items a
+                          JOIN ${SUMMARY_BY_ID_TABLE} s ON s.Item_ID = a.id
+                          WHERE a.Item_Code IN (${codeIds.map(() => '?').join(',')})
+                            AND s.Incharge_Ack = 1 AND s.Location = 'ROLLS GODOWN'
+                          GROUP BY a.id
+                          HAVING SUM(s.Available_Weight_Kg_) > 0
+                          ORDER BY a.Item_ID`,
+                    args: codeIds
+                })
+            });
+            if (!res.ok) return batch;
+            const alts = ((await res.json()).records || []).map((r) => r.fields);
+            const byCode = new Map();
+            for (const a of alts) {
+                const k = num(a.codeId);
+                if (!byCode.has(k)) byCode.set(k, []);
+                byCode.get(k).push({ id: num(a.id), itemId: a.itemId, kg: num(a.kg) });
+            }
+            return {
+                ...batch,
+                jobs: batch.jobs.map((j) => ({
+                    ...j,
+                    invItemOptions: (j.invItemOptions || []).map((it) => ({
+                        ...it,
+                        swaps: (byCode.get(num(it.codeId)) || []).filter((a) => a.id !== it.id)
+                    }))
+                }))
+            };
+        } catch {
+            // A swap list that could not be fetched costs the crew an alternative,
+            // not the collection sheet -- which is the thing they came for.
+            return batch;
+        }
+    };
+
     const swapRoll = async (job, fromId, toId) => {
         setUpdatingBatchId(collectingBatch?.id ?? null);
         const journal = newJournal();
@@ -1823,7 +1871,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                     <BatchInventory
                                         batch={selectedBatch}
                                         updating={updatingBatchId === selectedBatch.id}
-                                        onCollect={() => setCollectingBatch(selectedBatch)}
+                                        onCollect={async () => setCollectingBatch(await loadSwaps(selectedBatch))}
                                         onCollectFinished={() => setCollectingFinished(selectedBatch)}
                                         onReturn={() => openReturn(selectedBatch)}
                                     />
