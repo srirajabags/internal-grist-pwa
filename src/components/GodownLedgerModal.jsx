@@ -4,6 +4,7 @@ import {
     ArrowDownLeft, ArrowUpRight, Sparkles, Clock, Factory, ChevronDown
 } from 'lucide-react';
 import Button from './Button';
+import ChipRow from './FilterChips';
 import { ItemVisual } from './itemVisuals';
 import { attrText } from '../utils/txnDisplay';
 import { downloadCsv } from '../utils/csvFile';
@@ -28,39 +29,6 @@ const dayLabel = (ts) => new Date(num(ts) * 1000)
     .toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
 const timeLabel = (ts) => new Date(num(ts) * 1000)
     .toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-
-// A filter that is a row of chips: tap to include, tap again to drop. Nothing
-// selected means everything, which is what an untouched filter should do.
-const ChipRow = ({ values, chosen, onToggle, onClear, label }) => (
-    <div className="min-w-0">
-        <div className="flex items-baseline justify-between gap-2 mb-1">
-            <span className="text-[10px] uppercase tracking-wider text-slate-400">{label}</span>
-            {chosen.length > 0 && (
-                <button onClick={onClear} className="text-[10px] font-semibold text-teal-700 hover:text-teal-800">
-                    clear
-                </button>
-            )}
-        </div>
-        <div className="-mx-1 px-1 overflow-x-auto no-scrollbar">
-            <div className="flex gap-1.5 w-max">
-                {values.map((v) => {
-                    const on = chosen.includes(v);
-                    return (
-                        <button
-                            key={v}
-                            onClick={() => onToggle(v)}
-                            className={`shrink-0 px-2 py-1 rounded-lg text-[11px] font-medium transition-colors ${on
-                                ? 'bg-teal-600 text-white'
-                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-                        >
-                            {v}
-                        </button>
-                    );
-                })}
-            </div>
-        </div>
-    </div>
-);
 
 // Individual items, several at a time. Collapsed by default: on the bags godown
 // the list runs to hundreds, and it is the type chips people reach for first.

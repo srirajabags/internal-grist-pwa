@@ -1,7 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { X, Loader2, AlertCircle, ArrowDownLeft, ArrowUpRight, Sparkles, Check, ShieldCheck, Factory, Trash2 } from 'lucide-react';
 import { ItemVisual } from './itemVisuals';
 import HoldToAct, { DESTRUCTIVE_HOLD_MS } from './HoldToAct';
+import ChipRow from './FilterChips';
+import { passes, toggleIn, optionsOf } from '../utils/chipFilters';
 import { typeName } from '../utils/itemForms';
 import { num, dayKey, changeText, isOutward, toneFor, attrText, countUnitFor } from '../utils/txnDisplay';
 
@@ -21,6 +23,12 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
     const [savingId, setSavingId] = useState(null);
     const [doneIds, setDoneIds] = useState([]);
     const [rejectedIds, setRejectedIds] = useState([]);
+    // Sixty transactions read as one undifferentiated wall. Signing off is done a
+    // godown at a time, or a job at a time, or by whoever booked them -- so the
+    // queue can be narrowed the same way.
+    const [locations, setLocations] = useState([]);
+    const [jobTypes, setJobTypes] = useState([]);
+    const [users, setUsers] = useState([]);
 
     const load = async () => {
         setLoading(true);
@@ -34,11 +42,15 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
                        ic.Item_Code AS name, ic.Type AS itype, ic.Material AS mat,
                        ic.Colour AS col, ic.GSM AS gsm,
                        ic.Width_Inches_ AS w, ic.Height_Inches_ AS h,
-                       t.Production_Job AS jobId, j.Job_ID AS jobName, tm.Name AS who
+                       t.Production_Job AS jobId, j.Job_ID AS jobName,
+                       bt.jtype AS jobType, tm.Name AS who
                 FROM ${TXN_TABLE} t
                 LEFT JOIN Inventory_Items it ON it.id = t.Item_ID
                 LEFT JOIN Inventory_Item_Codes ic ON ic.id = t.Item_Code
                 LEFT JOIN Factory_Production_Jobs j ON j.id = t.Production_Job
+                LEFT JOIN (SELECT b.Type AS jtype, je.value AS job_id
+                           FROM Factory_Production_Job_Batches b, json_each(b.Jobs) je) bt
+                       ON bt.job_id = t.Production_Job
                 LEFT JOIN Team tm ON tm.id = t.Created_by
                 WHERE t.Incharge_Ack IS NULL OR t.Incharge_Ack = 0
                 ORDER BY t.Transaction_Time DESC, t.id DESC`;
@@ -116,6 +128,24 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
 
     const remaining = txns.filter((t) => !doneIds.includes(t.id) && !rejectedIds.includes(t.id)).length;
 
+    // A transaction with no job behind it is a godown correction, and reviewing
+    // those on their own is worth a chip of its own rather than no chip at all.
+    const jobTypeOf = (t) => t.jobType || 'Direct entry';
+
+    // Options come from the whole queue, not from what is on screen, so a chip does
+    // not disappear the moment it is used to narrow the list.
+    const options = useMemo(() => ({
+        locations: optionsOf(txns, (t) => t.location),
+        jobTypes: optionsOf(txns, jobTypeOf),
+        users: optionsOf(txns, (t) => t.who)
+    }), [txns]);
+
+    const shown = useMemo(() => txns.filter((t) => passes(locations, t.location)
+        && passes(jobTypes, jobTypeOf(t)) && passes(users, t.who)), [txns, locations, jobTypes, users]);
+
+    const filtering = locations.length + jobTypes.length + users.length > 0;
+    const clearAll = () => { setLocations([]); setJobTypes([]); setUsers([]); };
+
     return (
         <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 sm:p-4" onClick={onClose}>
             <div className="bg-slate-50 w-full sm:max-w-2xl sm:rounded-2xl shadow-xl max-h-[92vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
@@ -126,11 +156,33 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
                     <div className="min-w-0 flex-1">
                         <h2 className="font-bold text-slate-800 leading-tight">Awaiting acknowledgement</h2>
                         <p className="text-xs text-slate-500">
-                            {loading ? 'Loading…' : `${remaining} transaction${remaining !== 1 ? 's' : ''} not counted in stock yet`}
+                            {loading ? 'Loading…'
+                                : filtering
+                                    ? `${shown.length} of ${remaining} shown · not counted in stock yet`
+                                    : `${remaining} transaction${remaining !== 1 ? 's' : ''} not counted in stock yet`}
                         </p>
                     </div>
                     <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1 shrink-0"><X size={20} /></button>
                 </div>
+
+                {!loading && txns.length > 0
+                    && (options.locations.length > 1 || options.jobTypes.length > 1 || options.users.length > 1) && (
+                    <div className="bg-white border-b border-slate-200 px-4 py-2.5 space-y-2 shrink-0">
+                        <ChipRow label="Godown" values={options.locations} chosen={locations}
+                            onToggle={toggleIn(setLocations)} onClear={() => setLocations([])} />
+                        <ChipRow label="Job type" values={options.jobTypes} chosen={jobTypes}
+                            onToggle={toggleIn(setJobTypes)} onClear={() => setJobTypes([])} />
+                        <ChipRow label="Entered by" values={options.users} chosen={users}
+                            onToggle={toggleIn(setUsers)} onClear={() => setUsers([])}
+                            format={(u) => String(u).replace(/\s*\(.*\)\s*$/, '')} />
+                        {filtering && (
+                            <button onClick={clearAll}
+                                className="text-[11px] font-semibold text-slate-500 hover:text-slate-700">
+                                Show all {remaining} again
+                            </button>
+                        )}
+                    </div>
+                )}
 
                 <div className="flex-1 overflow-auto p-4">
                     {error && (
@@ -153,13 +205,24 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
                         </div>
                     ) : (
                         <ol className="space-y-2">
-                            {txns.map((t, i) => {
+                            {shown.length === 0 && (
+                                <li className="text-center py-10 text-sm text-slate-500">
+                                    Nothing matches those filters.
+                                    <button onClick={clearAll} className="ml-1 font-semibold text-teal-700 hover:text-teal-800">
+                                        Show all {remaining}
+                                    </button>
+                                </li>
+                            )}
+                            {shown.map((t, i) => {
                                 const tone = toneFor(t.type);
                                 const Icon = iconFor(t.type);
                                 const unit = countUnitFor(t.itype, t.name);
                                 const done = doneIds.includes(t.id);
                                 const rejected = rejectedIds.includes(t.id);
-                                const newDay = i === 0 || dayKey(t.ts) !== dayKey(txns[i - 1].ts);
+                                // Against the filtered list: reading the day off the
+                                // unfiltered queue printed headings for days that
+                                // had nothing under them once a filter was on.
+                                const newDay = i === 0 || dayKey(t.ts) !== dayKey(shown[i - 1].ts);
                                 return (
                                     <li key={t.id}>
                                         {newDay && (
