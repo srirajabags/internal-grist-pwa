@@ -19,7 +19,7 @@ export const BATCH_TYPES = [
 
 // Only sub-orders updated to the factory on/after this date are ever considered,
 // unless the operator picks a later start date in the wizard.
-export const HARD_START_DATE = '2026-06-25';
+export const HARD_START_DATE = '2026-08-16';
 
 // Each batch type turns rolls into one finished/semi-finished output form. The
 // value is the Inventory_Item_Codes.Type string for that output.
@@ -31,7 +31,7 @@ export const OUTPUT_TYPE = {
     'ROLLS TO WCUT': 'WCUT BAG',
     'ROLLS TO SIDEPATTY': 'SIDEPATTY',
     'ROLLS TO BOTTOMPATTY SHEETS': 'BOTTOMPATTY SHEET',
-    'ROLLS TO HANDLES': 'HANDLE',
+    'ROLLS TO HANDLES': 'READYMADE HANDLE',
     'ROLLS TO PRESSING HANDLES': 'PRESSING HANDLE'
 };
 
@@ -72,7 +72,7 @@ export const OUTPUT_REQUIREMENTS = [
         requirements: {
             'SHEET': 2,                  // front + back
             'MODEL NUMBER SHEET': 2,
-            'HANDLE': 2,                 // one pair
+            'READYMADE HANDLE': 2,       // one pair
             'BOTTOMPATTY': 1
         }
     },
@@ -82,7 +82,7 @@ export const OUTPUT_REQUIREMENTS = [
         requirements: {
             'SHEET': 2,                  // front + back
             'MODEL NUMBER SHEET': 2,
-            'HANDLE': 2,
+            'READYMADE HANDLE': 2,
             'SIDEPATTY': 1
         }
     },
@@ -147,7 +147,7 @@ export const PIECES_PER_BUNDLE = {
     'SIDEPATTY': 50, 'BOTTOMPATTY': 50,
     // A stitched handle is stocked in bundles of 100. A pressing handle is not
     // stocked at all -- it is counted in pieces, two to a bag.
-    'HANDLE': 100
+    'READYMADE HANDLE': 100
 };
 
 const matchesCombination = (combination, so) =>
@@ -182,6 +182,33 @@ const HANDLE_TYPES = new Set(['ROLLS TO HANDLES', 'ROLLS TO PRESSING HANDLES']);
 const HANDLE_DIMS = {
     'ROLLS TO HANDLES': { width: 2, height: 13, gsm: 90 },
     'ROLLS TO PRESSING HANDLES': { width: 2, height: 13, gsm: 90 }
+};
+
+// A handle can be cut from either weight of 2" roll, and the godown is clearing
+// its 90 GSM stock before moving to 110 -- so 90 is tried first and 110 is the
+// fallback, per colour, as each colour runs out.
+//
+// A job takes one weight or the other, never a mix. The handles a job produces are
+// booked against an item code whose GSM has to match the fabric they were cut
+// from, and a job holding rolls of both weights has no single honest answer.
+const HANDLE_GSM_PREFERENCE = ['90', '110'];
+
+// Colour values that are not colours: a note to whoever fills the order in later.
+// "MATCHING COLOUR" means the handle is to match the bag, and the designer is
+// meant to resolve it to a real colour before the order reaches the factory.
+//
+// Left in place it reaches the allocator as a colour, matches no roll and no item
+// code, and the order is reported as having no stock -- which sends somebody to
+// the godown to look for fabric that was never the problem. It is an unfinished
+// order, and it is worth saying so.
+export const PLACEHOLDER_COLOURS = new Set(['MATCHING COLOUR']);
+
+// The placeholder standing where this order's colour should be, or null. Read off
+// the group's own colour, so it holds for whichever field a batch type takes its
+// colour from -- the handle's, the side patty's or the bag's.
+export const unresolvedColour = (batchType, so) => {
+    const c = norm(groupAttrs(batchType, so)?.colour);
+    return PLACEHOLDER_COLOURS.has(c) ? c : null;
 };
 
 // --- Roll-width matching ---
@@ -709,6 +736,9 @@ export const groupAttrs = (batchType, so) => {
             material: 'NW REGULAR',
             colour: firstChoice(so.Handle_Colour) || firstChoice(so.Sidepatty_Colour),
             gsm: String(d.gsm),
+            // The weights this handle may be cut from, best first. relevantStock
+            // reads it; everything else still sees the nominal 90.
+            rollGsmChoices: HANDLE_GSM_PREFERENCE,
             width: String(d.width),
             height: String(d.height),
             // The handle machine runs a 2″ slit roll: a handle is not cut down from
@@ -895,12 +925,19 @@ const relevantStock = (attrs, inventory, batchType, outputType) => {
             .map((r) => ({ ...r, avail: availOf(r) }))
             .sort((a, b) => b.avail - a.avail)
         : [];
-    const rolls = inventory
-        .filter((r) => norm(r.type) === 'ROLL' && matchesSpec(r, rollSpec) && availOf(r) > 0)
+    const rollsAt = (gsm) => inventory
+        .filter((r) => norm(r.type) === 'ROLL' && matchesSpec(r, { ...rollSpec, gsm }) && availOf(r) > 0)
         .map((r) => ({ ...r, avail: availOf(r) }))
         .sort((a, b) => b.avail - a.avail);
 
-    return { finished, alternates, rolls };
+    // Where a group can be cut from more than one weight of roll, the pools are
+    // kept apart and offered in preference order, so a job is served entirely from
+    // one of them. Mixing would leave the job holding fabric of two weights with
+    // one item code to book its output against.
+    const rollPools = (attrs.rollGsmChoices || [rollSpec.gsm]).map((gsm) => rollsAt(gsm));
+    const rolls = rollPools.find((p) => p.length > 0) || [];
+
+    return { finished, alternates, rolls, rollPools };
 };
 
 // Greedily take from a list of stock rows up to `need`. Returns the picks (with
@@ -1075,7 +1112,15 @@ const withForcedRolls = (rolls, forced) => {
 export const allocateStock = (attrs, subOrders, inventory, batchType, outputType, forcedRolls) => {
     const required = subOrders.reduce((s, so) => s + effectiveQty(batchType, so), 0);
     const stockLists = relevantStock(attrs, inventory, batchType, outputType);
-    const rolls = withForcedRolls(stockLists.rolls, forcedRolls);
+    // Of the weights this group may be cut from, the first that can cover the
+    // whole requirement on its own -- so the preferred weight is cleared while it
+    // can still do the job, and the next only takes over once it cannot. Failing
+    // all of them, the preferred pool is used partially rather than skipped, which
+    // is what keeps the older weight draining rather than stranding.
+    const pools = stockLists.rollPools || [stockLists.rolls];
+    const covers = (pool) => pool.reduce((t, r) => t + r.avail, 0) >= required - 1e-9;
+    const chosenPool = pools.find(covers) || pools.find((p) => p.length > 0) || [];
+    const rolls = withForcedRolls(chosenPool, forcedRolls);
     // Ready stock is size-specific; the roll it would otherwise be cut from is not.
     const isModelSheets = batchType === 'ROLLS TO MODEL SHEETS';
     const finished = finishedBySize(stockLists.finished, subOrders, batchType, isModelSheets);
@@ -1235,10 +1280,14 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, override
     const usesRollWidth = ROLL_WIDTH_TYPES.has(batchType);
     const unmatched = [];
     const missingGsm = [];   // STITCHING pieces orders with no Bag_GSM -> can't convert to kg
+    const placeholderColour = [];  // colour still says MATCHING COLOUR
     const groupable = [];
     for (const so of eligible) {
         // A pieces-quoted order with no GSM (or a patty missing strip width / bag
         // dims / GSM) can't be sized; flag it rather than grouping a zero quantity.
+        // An unresolved colour is an unfinished order, not missing stock. Caught
+        // before grouping so it is never reported as postponed for want of fabric.
+        if (unresolvedColour(batchType, so)) { placeholderColour.push(so); continue; }
         if (cannotConvertQty(batchType, so) || cannotSizePieces(batchType, so) || cannotSizePatty(batchType, so)) { missingGsm.push(so); continue; }
         // Side/bottom patty need a roll width that is an exact multiple of the strip
         // width; flag orders no fixed roll width can satisfy.
@@ -1359,6 +1408,8 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, override
         groups, postponedCount, totalPlannedQty, totalPostponedQty, totalFinishedQty, totalOutputQty, jobCount,
         totalRequiredCount,
         unmatched: mergeLines(unmatched), unmatchedCount: mergeLines(unmatched).length,
-        missingGsm: mergeLines(missingGsm), missingGsmCount: mergeLines(missingGsm).length
+        missingGsm: mergeLines(missingGsm), missingGsmCount: mergeLines(missingGsm).length,
+        placeholderColour: mergeLines(placeholderColour),
+        placeholderColourCount: mergeLines(placeholderColour).length
     };
 };

@@ -276,7 +276,10 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
     // type picker stays as an optional override to narrow the run.
     const [batchTypes, setBatchTypes] = useState([...BATCH_TYPES]);
     // Both ends default to today — the usual run is "what came in today".
-    const [startDate, setStartDate] = useState(todayStr);
+    // Opens on the first day a batch may draw from, not today: a run is nearly
+    // always sweeping up everything still outstanding, and starting on today hid
+    // every sub-order released earlier until somebody widened the range by hand.
+    const [startDate, setStartDate] = useState(HARD_START_DATE);
     // Empty = open-ended (everything from the start date onwards).
     const [endDate, setEndDate] = useState(todayStr);
     // First tap on the calendar sets a single day; the next one extends the range.
@@ -1310,6 +1313,7 @@ const buildCsvRows = (plans, codeNames, itemNames) => {
             }
         }
         const flagged = [
+            ...plan.placeholderColour.map((so) => [so, 'Colour not chosen — still MATCHING COLOUR']),
             ...plan.unmatched.map((so) => [so, 'No matching roll width']),
             ...plan.missingGsm.map((so) => [so, 'Missing info — cannot size'])
         ];
@@ -1392,6 +1396,18 @@ const UnmatchedPanel = ({ subOrders, batchType, unit, onViewForm }) => (
 
 // Orders that can't be sized: STITCHING pieces with no Bag_GSM, un-sizable HANDLE
 // weight orders, or side/bottom patty missing strip width / bag dims / GSM.
+// Orders whose colour is still the designer's placeholder. Kept apart from the
+// missing-info panel because the remedy is different and the person is different:
+// nothing about the factory can fix it, and nobody should be sent to the godown
+// looking for stock that was never the problem.
+const PlaceholderColourPanel = ({ subOrders, batchType, unit, onViewForm }) => (
+    <FlaggedPanel
+        subOrders={subOrders} batchType={batchType} unit={unit} onViewForm={onViewForm}
+        title="colour not chosen yet"
+        detail="These still say MATCHING COLOUR — the designer's placeholder for a colour to be picked from the bag. It should have been resolved before the order reached the factory. This is not a stock shortage: set the real colour on the sub-order and re-run. They are left out of every job."
+    />
+);
+
 const MissingGsmPanel = ({ subOrders, batchType, unit, onViewForm }) => (
     <FlaggedPanel
         subOrders={subOrders} batchType={batchType} unit={unit} onViewForm={onViewForm} showMissing
@@ -1529,6 +1545,7 @@ const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map(), assig
                         tone="amber"
                     />
                 )}
+                {plan.placeholderColourCount > 0 && <Stat label="Colour not chosen" value={plan.placeholderColourCount} tone="red" />}
                 {plan.unmatchedCount > 0 && <Stat label="No roll width" value={plan.unmatchedCount} tone="red" />}
                 {plan.missingGsmCount > 0 && <Stat label="Missing info" value={plan.missingGsmCount} tone="red" />}
             </div>
@@ -1580,14 +1597,20 @@ const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map(), assig
                                     {g.picks.map((p, i) => (
                                         <span
                                             key={`${p.itemId}-${p.source}-${i}`}
-                                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] ring-1 ${p.manual ? 'text-amber-800 bg-amber-50 ring-amber-300' : SOURCE_TONE[p.source] || SOURCE_TONE.finished}`}
+                                            className={`inline-flex items-center gap-1 max-w-full px-2 py-0.5 rounded-md text-[11px] ring-1 ${p.manual ? 'text-amber-800 bg-amber-50 ring-amber-300' : SOURCE_TONE[p.source] || SOURCE_TONE.finished}`}
                                             title={p.manual ? 'assigned by hand' : `${p.source} stock`}
                                         >
                                             {p.manual && <Wrench size={10} className="shrink-0" />}
-                                            <span className="font-mono font-medium">
+                                            {/* A finished-goods id is one unbroken
+                                                token -- READYMADE_HANDLE_NW_REGULAR_
+                                                RELIANCE_GREEN_90_2X13 -- so without
+                                                a break rule the chip grows past the
+                                                card and the weight beside it lands
+                                                off the edge of the screen. */}
+                                            <span className="font-mono font-medium min-w-0 break-all">
                                                 {itemNames.get(num(p.itemId)) || `#${p.itemId}`}
                                             </span>
-                                            <span className="tabular-nums">
+                                            <span className="tabular-nums shrink-0">
                                                 {fmtKg(p.take)}{unit}
                                             </span>
                                         </span>
@@ -1648,6 +1671,7 @@ const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map(), assig
                         </div>
                         );
                     })}
+                    <PlaceholderColourPanel subOrders={plan.placeholderColour} batchType={batchType} unit={unit} onViewForm={onViewForm} />
                     <UnmatchedPanel subOrders={plan.unmatched} batchType={batchType} unit={unit} onViewForm={onViewForm} />
                     <MissingGsmPanel subOrders={plan.missingGsm} batchType={batchType} unit={unit} onViewForm={onViewForm} />
                 </>
