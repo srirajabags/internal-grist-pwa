@@ -14,6 +14,7 @@ import { choiceText } from '../utils/gristValues';
 import { writableRecords } from '../utils/gristWrites';
 import { intakeOrder } from '../utils/stockAge';
 import { newJournal } from '../utils/writeJournal';
+import { downloadCsv } from '../utils/csvFile';
 import {
     BATCH_TYPES, HARD_START_DATE, OUTPUT_TYPE, PRIORITY_LABEL, buildPlan,
     effectiveQty, needsPieceConversion, cannotConvertQty, cannotSizePieces, cannotSizePatty, BUNDLE_SIZE,
@@ -1322,23 +1323,8 @@ const buildCsvRows = (plans, codeNames, itemNames) => {
     return rows;
 };
 
-const csvCell = (v) => {
-    const s = v === null || v === undefined ? '' : String(v);
-    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-};
 
 // BOM so Excel opens the UTF-8 content correctly.
-const downloadCsv = (filename, headers, rows) => {
-    const csv = [headers, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n');
-    const url = URL.createObjectURL(new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' }));
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-};
 
 const SubOrderPill = ({ so, batchType, unit, tone = 'slate', onViewForm, showMissing = false }) => {
     const size = sizeText(batchType, so);

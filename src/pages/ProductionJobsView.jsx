@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
     ArrowLeft, Boxes, AlertCircle, Loader2, RefreshCw, Package,
     PlayCircle, CheckCircle2, Circle, Clock, ChevronRight, Layers, FileText, ArrowRight, Plus, X, Warehouse,
-    AlertTriangle, Trash2, Lock, History
+    AlertTriangle, Trash2, Lock, History, Printer
 } from 'lucide-react';
 import Card from '../components/Card';
 import Button from '../components/Button';
@@ -27,6 +27,10 @@ import {
 import { writableRecords } from '../utils/gristWrites';
 import { newJournal } from '../utils/writeJournal';
 import { jobLedger, batchLedger, outputBreakdown } from '../utils/jobLedger';
+import { downloadCsv } from '../utils/csvFile';
+import {
+    isPrintingListType, PRINTING_LIST_HEADERS, printingListRows, printingListName
+} from '../utils/printingList';
 import { godownOf, godownForJob, splitStock, PRINTING_AREA, BAGS_GODOWN } from '../utils/godown';
 
 // Grist document holding the factory production tables
@@ -313,7 +317,7 @@ const treeSql = (scope) => `
         so.Sidepatty_Width AS so_sidepatty_width,
         so.Handle_Colour AS so_handle_colour, so.Print AS so_print,
         o.Order_ID AS so_order_id, o.Order_Form AS so_order_form,
-        c.Shop_Name AS so_shop, ag.Area_Group AS so_area_group
+        c.Shop_Name AS so_shop, c.City AS so_city, ag.Area_Group AS so_area_group
     FROM Factory_Production_Job_Batches b
     LEFT JOIN Factory_Production_Jobs j ON j.id IN (SELECT value FROM json_each(b.Jobs))
     LEFT JOIN Sub_Orders so ON so.id IN (SELECT value FROM json_each(j.Sub_Orders))
@@ -473,6 +477,7 @@ const groupRows = (rows) => {
                 job._subs.set(f.so_id, {
                     id: f.so_id,
                     shop: f.so_shop,
+                    city: f.so_city,
                     qty: f.so_qty,
                     qtyType: f.so_qty_type,
                     areaGroup: f.so_area_group,
@@ -1822,6 +1827,25 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                         onCollectFinished={() => setCollectingFinished(selectedBatch)}
                                         onReturn={() => openReturn(selectedBatch)}
                                     />
+
+                                    {/* The printing floor's own list: one row per
+                                        sub-order, in bags rather than kilos. Sheets
+                                        only -- a DCUT run turns out finished bags and
+                                        has no sheet to print. */}
+                                    {isPrintingListType(selectedBatch.type) && (
+                                        <Button
+                                            variant="secondary"
+                                            className="w-full mb-3"
+                                            icon={Printer}
+                                            onClick={() => downloadCsv(
+                                                printingListName(selectedBatch),
+                                                PRINTING_LIST_HEADERS,
+                                                printingListRows(selectedBatch)
+                                            )}
+                                        >
+                                            Download printing list ({printingListRows(selectedBatch).length} sub-orders)
+                                        </Button>
+                                    )}
 
                                     <BatchProgress batch={selectedBatch} />
 
