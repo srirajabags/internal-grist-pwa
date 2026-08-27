@@ -340,6 +340,20 @@ const formatDate = (val) => {
 };
 
 // Format an epoch-seconds value as a date + time, or null if absent.
+// Just the clock, for the second half of a span that starts the same day.
+const formatTime = (val) => {
+    if (val === null || val === undefined || val === '' || val === 0 || typeof val === 'object') return null;
+    const date = new Date(Number(val) * 1000);
+    if (isNaN(date.getTime())) return null;
+    return date.toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit' });
+};
+
+const sameDay = (a, b) => {
+    const x = new Date(Number(a) * 1000);
+    const y = new Date(Number(b) * 1000);
+    return !isNaN(x) && !isNaN(y) && x.toDateString() === y.toDateString();
+};
+
 const formatDateTime = (val) => {
     if (val === null || val === undefined || val === '' || val === 0 || typeof val === 'object') return null;
     const date = new Date(Number(val) * 1000);
@@ -536,7 +550,12 @@ const JobLedgerRow = ({ job, open, onToggle }) => {
     const shortRows = rows.filter((r) => r.short > 0);
     const ran = elapsedText(job.startedAt, job.completedAt);
     const from = formatDateTime(job.startedAt);
-    const to = formatDateTime(job.completedAt);
+    // A run that starts and ends on one day does not need the date twice. On a
+    // phone the repeat pushed the span onto three lines and split "pm" from the
+    // time it belonged to.
+    const to = job.completedAt && sameDay(job.startedAt, job.completedAt)
+        ? formatTime(job.completedAt)
+        : formatDateTime(job.completedAt);
     return (
         <div className="border-t border-slate-100">
             <button
@@ -568,15 +587,20 @@ const JobLedgerRow = ({ job, open, onToggle }) => {
                             jobs of the same duration on different shifts are
                             different facts, and the stamps are the only way to line
                             a run up against anything that happened around it. */}
-                        <span className="block text-[10px] text-slate-400 break-words">
+                        {/* Each part is unbreakable, so a wrap falls between them
+                            rather than through the middle of a timestamp. */}
+                        <span className="block text-[10px] text-slate-400 leading-relaxed">
                             {job.completed ? (
                                 <>
-                                    {from || '—'} <span className="text-slate-300">→</span> {to || '—'}
-                                    {ran ? <span className="text-slate-500"> · ran {ran}</span> : null}
+                                    <span className="whitespace-nowrap">{from || '—'}</span>
+                                    <span className="text-slate-300"> → </span>
+                                    <span className="whitespace-nowrap">{to || '—'}</span>
+                                    {ran ? <span className="text-slate-500 whitespace-nowrap"> · ran {ran}</span> : null}
                                 </>
                             ) : job.started ? (
                                 <>
-                                    {from || '—'} <span className="text-blue-600 font-medium">· running</span>
+                                    <span className="whitespace-nowrap">{from || '—'}</span>
+                                    <span className="text-blue-600 font-medium whitespace-nowrap"> · running</span>
                                 </>
                             ) : 'not started'}
                         </span>
@@ -2019,8 +2043,15 @@ const CollectedItems = ({ batch }) => {
         <div className="mt-3 pt-3 border-t border-slate-100">
             <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
                 On the floor · {items.length} item{items.length === 1 ? '' : 's'}
+                {items.length > 4 && <span className="font-normal normal-case tracking-normal text-slate-400"> · swipe to see them all</span>}
             </p>
-            <div className="flex flex-wrap gap-2">
+            {/* One row that scrolls, not a block that wraps. A batch can hold thirty
+                rolls, and wrapped they pushed everything below them off the screen --
+                the section is a reminder of what the crew is holding, not the main
+                event. Bled to the card's edge so the last item is visibly cut off
+                rather than looking like the end of the list. */}
+            <div className="-mx-4 px-4 overflow-x-auto no-scrollbar">
+            <div className="grid grid-flow-col grid-rows-2 lg:grid-rows-5 gap-2 w-max pb-0.5">
                 {items.map((entry) => {
                     const on = entry.key === openKey;
                     return (
@@ -2029,18 +2060,19 @@ const CollectedItems = ({ batch }) => {
                             type="button"
                             title={metaFor(entry)}
                             onClick={() => setOpenKey(on ? null : entry.key)}
-                            className={`flex flex-col items-center gap-0.5 p-1.5 rounded-lg border transition-colors ${on ? 'border-teal-300 bg-teal-50' : 'border-slate-200 bg-white hover:bg-slate-50'
+                            className={`shrink-0 w-[68px] flex flex-col items-center gap-0.5 p-1.5 rounded-lg border transition-colors ${on ? 'border-teal-300 bg-teal-50' : 'border-slate-200 bg-white hover:bg-slate-50'
                                 }`}
                         >
                             <span style={{ width: 44 }}>
                                 <ItemVisual colour={entry.item.colour} type={entry.item.type} name={entry.item.code} size="sm" />
                             </span>
-                            <span className="text-[9px] font-mono text-slate-400 max-w-[72px] truncate">
+                            <span className="w-full text-[9px] font-mono text-slate-400 truncate text-center">
                                 {entry.item.itemId}
                             </span>
                         </button>
                     );
                 })}
+            </div>
             </div>
             {/* A title attribute is nothing on a touchscreen, so tapping says the
                 same thing in place. */}
