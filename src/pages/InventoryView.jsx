@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
     ArrowLeft, Warehouse, AlertCircle, Loader2, RefreshCw, Search, X, Package,
     LayoutGrid, List, ChevronDown, ShieldAlert, Plus, Minus, ScanLine, PackagePlus, QrCode, Download,
-    CalendarRange
+    CalendarRange, ScrollText
 } from 'lucide-react';
 import Card from '../components/Card';
 import InventoryTxnModal from '../components/InventoryTxnModal';
@@ -12,6 +12,7 @@ import RollPickerModal from '../components/RollPickerModal';
 import QrScanModal from '../components/QrScanModal';
 import NewRollStockModal from '../components/NewRollStockModal';
 import RollMovementsModal from '../components/RollMovementsModal';
+import GodownLedgerModal from '../components/GodownLedgerModal';
 import ItemLabelModal from '../components/ItemLabelModal';
 import { makeItemLabelPng, itemLabelLines, makeLabelsZip } from '../utils/itemLabel';
 import Button from '../components/Button';
@@ -402,6 +403,8 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     const [newStock, setNewStock] = useState(false);
     // The date-range delta view over roll transactions, opened from the rolls tab.
     const [movements, setMovements] = useState(false);
+    // The whole godown's movements, one row per transaction, with balances.
+    const [ledger, setLedger] = useState(false);
     const [labelFor, setLabelFor] = useState(null);
     const [label, setLabel] = useState(null);   // { iid, url, filename }
     const [bulk, setBulk] = useState(null);     // { done, total }
@@ -778,7 +781,12 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
         <div className="min-h-screen bg-slate-50 flex flex-col">
             <header className="bg-white border-b border-slate-200 sticky top-0 z-10 px-3 py-2.5">
                 <div className={`${wrap} mx-auto flex flex-col gap-2.5`}>
-                    <div className="flex items-center gap-2">
+                    {/* Wraps rather than overflows. Every control is shrink-0, so
+                        without this the row is as wide as its buttons and a narrow
+                        screen scrolls the whole page sideways -- not just the
+                        header. Wrapping only takes effect when it would otherwise
+                        not fit, so nothing changes on a wider screen. */}
+                    <div className="flex flex-wrap items-center gap-2">
                         <Button variant="ghost" onClick={onBack} className="!px-2 shrink-0">
                             <ArrowLeft size={20} />
                         </Button>
@@ -809,6 +817,22 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                         <Button variant="secondary" onClick={() => setShowSearch((s) => !s)} className="!px-2.5 shrink-0">
                             <Search size={18} />
                         </Button>
+                        {/* By-item-code tab only. The rolls tab already carries its
+                            own movements view and a new-stock action, and an eighth
+                            control pushed the header wider than a phone -- which
+                            scrolls the whole page sideways, not just the header. The
+                            two views pair naturally anyway: rolls have roll
+                            movements, the godown at large has its ledger. */}
+                        {tab === 'code' && (
+                            <Button
+                                variant="secondary"
+                                onClick={() => setLedger(true)}
+                                className="!px-2.5 shrink-0"
+                                title="Every movement in the godown, in the order it happened"
+                            >
+                                <ScrollText size={18} />
+                            </Button>
+                        )}
                         {tab === 'id' && (
                             <Button
                                 variant="secondary"
@@ -1170,6 +1194,14 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                 <NewRollStockModal
                     onClose={() => setNewStock(false)}
                     onSaved={() => refresh(tab)}
+                    getHeaders={getHeaders}
+                    getUrl={getUrl}
+                />
+            )}
+
+            {ledger && (
+                <GodownLedgerModal
+                    onClose={() => setLedger(false)}
                     getHeaders={getHeaders}
                     getUrl={getUrl}
                 />
