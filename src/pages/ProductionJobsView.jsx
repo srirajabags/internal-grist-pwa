@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
     ArrowLeft, Boxes, AlertCircle, Loader2, RefreshCw, Package,
     PlayCircle, CheckCircle2, Circle, Clock, ChevronRight, Layers, FileText, ArrowRight, Plus, X, Warehouse,
-    AlertTriangle, Trash2, Lock
+    AlertTriangle, Trash2, Lock, History
 } from 'lucide-react';
 import Card from '../components/Card';
 import Button from '../components/Button';
@@ -22,10 +22,11 @@ import {
 import { choiceText } from '../utils/gristValues';
 import { parseAttachmentId } from '../utils/attachments';
 import {
-    attrText, PIECES_PER_BUNDLE, countToKg, primaryUnitFor, SHEET_FORMS, countUnitFor
+    attrText, PIECES_PER_BUNDLE, countToKg, primaryUnitFor, SHEET_FORMS, countUnitFor, truthy
 } from '../utils/txnDisplay';
 import { writableRecords } from '../utils/gristWrites';
 import { newJournal } from '../utils/writeJournal';
+import { jobLedger, batchLedger, outputBreakdown } from '../utils/jobLedger';
 import { godownOf, godownForJob, splitStock, PRINTING_AREA, BAGS_GODOWN } from '../utils/godown';
 
 // Grist document holding the factory production tables
@@ -64,6 +65,18 @@ const SIZE_TITLE = {
 };
 
 // Parse a Grist reference-list (stored as JSON like "[1,2]") into integer ids.
+// A json_group_array column, as an array. A malformed value is nothing rather
+// than a crash: a breakdown that cannot be read should cost the operator a
+// section, not the page.
+const parseJson = (v) => {
+    if (Array.isArray(v)) return v;
+    if (typeof v !== 'string' || !v.trim()) return [];
+    try {
+        const parsed = JSON.parse(v);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch { return []; }
+};
+
 const parseRefList = (v) => {
     if (!v) return [];
     let a = v;
@@ -122,7 +135,16 @@ const parseInventoryItemOptions = (v, fallbackIds = []) => {
 // plus inventory item details and the sub-order's customer/order. Reference-list
 // columns are stored as JSON, so json_each() expands them for the joins.
 // LEFT JOINs keep batches with no jobs and jobs with no sub-orders.
-const TREE_SQL = `
+const OPEN_BATCHES = `(b.Production_Completed_At IS NULL
+       OR COALESCE(b.Remaining_Inventory_Returned, 0) = 0)`;
+const CLOSED_BATCHES = `(b.Production_Completed_At IS NOT NULL
+       AND COALESCE(b.Remaining_Inventory_Returned, 0) = 1
+       AND b.id IN (SELECT id FROM Factory_Production_Job_Batches
+                    WHERE Production_Completed_At IS NOT NULL
+                      AND COALESCE(Remaining_Inventory_Returned, 0) = 1
+                    ORDER BY Date DESC, id DESC LIMIT 40))`;
+
+const treeSql = (scope) => `
     SELECT
         b.id AS batch_id, b.Type AS batch_type, b.Date AS batch_date,
         b.Job_Batch_ID AS batch_name,
@@ -242,6 +264,29 @@ const TREE_SQL = `
            AND tx.Item_ID NOT IN (SELECT value FROM json_each(
                CASE WHEN json_valid(j.Inventory_Items) THEN j.Inventory_Items ELSE '[]' END))
         ) AS job_produced_kg,
+        -- Every produced line, one object per transaction. Not aggregated here:
+        -- SQLite cannot group inside a correlated subquery, and the rows are few
+        -- enough that adding them up on arrival is simpler than working around it.
+        -- The article's size rides on its item code, so this is the breakdown for
+        -- whatever the job type happens to divide by, with no per-type rule.
+        (SELECT json_group_array(json_object(
+            'item', it4.Item_ID, 'code', ic4.Item_Code, 'type', ic4.Type,
+            'w', ic4.Width_Inches_, 'h', ic4.Height_Inches_, 'gsm', ic4.GSM,
+            'kg', tx.Weight_Kg_, 'cnt', tx.Count_Bundles_, 'loc', tx.Location))
+         FROM ${TXN_TABLE} tx
+         LEFT JOIN Inventory_Items it4 ON it4.id = tx.Item_ID
+         LEFT JOIN Inventory_Item_Codes ic4 ON ic4.id = it4.Item_Code
+         WHERE tx.Production_Job = j.id AND tx.Transaction_Type = 'ADD'
+           AND tx.Item_ID NOT IN (SELECT value FROM json_each(
+               CASE WHEN json_valid(j.Inventory_Items) THEN j.Inventory_Items ELSE '[]' END))
+        ) AS job_output_lines,
+        -- Movements this job has written that nobody has signed for yet. Counted
+        -- from the rows themselves, not from what the job was assigned: before
+        -- anything is collected there is nothing to sign, and a batch that has not
+        -- started should not be flagged as waiting.
+        (SELECT COUNT(*) FROM ${TXN_TABLE} tx
+         WHERE tx.Production_Job = j.id AND COALESCE(tx.Incharge_Ack, 0) = 0
+        ) AS job_unacked_txns,
         -- Of what it took out, how much was ready-made stock rather than raw roll.
         -- The item's own code says which it is, so the planned figure on the job
         -- row can be checked against what was actually drawn.
@@ -276,11 +321,15 @@ const TREE_SQL = `
     LEFT JOIN Customers c ON c.id = so.Customer
     LEFT JOIN Area_Groups ag ON ag.id = so.Area_Group
     -- Completing the last job is not the end of the batch: the rolls are still on
-    -- the floor until somebody walks them back. Keep it visible until they have.
-    WHERE b.Production_Completed_At IS NULL
-       OR COALESCE(b.Remaining_Inventory_Returned, 0) = 0
+    -- the floor until somebody walks them back. A batch stays open until they
+    -- have, and only then moves into the history.
+    WHERE ${scope === 'closed' ? CLOSED_BATCHES : OPEN_BATCHES}
     ORDER BY b.Date DESC, b.id DESC, j.id, so.id
 `;
+
+// History grows without limit, and the whole tree is fetched in one flat join, so
+// it is capped at the most recent batches rather than every batch ever run.
+export const HISTORY_LIMIT = 40;
 
 // Format an epoch-seconds value as a date (YYYY-MM-DD).
 const formatDate = (val) => {
@@ -394,6 +443,10 @@ const groupRows = (rows) => {
                     finishedUnacked: num(f.job_finished_unacked),
                     returnedKg: num(f.job_returned_kg),
                     producedKg: num(f.job_produced_kg),
+                    // One entry per produced transaction; summed per article where
+                    // the breakdown is shown.
+                    outputLines: parseJson(f.job_output_lines),
+                    unackedTxns: num(f.job_unacked_txns),
                     finishedTakenKg: num(f.job_finished_taken_kg),
                     fromDate: f.job_from_date,
                     toDate: f.job_to_date,
@@ -451,9 +504,155 @@ const jobProgress = (jobs = []) => {
     return { total: jobs.length, done, running, todo: jobs.length - done - running };
 };
 
+// Movements written but not signed for. Small and quiet: it is a nudge to the
+// incharge, not an error, and it sits beside a name rather than interrupting it.
+const AckDot = ({ count, className = '' }) => (num(count) > 0 ? (
+    <span
+        className={`inline-flex items-center gap-1 shrink-0 ${className}`}
+        title={`${count} movement${count === 1 ? '' : 's'} waiting on the incharge`}
+    >
+        <span className="relative flex w-2 h-2">
+            <span className="absolute inline-flex w-full h-full rounded-full bg-amber-400 opacity-70 animate-ping" />
+            <span className="relative inline-flex w-2 h-2 rounded-full bg-amber-500" />
+        </span>
+    </span>
+) : null);
+
+const unackedOf = (batch) => (batch?.jobs || []).reduce((t, j) => t + num(j.unackedTxns), 0);
+
+// Headings and figures share one grid so a column heading sits over its own
+// column. Laying them out as two separate flex rows let the numbers drift out
+// from under their labels as soon as one of them grew a digit.
+const LEDGER_GRID = 'grid grid-cols-[1fr_3.4rem_3.4rem_3.4rem_3.4rem] gap-1 items-baseline';
+
+// What one job moved, and what it turned that into. Collapsed to four figures,
+// because that is the question asked at the end of a run; opened, the same output
+// split the way the job type divides it, against what was asked for.
+const JobLedgerRow = ({ job, open, onToggle }) => {
+    const l = jobLedger(job);
+    // The plan is what makes the breakdown worth opening: a run can hit its total
+    // and still miss a size.
+    const rows = outputBreakdown(job, jobWorkPlan(job));
+    const shortRows = rows.filter((r) => r.short > 0);
+    const ran = elapsedText(job.startedAt, job.completedAt);
+    const from = formatDateTime(job.startedAt);
+    const to = formatDateTime(job.completedAt);
+    return (
+        <div className="border-t border-slate-100">
+            <button
+                type="button"
+                onClick={onToggle}
+                disabled={rows.length === 0}
+                className={`${LEDGER_GRID} w-full py-1.5 text-left disabled:cursor-default`}
+            >
+                <span className="min-w-0 flex items-baseline gap-1.5">
+                    <ChevronRight
+                        size={13}
+                        className={`shrink-0 self-center text-slate-300 transition-transform ${open ? 'rotate-90' : ''} ${rows.length === 0 ? 'opacity-0' : ''}`}
+                    />
+                    <span className="min-w-0">
+                        <span className="flex items-center gap-1.5">
+                            <span className="text-[11px] font-semibold text-slate-700 truncate">{jobLabel(job)}</span>
+                            <AckDot count={job.unackedTxns} />
+                            {shortRows.length > 0 && (
+                                <span
+                                    className="inline-flex items-center gap-0.5 px-1 py-px rounded bg-amber-50 text-amber-800 text-[10px] font-semibold shrink-0"
+                                    title={shortRows.map((r) => `${r.size} short by ${r.short} ${r.unit}`).join('; ')}
+                                >
+                                    <AlertTriangle size={9} />
+                                    {shortRows.length} short
+                                </span>
+                            )}
+                        </span>
+                        {/* When the machine was on it, not just for how long. Two
+                            jobs of the same duration on different shifts are
+                            different facts, and the stamps are the only way to line
+                            a run up against anything that happened around it. */}
+                        <span className="block text-[10px] text-slate-400 break-words">
+                            {job.completed ? (
+                                <>
+                                    {from || '—'} <span className="text-slate-300">→</span> {to || '—'}
+                                    {ran ? <span className="text-slate-500"> · ran {ran}</span> : null}
+                                </>
+                            ) : job.started ? (
+                                <>
+                                    {from || '—'} <span className="text-blue-600 font-medium">· running</span>
+                                </>
+                            ) : 'not started'}
+                        </span>
+                    </span>
+                </span>
+                {l.empty ? (
+                    <span className="col-span-4 text-right text-[11px] text-slate-300">nothing booked</span>
+                ) : (
+                    <>
+                        <span className="text-right text-[11px] tabular-nums text-slate-600">{fmtKg(l.collected)}</span>
+                        <span className="text-right text-[11px] tabular-nums font-semibold text-emerald-700">{fmtKg(l.produced)}</span>
+                        <span className="text-right text-[11px] tabular-nums text-sky-700">{fmtKg(l.returned)}</span>
+                        <span className={`text-right text-[11px] tabular-nums ${l.wastage < 0 ? 'text-red-600 font-semibold' : 'text-slate-500'}`}>
+                            {fmtKg(l.wastage)}
+                        </span>
+                    </>
+                )}
+            </button>
+            {open && rows.length > 0 && (
+                <div className="pb-2 pl-5 space-y-1">
+                    {rows.map((r) => (
+                        <div key={r.key} className="flex items-baseline justify-between gap-2 text-[11px]">
+                            <span className="min-w-0 text-slate-500 truncate">
+                                {r.size || r.type || r.item}
+                                {r.size && r.type ? <span className="text-slate-400"> · {r.type}</span> : null}
+                            </span>
+                            <span className="shrink-0 tabular-nums font-medium">
+                                {/* Made against asked, because the gap is the point.
+                                    A job short on one size while over on another
+                                    looks perfectly healthy on its totals alone. */}
+                                <span className={r.short > 0 ? 'text-amber-800 font-bold' : 'text-slate-700'}>
+                                    {r.made.toLocaleString('en-IN')}
+                                </span>
+                                {r.asked != null && (
+                                    <span className="text-slate-400"> / {r.asked.toLocaleString('en-IN')}</span>
+                                )}
+                                <span className="text-slate-400"> {r.unit}</span>
+                                {r.short > 0 && (
+                                    <span className="text-amber-800 font-semibold">
+                                        {' '}· −{r.short.toLocaleString('en-IN')} {r.unit}
+                                    </span>
+                                )}
+                                {/* Counted articles also carry the weight they came
+                                    to, because the roll is issued in kilos and the
+                                    reconciliation above is in kilos. */}
+                                {r.unit !== 'kg' && (
+                                    <span className="text-slate-400"> · {fmtKg(r.kg)} kg</span>
+                                )}
+                            </span>
+                        </div>
+                    ))}
+                    {shortRows.length > 0 && (
+                        <p className="text-[10px] text-amber-800 bg-amber-50 rounded px-1.5 py-1">
+                            These sizes come off the same roll, and the plan covers the output
+                            without a separate allowance for cutting loss — so any loss has to
+                            come out of one of them. Which one is a floor decision; the ledger
+                            does not record the cutting order.
+                        </p>
+                    )}
+                    <p className="text-[10px] text-slate-400 pt-0.5">
+                        {Object.entries(rows.reduce((acc, r) => {
+                            for (const [loc, kg] of Object.entries(r.byLocation)) acc[loc] = (acc[loc] || 0) + kg;
+                            return acc;
+                        }, {})).map(([loc, kg]) => `${fmtKg(kg)} kg → ${loc}`).join('  ·  ')}
+                    </p>
+                </div>
+            )}
+        </div>
+    );
+};
+
 const BatchProgress = ({ batch }) => {
     const jobs = batch?.jobs || [];
     const { total, done, running, todo } = jobProgress(jobs);
+    const [open, setOpen] = useState(false);
+    const [openJob, setOpenJob] = useState({});
     if (total === 0) return null;
     const pct = Math.round((done / total) * 100);
     // Grist stamps these off the first job starting and the last one finishing, so
@@ -463,15 +662,36 @@ const BatchProgress = ({ batch }) => {
     // Only once it has ended: a live figure would have to tick, and a duration
     // frozen at whenever the component last rendered is worse than none.
     const ran = batch.completedAt ? elapsedText(batch.startedAt, batch.completedAt) : '';
+    // Only jobs that have actually moved something have a ledger to show.
+    const moved = jobs.filter((j) => j.started || j.completed);
+    const t = batchLedger(moved);
+
     return (
         <Card className="p-3 mb-3">
-            <div className="flex items-baseline justify-between gap-2 mb-2">
-                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Jobs</span>
-                <span className="text-sm">
-                    <span className="font-bold text-slate-800 tabular-nums">{done}</span>
-                    <span className="text-slate-400"> / {total} done</span>
+            <button
+                type="button"
+                onClick={() => setOpen((o) => !o)}
+                disabled={moved.length === 0}
+                className="w-full flex items-baseline justify-between gap-2 mb-2 text-left disabled:cursor-default"
+            >
+                <span className="flex items-center gap-1.5">
+                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Jobs</span>
+                    <AckDot count={unackedOf(batch)} />
                 </span>
-            </div>
+                <span className="flex items-baseline gap-1.5">
+                    <span className="text-sm">
+                        <span className="font-bold text-slate-800 tabular-nums">{done}</span>
+                        <span className="text-slate-400"> / {total} done</span>
+                    </span>
+                    {moved.length > 0 && (
+                        <ChevronRight
+                            size={14}
+                            className={`self-center shrink-0 text-slate-300 transition-transform ${open ? 'rotate-90' : ''}`}
+                        />
+                    )}
+                </span>
+            </button>
+
             <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
                 <div
                     className={`h-full rounded-full transition-all ${done === total ? 'bg-green-500' : 'bg-blue-500'}`}
@@ -522,9 +742,39 @@ const BatchProgress = ({ batch }) => {
                     )}
                 </div>
             )}
+
+            {open && moved.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-slate-200">
+                    <div className={`${LEDGER_GRID} pb-1 border-b border-slate-200 text-[9px] uppercase tracking-wide text-slate-400`}>
+                        <span>What each job moved</span>
+                        <span className="text-right">roll kg</span>
+                        <span className="text-right text-emerald-700">made kg</span>
+                        <span className="text-right text-sky-700">back kg</span>
+                        <span className="text-right">waste kg</span>
+                    </div>
+                    {moved.map((job) => (
+                        <JobLedgerRow
+                            key={job.id}
+                            job={job}
+                            open={Boolean(openJob[job.id])}
+                            onToggle={() => setOpenJob((o) => ({ ...o, [job.id]: !o[job.id] }))}
+                        />
+                    ))}
+                    <div className={`${LEDGER_GRID} pt-2 mt-1 border-t border-slate-200 text-[11px] font-bold`}>
+                        <span className="text-slate-600 font-semibold">Batch total</span>
+                        <span className="text-right tabular-nums text-slate-700">{fmtKg(t.collected)}</span>
+                        <span className="text-right tabular-nums text-emerald-700">{fmtKg(t.produced)}</span>
+                        <span className="text-right tabular-nums text-sky-700">{fmtKg(t.returned)}</span>
+                        <span className={`text-right tabular-nums ${t.wastage < 0 ? 'text-red-600' : 'text-slate-700'}`}>
+                            {fmtKg(t.wastage)}
+                        </span>
+                    </div>
+                </div>
+            )}
         </Card>
     );
 };
+
 
 const StatusBadge = ({ started, completed }) => {
     if (completed) {
@@ -587,6 +837,9 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     const [error, setError] = useState(null);
 
     const [selectedType, setSelectedType] = useState('');
+    // Which half of the world is on screen: batches still being worked, or the
+    // ones that have been closed out.
+    const [scope, setScope] = useState('open');
     const [selectedBatchId, setSelectedBatchId] = useState(null);
     const [selectedJobId, setSelectedJobId] = useState(null);
     const [updatingJobId, setUpdatingJobId] = useState(null);
@@ -702,7 +955,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
         }
     };
 
-    const fetchData = async (silent = false) => {
+    const fetchData = async (silent = false, forScope = scope) => {
         if (!silent) setLoading(true);
         setError(null);
         try {
@@ -711,7 +964,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
             const response = await fetch(url, {
                 method: 'POST',
                 headers: { ...headers, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sql: TREE_SQL, args: [] })
+                body: JSON.stringify({ sql: treeSql(forScope), args: [] })
             });
             if (!response.ok) {
                 const text = await response.text().catch(() => '');
@@ -732,7 +985,16 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     useEffect(() => {
         fetchData();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [scope]);
+
+    // Switching between open work and history is a different set of batches, so
+    // whatever was open on screen no longer exists to go back to.
+    const switchScope = (next) => {
+        if (next === scope) return;
+        setSelectedJobId(null);
+        setSelectedBatchId(null);
+        setScope(next);
+    };
 
     // Patch a job's fields by row id (optimistic), then silently refresh.
     const updateJob = async (jobId, gristFields, localPatch) => {
@@ -870,11 +1132,54 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     // GODOWN. Any leftover roll the operator reports goes back to ROLLS GODOWN.
     // Sequential (txns -> job) and throws (not setError) so the modal can show the
     // failure and the job is only marked done once every transaction succeeds.
+    // Has this job already been completed? Asked of Grist, not of what is on
+    // screen: the screen can be a minute stale, and by the time an operator taps
+    // Complete a second time it is the only copy that still says otherwise.
+    const alreadyCompleted = async (headers, jobId) => {
+        const res = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sql: `SELECT Production_Completed AS done FROM ${JOBS_TABLE} WHERE id = ?`,
+                args: [num(jobId)]
+            })
+        });
+        // A check that could not be run is not a licence to write twice, but nor
+        // should a flaky read block a legitimate completion -- so this only reports
+        // what it actually saw.
+        if (!res.ok) return false;
+        const row = ((await res.json()).records || [])[0];
+        return truthy(row?.fields?.done);
+    };
+
     const submitJobOutput = async (job, form) => {
         setUpdatingJobId(job.id);
         const journal = newJournal();
         try {
             const headers = await getHeaders();
+            // Completing a job books its whole output. Doing it twice books the lot
+            // twice -- stock the factory never made, and a wastage figure that goes
+            // negative because the roll cannot account for it. The button disables
+            // while a write is in flight, which stops a double tap but not a second
+            // attempt made after the first one has already landed.
+            if (job.completed || await alreadyCompleted(headers, job.id)) {
+                // Not a failure: nothing was attempted, so the write-failure dialog
+                // -- which exists to say which changes landed and need reversing --
+                // would report "0 saved, none failed" and read like a breakage.
+                //
+                // The screen was stale, which is how the second tap happened, so
+                // refresh before saying anything and close the form: the job is
+                // done, and there is nothing left to fill in.
+                setCompletingJob(null);
+                await fetchData(true);
+                // After the refresh, which clears the banner on its way in.
+                setError(
+                    `${jobLabel(job)} was already completed, so its output is already booked — `
+                    + 'nothing was written a second time. If what was recorded is wrong, those '
+                    + 'transactions have to be reversed rather than booked again.'
+                );
+                return;
+            }
             const now = Date.now() / 1000;
             const txnRecords = [];
             const remainingRolls = Array.isArray(form.remainingRolls) ? form.remainingRolls : [];
@@ -1246,7 +1551,9 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     const headerSubtitle =
         level === 'job' ? batchLabel(selectedBatch)
             : level === 'jobs' ? `${selectedBatch.jobs.length} job${selectedBatch.jobs.length !== 1 ? 's' : ''}`
-                : 'Open batches';
+                // The icon in the header carries the state, but only once you know
+                // to look at it -- so the subtitle says it outright.
+                : scope === 'closed' ? 'Closed batches' : 'Open batches';
 
     return (
         <div className="min-h-screen bg-slate-50 flex flex-col">
@@ -1262,7 +1569,24 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                         <h1 className="font-bold text-slate-800 leading-tight truncate">{headerTitle}</h1>
                         {headerSubtitle && <p className="text-xs text-slate-500 truncate">{headerSubtitle}</p>}
                     </div>
+                    {/* Work in hand, or what has been closed out. Two different
+                        sets of batches, so this refetches rather than filtering
+                        what is already on screen. Lit when history is showing, so
+                        the state is readable without a label. */}
                     {level === 'batches' && (
+                        <Button
+                            variant="secondary"
+                            onClick={() => switchScope(scope === 'closed' ? 'open' : 'closed')}
+                            aria-pressed={scope === 'closed'}
+                            title={scope === 'closed' ? 'Showing closed batches — back to work in progress' : 'Show closed batches'}
+                            className={`!px-2.5 shrink-0 ${scope === 'closed'
+                                ? '!bg-amber-100 !text-amber-800 ring-1 ring-inset ring-amber-300'
+                                : ''}`}
+                        >
+                            <History size={18} />
+                        </Button>
+                    )}
+                    {level === 'batches' && scope === 'open' && (
                         <Button variant="primary" onClick={() => setShowCreate(true)} className="!px-2.5 shrink-0 bg-amber-600 hover:bg-amber-700" icon={Plus}>
                             <span className="hidden sm:inline">Create Batch</span>
                         </Button>
@@ -1390,11 +1714,19 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                     </div>
 
                                     <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 px-1">
-                                        {filteredBatches.length} batch{filteredBatches.length !== 1 ? 'es' : ''}
+                                        {filteredBatches.length} {scope === 'closed' ? 'closed ' : ''}batch{filteredBatches.length !== 1 ? 'es' : ''}
+                                        {scope === 'closed' && filteredBatches.length >= HISTORY_LIMIT
+                                            ? ` · most recent ${HISTORY_LIMIT}` : ''}
                                     </p>
 
                                     {filteredBatches.length === 0 ? (
-                                        <Empty icon={Boxes} title="No batches of this type" subtitle="Try a different job type." />
+                                        <Empty
+                                            icon={Boxes}
+                                            title={scope === 'closed' ? 'No closed batches' : 'No batches of this type'}
+                                            subtitle={scope === 'closed'
+                                                ? 'A batch moves here once its jobs are done and the roll has been returned.'
+                                                : 'Try a different job type.'}
+                                        />
                                     ) : (
                                         <div className="space-y-2.5">
                                             {filteredBatches.map((batch) => {
@@ -1415,8 +1747,9 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                                     onClick={() => setSelectedBatchId(batch.id)}
                                                     className="w-full text-left p-4 rounded-xl border bg-white border-slate-200 hover:border-amber-300 active:bg-amber-50 transition-all"
                                                 >
-                                                    <div className="mb-2.5 pb-2.5 border-b border-slate-100">
+                                                    <div className="mb-2.5 pb-2.5 border-b border-slate-100 flex items-start justify-between gap-2">
                                                         <BatchFlow batch={batch} size="sm" />
+                                                        <AckDot count={unackedOf(batch)} className="mt-1" />
                                                     </div>
                                                     <div className="flex items-start justify-between gap-2">
                                                         <div className="min-w-0">
@@ -1490,6 +1823,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                                                 <div className="flex items-center gap-2 flex-wrap">
                                                                     <h3 className="font-bold text-slate-800 break-words min-w-0">{jobLabel(job)}</h3>
                                                                     <StatusBadge started={job.started} completed={job.completed} />
+                                                                    <AckDot count={job.unackedTxns} />
                                                                 </div>
                                                                 {(job.material || job.colour || job.gsm || job.width) && (
                                                                     <div className="flex flex-wrap gap-1.5 mt-1.5">

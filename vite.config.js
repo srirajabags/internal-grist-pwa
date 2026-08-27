@@ -3,6 +3,9 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import { copyFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+// Imported rather than taken from the ambient global: this file is linted with
+// browser globals, where `process` does not exist.
+import process from 'node:process'
 
 // GitHub Pages serves files, not routes: /inventory is not a file, so it answers
 // with its own 404. The service worker normally hides this by handling
