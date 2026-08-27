@@ -537,7 +537,9 @@ const unackedOf = (batch) => (batch?.jobs || []).reduce((t, j) => t + num(j.unac
 // Headings and figures share one grid so a column heading sits over its own
 // column. Laying them out as two separate flex rows let the numbers drift out
 // from under their labels as soon as one of them grew a digit.
-const LEDGER_GRID = 'grid grid-cols-[1fr_3.4rem_3.4rem_3.4rem_3.4rem] gap-1 items-baseline';
+// Narrower figure columns on a phone: four of them at desktop width left the job
+// name about a hundred pixels, which truncated it to "2...".
+const LEDGER_GRID = 'grid grid-cols-[1fr_2.9rem_2.9rem_2.9rem_2.9rem] sm:grid-cols-[1fr_3.4rem_3.4rem_3.4rem_3.4rem] gap-1 items-baseline';
 
 // What one job moved, and what it turned that into. Collapsed to four figures,
 // because that is the question asked at the end of a run; opened, the same output
@@ -562,50 +564,26 @@ const JobLedgerRow = ({ job, open, onToggle }) => {
                 type="button"
                 onClick={onToggle}
                 disabled={rows.length === 0}
-                className={`${LEDGER_GRID} w-full py-1.5 text-left disabled:cursor-default`}
+                className="w-full py-1.5 text-left disabled:cursor-default"
             >
-                <span className="min-w-0 flex items-baseline gap-1.5">
-                    <ChevronRight
-                        size={13}
-                        className={`shrink-0 self-center text-slate-300 transition-transform ${open ? 'rotate-90' : ''} ${rows.length === 0 ? 'opacity-0' : ''}`}
-                    />
-                    <span className="min-w-0">
-                        <span className="flex items-center gap-1.5">
-                            <span className="text-[11px] font-semibold text-slate-700 truncate">{jobLabel(job)}</span>
-                            <AckDot count={job.unackedTxns} />
-                            {shortRows.length > 0 && (
-                                <span
-                                    className="inline-flex items-center gap-0.5 px-1 py-px rounded bg-amber-50 text-amber-800 text-[10px] font-semibold shrink-0"
-                                    title={shortRows.map((r) => `${r.size} short by ${r.short} ${r.unit}`).join('; ')}
-                                >
-                                    <AlertTriangle size={9} />
-                                    {shortRows.length} short
-                                </span>
-                            )}
-                        </span>
-                        {/* When the machine was on it, not just for how long. Two
-                            jobs of the same duration on different shifts are
-                            different facts, and the stamps are the only way to line
-                            a run up against anything that happened around it. */}
-                        {/* Each part is unbreakable, so a wrap falls between them
-                            rather than through the middle of a timestamp. */}
-                        <span className="block text-[10px] text-slate-400 leading-relaxed">
-                            {job.completed ? (
-                                <>
-                                    <span className="whitespace-nowrap">{from || '—'}</span>
-                                    <span className="text-slate-300"> → </span>
-                                    <span className="whitespace-nowrap">{to || '—'}</span>
-                                    {ran ? <span className="text-slate-500 whitespace-nowrap"> · ran {ran}</span> : null}
-                                </>
-                            ) : job.started ? (
-                                <>
-                                    <span className="whitespace-nowrap">{from || '—'}</span>
-                                    <span className="text-blue-600 font-medium whitespace-nowrap"> · running</span>
-                                </>
-                            ) : 'not started'}
-                        </span>
+                <span className={LEDGER_GRID}>
+                    <span className="min-w-0 flex items-center gap-1.5">
+                        <ChevronRight
+                            size={13}
+                            className={`shrink-0 text-slate-300 transition-transform ${open ? 'rotate-90' : ''} ${rows.length === 0 ? 'opacity-0' : ''}`}
+                        />
+                        <span className="text-[11px] font-semibold text-slate-700 truncate">{jobLabel(job)}</span>
+                        <AckDot count={job.unackedTxns} />
+                        {shortRows.length > 0 && (
+                            <span
+                                className="inline-flex items-center gap-0.5 px-1 py-px rounded bg-amber-50 text-amber-800 text-[10px] font-semibold shrink-0"
+                                title={shortRows.map((r) => `${r.size} short by ${r.short} ${r.unit}`).join('; ')}
+                            >
+                                <AlertTriangle size={9} />
+                                {shortRows.length} short
+                            </span>
+                        )}
                     </span>
-                </span>
                 {l.empty ? (
                     <span className="col-span-4 text-right text-[11px] text-slate-300">nothing booked</span>
                 ) : (
@@ -618,6 +596,26 @@ const JobLedgerRow = ({ job, open, onToggle }) => {
                         </span>
                     </>
                 )}
+                </span>
+                {/* When the machine was on it, not just for how long: two jobs of the
+                    same duration on different shifts are different facts.
+                    Full width and below the figures, because squeezed into the name
+                    column on a phone it wrapped and split "pm" off its own time. */}
+                <span className="block text-[10px] text-slate-400 pl-[1.15rem]">
+                    {job.completed ? (
+                        <>
+                            <span className="whitespace-nowrap">{from || '—'}</span>
+                            <span className="text-slate-300"> → </span>
+                            <span className="whitespace-nowrap">{to || '—'}</span>
+                            {ran ? <span className="text-slate-500 whitespace-nowrap"> · ran {ran}</span> : null}
+                        </>
+                    ) : job.started ? (
+                        <>
+                            <span className="whitespace-nowrap">{from || '—'}</span>
+                            <span className="text-blue-600 font-medium whitespace-nowrap"> · running</span>
+                        </>
+                    ) : 'not started'}
+                </span>
             </button>
             {open && rows.length > 0 && (
                 <div className="pb-2 pl-5 space-y-1">
