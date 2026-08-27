@@ -302,6 +302,10 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
     const planInputs = useRef(null);
     const [codeNames, setCodeNames] = useState(new Map()); // item-code id -> readable code
     const [itemNames, setItemNames] = useState(new Map()); // item row id -> printed item id
+    // Row id -> what that stock actually is. The chips in the review name a roll but
+    // cannot show its specification without crowding the card, so it is kept here
+    // and revealed when one is tapped.
+    const [itemMeta, setItemMeta] = useState(new Map());
     const [createdCount, setCreatedCount] = useState(0);
     // Last guard before anything is written to Grist.
     const [confirmOpen, setConfirmOpen] = useState(false);
@@ -647,6 +651,10 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
             // Row id -> the id printed on the roll or the stock label, so the
             // review can name what it picked instead of pointing at a row number.
             setItemNames(new Map(invRows.map((r) => [num(r.itemId), r.itemName]).filter(([, v]) => v)));
+            setItemMeta(new Map(invRows.map((r) => [num(r.itemId), {
+                name: r.itemName, type: r.type, material: r.material,
+                colour: r.colour, gsm: r.gsm, w: r.width, h: r.height
+            }])));
             const inventory = invRows.map((r) => {
                 const count = num(r.availCount);
                 const booked = num(r.availWeight);
@@ -1062,7 +1070,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                             {plans.map(({ batchType, plan }) => (
                                 <PlanSection
                                     key={batchType} batchType={batchType} plan={plan}
-                                    onViewForm={viewOrderForm} itemNames={itemNames}
+                                    onViewForm={viewOrderForm} itemNames={itemNames} itemMeta={itemMeta}
                                     assigned={overrides[batchType] || {}}
                                     onAssign={step === 'review' ? (g) => setAssigning({ batchType, group: g }) : null}
                                 />
@@ -1522,8 +1530,11 @@ const SOURCE_TONE = {
 
 // One chosen type's plan: the groups, what each needs, what stock covers it, and
 // the sub-orders behind it — everything the operator checks before creating.
-const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map(), assigned = {}, onAssign }) => {
+const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map(), itemMeta = new Map(), assigned = {}, onAssign }) => {
     const [open, setOpen] = useState(false);
+    // Which stock chip has been tapped open, or null. One at a time: two panels of
+    // specification stacked under a card is harder to read than one.
+    const [openPick, setOpenPick] = useState(null);
     const unit = ' kg';
     const subOrders = plan.groups.reduce((s, g) => s + g.subOrders.length, 0);
     return (
@@ -1594,10 +1605,16 @@ const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map(), assig
 
                             {g.picks.length > 0 && (
                                 <div className="flex flex-wrap gap-1.5 mt-1.5">
-                                    {g.picks.map((p, i) => (
-                                        <span
+                                    {g.picks.map((p, i) => {
+                                        const pickKey = `${g.key}:${p.itemId}:${i}`;
+                                        const isOpen = openPick === pickKey;
+                                        return (
+                                        <button
+                                            type="button"
                                             key={`${p.itemId}-${p.source}-${i}`}
-                                            className={`inline-flex items-center gap-1 max-w-full px-2 py-0.5 rounded-md text-[11px] ring-1 ${p.manual ? 'text-amber-800 bg-amber-50 ring-amber-300' : SOURCE_TONE[p.source] || SOURCE_TONE.finished}`}
+                                            onClick={() => setOpenPick(isOpen ? null : pickKey)}
+                                            aria-expanded={isOpen}
+                                            className={`inline-flex items-center gap-1 max-w-full px-2 py-0.5 rounded-md text-[11px] ring-1 text-left transition-colors ${p.manual ? 'text-amber-800 bg-amber-50 ring-amber-300' : SOURCE_TONE[p.source] || SOURCE_TONE.finished} ${isOpen ? 'ring-2' : ''}`}
                                             title={p.manual ? 'assigned by hand' : `${p.source} stock`}
                                         >
                                             {p.manual && <Wrench size={10} className="shrink-0" />}
@@ -1613,10 +1630,47 @@ const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map(), assig
                                             <span className="tabular-nums shrink-0">
                                                 {fmtKg(p.take)}{unit}
                                             </span>
-                                        </span>
-                                    ))}
+                                        </button>
+                                        );
+                                    })}
                                 </div>
                             )}
+
+                            {/* What the tapped chip actually is. Shown in the flow
+                                beneath the row rather than floating beside it: a
+                                positioned tooltip on a phone either runs off the
+                                screen or covers the thing it describes, and a title
+                                attribute is nothing at all on a touchscreen. */}
+                            {(() => {
+                                const pick = g.picks.find((p, i) => openPick === `${g.key}:${p.itemId}:${i}`);
+                                if (!pick) return null;
+                                const meta = itemMeta.get(num(pick.itemId));
+                                const rows = [
+                                    ['Item', itemNames.get(num(pick.itemId)) || `#${pick.itemId}`],
+                                    ['Type', meta?.type],
+                                    ['Material', meta?.material],
+                                    ['Colour', meta?.colour],
+                                    ['GSM', meta?.gsm],
+                                    ['Width', meta?.w ? `${meta.w}″` : null],
+                                    ['Height', meta?.h ? `${meta.h}″` : null],
+                                    ['Taken', `${fmtKg(pick.take)}${unit}`],
+                                    ['Source', pick.manual ? 'assigned by hand' : `${pick.source} stock`],
+                                    // A roll leaves the shelf whole however little of
+                                    // it this job needs, so the two figures differ and
+                                    // the difference is worth seeing.
+                                    ['Whole roll', pick.whole != null ? `${fmtKg(pick.whole)}${unit}` : null]
+                                ].filter(([, v]) => v !== null && v !== undefined && v !== '');
+                                return (
+                                    <dl className="mt-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 grid grid-cols-[5.5rem_1fr] gap-x-2 gap-y-0.5 text-[11px]">
+                                        {rows.map(([k, v]) => (
+                                            <React.Fragment key={k}>
+                                                <dt className="text-slate-400">{k}</dt>
+                                                <dd className="text-slate-700 font-medium break-all">{v}</dd>
+                                            </React.Fragment>
+                                        ))}
+                                    </dl>
+                                );
+                            })()}
                             <QtyBar output={g.outputQty} finished={g.finishedQty} />
                             <div className="flex flex-wrap gap-1.5 mt-2">
                                 {g.subOrders.map((so) => (
