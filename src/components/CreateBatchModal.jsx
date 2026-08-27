@@ -56,6 +56,13 @@ const countText = (rc) => {
 // columns elsewhere in the app (see FactoryView).
 const dateToEpoch = (d) => new Date(d).getTime() / 1000;
 const todayStr = () => new Date().toLocaleDateString('en-CA');
+// Date and time, filename-safe. Two runs on one day would otherwise overwrite each
+// other in the downloads folder, which is exactly when you want both.
+const stamp = () => {
+    const d = new Date();
+    const p2 = (n) => String(n).padStart(2, '0');
+    return `${d.toLocaleDateString('en-CA')}_${p2(d.getHours())}${p2(d.getMinutes())}`;
+};
 const epochToDate = (v) => {
     if (!v || typeof v === 'object') return null;
     const d = new Date(num(v) * 1000);
@@ -830,6 +837,15 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
             }
 
             setStep('done');
+            // The review screen is gone once the jobs exist, and with it the only
+            // way to get this sheet -- so it is handed over automatically. A browser
+            // that refuses a download this far after the click leaves the button on
+            // the done screen to fall back on.
+            try {
+                exportCsv(true);
+            } catch {
+                // A failed download must not make a successful creation look broken.
+            }
         } catch (err) {
             // Undo whatever landed. Anything left behind would otherwise be created
             // a second time the moment the operator pressed the button again.
@@ -872,9 +888,16 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
 
     // The whole review as a spreadsheet: one row per sub-order, carrying its group,
     // job and allocation details — including the flagged ones left out of every job.
-    const exportCsv = () => {
+    // `created` names the file for what it is. The same rows either way -- the plan
+    // is what was written -- but a sheet taken off a draft review and one taken off
+    // a run that actually happened are different documents to whoever finds them
+    // later in a downloads folder.
+    const exportCsv = (created = false) => {
         const range = endDate ? `${startDate}_to_${endDate}` : `from_${startDate}`;
-        downloadCsv(`production-batch-review_${range}.csv`, CSV_HEADERS, buildCsvRows(plans, codeNames, itemNames));
+        const name = created
+            ? `production-batch-created_${range}_${stamp()}.csv`
+            : `production-batch-review_${range}.csv`;
+        downloadCsv(name, CSV_HEADERS, buildCsvRows(plans, codeNames, itemNames));
     };
 
     // Roll-up across all plans for the header/footer summaries.
@@ -1051,6 +1074,10 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                             <p className="text-sm text-slate-500 mt-1">
                                 {batchTypes.join(' · ')} · {totalJobs} job(s)
                             </p>
+                            <p className="text-[11px] text-slate-400 mt-3">
+                                The job sheet has been downloaded. Use the button below if your
+                                browser blocked it.
+                            </p>
                         </div>
                     )}
                 </div>
@@ -1078,10 +1105,15 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                         </div>
                     )}
                     {step === 'done' && (
-                        <Button variant="primary" className="w-full bg-amber-600 hover:bg-amber-700"
-                            onClick={() => onCreated?.()}>
-                            Done
-                        </Button>
+                        <>
+                            <Button variant="ghost" icon={Download} onClick={() => exportCsv(true)}>
+                                <span className="hidden sm:inline">Download </span>CSV
+                            </Button>
+                            <Button variant="primary" className="flex-1 bg-amber-600 hover:bg-amber-700"
+                                onClick={() => onCreated?.()}>
+                                Done
+                            </Button>
+                        </>
                     )}
                     {step === 'setup' && <div className="text-[11px] text-slate-400">Nothing is written until you confirm.</div>}
                 </div>
