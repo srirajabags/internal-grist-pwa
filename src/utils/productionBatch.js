@@ -138,7 +138,7 @@ export const overageRate = (batchType) => num(PRODUCTION_OVERAGE[batchType]) || 
 // `rate` lets a job apply the overage it was actually planned with, stored on the
 // job when the batch was created. Without it a change to PRODUCTION_OVERAGE would
 // silently re-price every job ever run.
-const withOverage = (batchType, qty, rate) =>
+export const withOverage = (batchType, qty, rate) =>
     qty * (1 + (rate == null ? overageRate(batchType) : num(rate)));
 
 // Pieces per bundle, by output item type — how the godown counts that form

@@ -10,6 +10,7 @@
 // exporting one for it would be an empty promise.
 
 import { choiceText } from './gristValues';
+import { withOverage } from './productionBatch';
 
 // The city the shop is in, as a name. The order carries a City too, but it is a
 // reference to the Areas table -- a row id over the API, not something a printer
@@ -32,16 +33,33 @@ export const isPrintingListType = (type) => norm(type) === PRINTING_LIST_TYPE;
 // Two sheets to a bag: a front and a back.
 export const SHEETS_PER_BAG = 2;
 
-// How many bags the order is for.
-//
-// A sheets order is quoted in pieces, and a piece is a bag -- so the quantity IS
-// the bag count. An order quoted by weight names no number of bags, and inventing
-// one from geometry would put a derived figure in a column the printer reads as
-// fact, so it is left blank.
-export const bagCount = (so) => (norm(so?.qtyType) === 'PIECES' ? num(so.qty) : null);
+// The overage the job was actually planned with, falling back to the configured
+// rate for the type. Same rule the job page uses: a job stores its rate at
+// creation so a later change to the config cannot re-price work already run, and a
+// job created before that column existed reads as 0, which is not a rate anyone
+// chose.
+export const jobRate = (job) => (num(job?.overage) > 0 ? num(job.overage) : null);
 
-export const sheetCount = (so) => {
-    const bags = bagCount(so);
+// How many bags to make -- the order, lifted by the overage.
+//
+// A sheets order is quoted in pieces, and a piece is a bag. The printer works to
+// the number that will be cut, not the number the customer asked for, so the
+// allowance belongs in this column rather than being left for someone to add in
+// their head. Rounded up: a fraction of a bag cannot be printed, and rounding down
+// would quietly under-serve the order.
+//
+// An order quoted by weight names no number of bags, and inventing one from
+// geometry would put a derived figure in a column the printer reads as fact, so it
+// is left blank.
+export const bagCount = (so, rate) => {
+    if (norm(so?.qtyType) !== 'PIECES') return null;
+    const lifted = withOverage(PRINTING_LIST_TYPE, num(so.qty), rate);
+    // The epsilon keeps floating-point noise from turning 550 into 551.
+    return Math.ceil(lifted - 1e-9);
+};
+
+export const sheetCount = (so, rate) => {
+    const bags = bagCount(so, rate);
     return bags == null ? null : bags * SHEETS_PER_BAG;
 };
 
@@ -54,6 +72,9 @@ const sizeText = (w, h) => {
 // The columns, in the order the printing floor reads them. Each is a pair of a
 // heading and how to read it off a sub-order, so the two can never fall out of
 // step the way parallel arrays do.
+// Each reader takes the sub-order and the overage rate of the job that will cut
+// it -- two jobs in one batch can carry different rates, so the rate travels with
+// the row rather than being applied once to the whole sheet.
 export const PRINTING_LIST_COLUMNS = [
     ['Order ID', (so) => so.orderId ?? ''],
     ['Sub-order ID', (so) => so.id],
@@ -66,9 +87,9 @@ export const PRINTING_LIST_COLUMNS = [
     ['Sidepatty Width', (so) => so.sidepattyWidth ?? ''],
     ['Sidepatty Colour', (so) => choiceText(so.sidepattyColour)],
     ['Sidepatty GSM', (so) => so.sidepattyGsm ?? ''],
-    ['Bag Count', (so) => bagCount(so) ?? ''],
+    ['Bag Count (incl. overage)', (so, rate) => bagCount(so, rate) ?? ''],
     ['Sheet Size', (so) => so.sheetSize ?? ''],
-    ['No of Sheets', (so) => sheetCount(so) ?? '']
+    ['No of Sheets (incl. overage)', (so, rate) => sheetCount(so, rate) ?? '']
 ];
 
 export const PRINTING_LIST_HEADERS = PRINTING_LIST_COLUMNS.map(([head]) => head);
@@ -79,17 +100,20 @@ export const PRINTING_LIST_HEADERS = PRINTING_LIST_COLUMNS.map(([head]) => head)
 export const printingListRows = (batch) => {
     const seen = new Map();
     for (const job of batch?.jobs || []) {
+        const rate = jobRate(job);
         for (const so of job.subOrders || []) {
-            if (!seen.has(so.id)) seen.set(so.id, so);
+            // Keyed by sub-order, carrying the rate of the job that will cut it.
+            if (!seen.has(so.id)) seen.set(so.id, { so, rate });
         }
     }
     return [...seen.values()]
+        .map(({ so, rate }) => ({ ...so, _rate: rate }))
         // The order the floor works in: by customer, then by the bag being made,
         // so one shop's work sits together and one setup covers adjacent rows.
         .sort((a, b) => String(a.shop ?? '').localeCompare(String(b.shop ?? ''))
             || String(a.sheetSize ?? '').localeCompare(String(b.sheetSize ?? ''))
             || num(a.id) - num(b.id))
-        .map((so) => PRINTING_LIST_COLUMNS.map(([, read]) => read(so)));
+        .map((so) => PRINTING_LIST_COLUMNS.map(([, read]) => read(so, so._rate)));
 };
 
 export const printingListName = (batch) => {
