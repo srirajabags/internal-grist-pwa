@@ -437,6 +437,95 @@ const groupRows = (rows) => {
     }));
 };
 
+// The order a list of jobs is worked in: whatever is on the machine right now
+// first, then everything still to do, then what is finished. An operator opening a
+// batch is looking for the next thing to run, and on a long batch that was buried
+// under a screenful of jobs already done.
+const jobRank = (job) => (job.completed ? 2 : job.started ? 0 : 1);
+const byWorkOrder = (a, b) => jobRank(a) - jobRank(b) || num(a.id) - num(b.id);
+
+// How far through a batch the floor is.
+const jobProgress = (jobs = []) => {
+    const done = jobs.filter((j) => j.completed).length;
+    const running = jobs.filter((j) => j.started && !j.completed).length;
+    return { total: jobs.length, done, running, todo: jobs.length - done - running };
+};
+
+const BatchProgress = ({ batch }) => {
+    const jobs = batch?.jobs || [];
+    const { total, done, running, todo } = jobProgress(jobs);
+    if (total === 0) return null;
+    const pct = Math.round((done / total) * 100);
+    // Grist stamps these off the first job starting and the last one finishing, so
+    // they are the batch's real span on the floor rather than anything typed.
+    const startedAt = formatDateTime(batch.startedAt);
+    const endedAt = formatDateTime(batch.completedAt);
+    // Only once it has ended: a live figure would have to tick, and a duration
+    // frozen at whenever the component last rendered is worse than none.
+    const ran = batch.completedAt ? elapsedText(batch.startedAt, batch.completedAt) : '';
+    return (
+        <Card className="p-3 mb-3">
+            <div className="flex items-baseline justify-between gap-2 mb-2">
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Jobs</span>
+                <span className="text-sm">
+                    <span className="font-bold text-slate-800 tabular-nums">{done}</span>
+                    <span className="text-slate-400"> / {total} done</span>
+                </span>
+            </div>
+            <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                <div
+                    className={`h-full rounded-full transition-all ${done === total ? 'bg-green-500' : 'bg-blue-500'}`}
+                    style={{ width: `${pct}%` }}
+                />
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[11px]">
+                {running > 0 && (
+                    <span className="inline-flex items-center gap-1 font-semibold text-blue-700">
+                        <PlayCircle size={12} /> {running} running
+                    </span>
+                )}
+                {todo > 0 && <span className="text-slate-500">{todo} to do</span>}
+                {done > 0 && (
+                    <span className="inline-flex items-center gap-1 text-green-700">
+                        <CheckCircle2 size={12} /> {done} completed
+                    </span>
+                )}
+                {done > 0 && done < total && (
+                    <span className="text-slate-400 ml-auto">Completed jobs move to the bottom</span>
+                )}
+            </div>
+
+            {/* When the batch actually ran. Absent until the first job starts --
+                a batch that has not begun has no start time to show, and inventing
+                one from the batch date would be a different fact. */}
+            {(startedAt || endedAt) && (
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 pt-2 border-t border-slate-100 text-[11px] text-slate-500">
+                    {startedAt && (
+                        <span className="inline-flex items-center gap-1">
+                            <PlayCircle size={12} className="text-slate-400" />
+                            Started <span className="font-medium text-slate-700">{startedAt}</span>
+                        </span>
+                    )}
+                    {endedAt ? (
+                        <span className="inline-flex items-center gap-1">
+                            <CheckCircle2 size={12} className="text-green-600" />
+                            Ended <span className="font-medium text-slate-700">{endedAt}</span>
+                        </span>
+                    ) : startedAt ? (
+                        <span className="text-slate-400">still running</span>
+                    ) : null}
+                    {ran && (
+                        <span className="inline-flex items-center gap-1 ml-auto">
+                            <Clock size={12} className="text-slate-400" />
+                            {ran}
+                        </span>
+                    )}
+                </div>
+            )}
+        </Card>
+    );
+};
+
 const StatusBadge = ({ started, completed }) => {
     if (completed) {
         return (
@@ -671,7 +760,11 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
         }
     };
 
-    const markStarted = (job, batch) => {
+    // `open` follows the operator to the job they just started. Starting a job
+    // moves it to the top of the list, and a list that rearranges itself under the
+    // thumb reads as the wrong thing having been tapped -- so the tap lands on the
+    // job page, which is where the work is done anyway.
+    const markStarted = (job, batch, { open = false } = {}) => {
         const block = startBlocker({ batch, job, runningJob });
         if (block) {
             setError(
@@ -691,6 +784,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
             { Production_Started: true },
             { started: true, startedAt: now }
         );
+        if (open) setSelectedJobId(job.id);
     };
 
     // Compact, deterministic Item_ID label for a freshly produced output item,
@@ -1374,11 +1468,13 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                         onReturn={() => openReturn(selectedBatch)}
                                     />
 
+                                    <BatchProgress batch={selectedBatch} />
+
                                     {selectedBatch.jobs.length === 0 ? (
                                         <Empty icon={Package} title="No jobs in this batch" />
                                     ) : (
                                         <div className="space-y-2.5">
-                                            {selectedBatch.jobs.map((job) => {
+                                            {[...selectedBatch.jobs].sort(byWorkOrder).map((job) => {
                                             const isUpdating = updatingJobId === job.id;
                                             const plan = jobWorkPlan(job);
                                             const isRunning = job.started && !job.completed;
@@ -1436,7 +1532,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                                     <div className="flex gap-2 mt-3 pt-3 border-t border-slate-100">
                                                         {!job.started && (
                                                             <Button variant="primary" className="flex-1 text-sm bg-blue-600 hover:bg-blue-700"
-                                                                onClick={() => markStarted(job, selectedBatch)}
+                                                                onClick={() => markStarted(job, selectedBatch, { open: true })}
                                                                 disabled={isUpdating || !!block}
                                                                 icon={isUpdating ? Loader2 : block ? Lock : PlayCircle}>
                                                                 {!block ? 'Start'
