@@ -31,7 +31,7 @@ import { downloadCsv } from '../utils/csvFile';
 import {
     isPrintingListType, PRINTING_LIST_HEADERS, printingListRows, printingListName
 } from '../utils/printingList';
-import { godownOf, godownForJob, splitStock, PRINTING_AREA, BAGS_GODOWN } from '../utils/godown';
+import { godownOf, godownForJob, splitStock, splitJobs, isLatentJob, PRINTING_AREA, BAGS_GODOWN } from '../utils/godown';
 
 // Grist document holding the factory production tables
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
@@ -514,10 +514,15 @@ const jobRank = (job) => (job.completed ? 2 : job.started ? 0 : 1);
 const byWorkOrder = (a, b) => jobRank(a) - jobRank(b) || num(a.id) - num(b.id);
 
 // How far through a batch the floor is.
+//
+// Latent jobs are left out of every figure here. A batch of four jobs where three
+// are answered from stock is one job's work, and calling it "0 / 4 done" tells the
+// floor it is three quarters behind on work that does not exist.
 const jobProgress = (jobs = []) => {
-    const done = jobs.filter((j) => j.completed).length;
-    const running = jobs.filter((j) => j.started && !j.completed).length;
-    return { total: jobs.length, done, running, todo: jobs.length - done - running };
+    const { real, latent } = splitJobs(jobs);
+    const done = real.filter((j) => j.completed).length;
+    const running = real.filter((j) => j.started && !j.completed).length;
+    return { total: real.length, done, running, todo: real.length - done - running, latent: latent.length };
 };
 
 // Movements written but not signed for. Small and quiet: it is a nudge to the
@@ -686,8 +691,9 @@ const BatchProgress = ({ batch }) => {
     // Only once it has ended: a live figure would have to tick, and a duration
     // frozen at whenever the component last rendered is worse than none.
     const ran = batch.completedAt ? elapsedText(batch.startedAt, batch.completedAt) : '';
-    // Only jobs that have actually moved something have a ledger to show.
-    const moved = jobs.filter((j) => j.started || j.completed);
+    // Only jobs that have actually moved something have a ledger to show, and only
+    // jobs that cut a roll can.
+    const moved = splitJobs(jobs).real.filter((j) => j.started || j.completed);
     const t = batchLedger(moved);
 
     return (
@@ -799,6 +805,58 @@ const BatchProgress = ({ batch }) => {
     );
 };
 
+
+// The jobs a batch created for the record rather than for the floor: their whole
+// requirement was already on the shelf, so there is nothing to start and nothing
+// to cut. Folded away by default -- an operator looking for the next machine job
+// should not have to read past them -- but never hidden outright, because they
+// are what answers those sub-orders and somebody will eventually ask where an
+// order went.
+const LatentJobs = ({ jobs, onOpen }) => {
+    const [open, setOpen] = useState(false);
+    const kg = jobs.reduce((t, j) => t + num(j.finishedTakenKg), 0);
+    return (
+        <div className="mt-4 pt-3 border-t border-slate-200">
+            <button
+                type="button"
+                onClick={() => setOpen((o) => !o)}
+                className="w-full flex items-center gap-1.5 text-left"
+                aria-expanded={open}
+            >
+                <ChevronRight size={14} className={`shrink-0 text-slate-300 transition-transform ${open ? 'rotate-90' : ''}`} />
+                <span className="text-xs font-semibold text-slate-500">
+                    {jobs.length} order{jobs.length === 1 ? '' : 's'} answered from stock
+                </span>
+                {kg > 0 && <span className="text-[11px] text-slate-400">· {fmtKg(kg)} kg off the shelf</span>}
+            </button>
+            {open && (
+                <div className="mt-2 space-y-2">
+                    <p className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
+                        Nothing is cut for these. The bags already exist, so the job is a record of the
+                        trip from the bags godown — collecting that stock above is all they need.
+                    </p>
+                    {jobs.map((job) => (
+                        <button
+                            key={job.id}
+                            onClick={() => onOpen(job.id)}
+                            className="w-full text-left rounded-lg border border-slate-200 bg-white px-3 py-2 hover:border-amber-300 active:bg-amber-50 transition-colors"
+                        >
+                            <span className="flex items-center gap-2 min-w-0">
+                                <Boxes size={14} className="shrink-0 text-slate-400" />
+                                <span className="text-[13px] font-semibold text-slate-700 truncate">{jobLabel(job)}</span>
+                                <ChevronRight size={14} className="ml-auto shrink-0 text-slate-300" />
+                            </span>
+                            <span className="block text-[11px] text-slate-500 mt-0.5 pl-[1.375rem]">
+                                {(job.subOrders || []).length} sub-order{(job.subOrders || []).length === 1 ? '' : 's'}
+                                {num(job.finishedTakenKg) > 0 && ` · ${fmtKg(job.finishedTakenKg)} kg drawn`}
+                            </span>
+                        </button>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+};
 
 const StatusBadge = ({ started, completed }) => {
     if (completed) {
@@ -1494,6 +1552,26 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                     records: writableRecords(BATCHES_TABLE, [{ id: batch.id, fields: { Finished_Stock_Collected: true } }])
                 })
             );
+
+            // A job answered entirely from stock is finished the moment that stock
+            // is collected: the trip IS the work. Marking it so is not bookkeeping
+            // tidiness -- the batch's own Production_Completed_At formula reads
+            //   set($Jobs.Production_Completed) == set([True])
+            // so one job left open holds the whole batch open forever, and the
+            // printing queue only picks up sub-orders whose production job is
+            // completed. Leaving these false stalls both.
+            const latent = splitJobs(batch.jobs).latent.filter((j) => !j.completed);
+            if (latent.length > 0) {
+                await journal.run(
+                    `Complete ${latent.length} job(s) answered from stock — ${latent.map(jobLabel).join('; ')}`,
+                    () => writeRecords(JOBS_TABLE, 'PATCH', {
+                        // Production_Completed_At is a trigger on this column; Grist
+                        // stamps it, and sending it would fight the document.
+                        records: writableRecords(JOBS_TABLE,
+                            latent.map((j) => ({ id: j.id, fields: { Production_Completed: true } })))
+                    })
+                );
+            }
             await fetchData(true);
         } catch (err) {
             setWriteFailure({
@@ -1527,9 +1605,12 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     });
 
     const openReturn = (batch) => {
-        const allJobsCompleted = batch.jobs.length > 0 && batch.jobs.every((j) => j.completed);
-        if (!allJobsCompleted) {
-            setError('All jobs in the batch must be completed before returning the remaining inventory.');
+        // Only the jobs that cut a roll. A job answered from ready-made stock is
+        // never started or completed, so waiting on it would hold the roll on the
+        // floor for a run that was never going to happen.
+        const { real } = splitJobs(batch.jobs);
+        if (!real.every((j) => j.completed)) {
+            setError('Every job that cuts a roll must be completed before returning the remaining inventory.');
             return;
         }
         setReturningBatch(batch);
@@ -1610,6 +1691,8 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     const selectedJob = selectedBatch?.jobs.find((j) => j.id === selectedJobId);
     // Only one job in a batch can be on the machine at a time.
     const runningJob = selectedBatch?.jobs.find((j) => j.started && !j.completed) || null;
+    // The work, and the paperwork. Only the first belongs in the operator's list.
+    const { real: realJobs, latent: latentJobs } = splitJobs(selectedBatch?.jobs || []);
     const level = selectedJob ? 'job' : selectedBatch ? 'jobs' : 'batches';
 
     const handleBack = () => {
@@ -1625,7 +1708,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
 
     const headerSubtitle =
         level === 'job' ? batchLabel(selectedBatch)
-            : level === 'jobs' ? `${selectedBatch.jobs.length} job${selectedBatch.jobs.length !== 1 ? 's' : ''}`
+            : level === 'jobs' ? `${splitJobs(selectedBatch.jobs).real.length} job${splitJobs(selectedBatch.jobs).real.length !== 1 ? 's' : ''}`
                 // The icon in the header carries the state, but only once you know
                 // to look at it -- so the subtitle says it outright.
                 : scope === 'closed' ? 'Closed batches' : 'Open batches';
@@ -1807,7 +1890,11 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                             {filteredBatches.map((batch) => {
                                             // A batch is what its jobs add up to, worked
                                             // out the same way each job page works it out.
-                                            const batchTotals = batch.jobs.reduce((t, j) => {
+                                            // Only the jobs that cut a roll: the rest is
+                                            // stock being moved, and adding it here would
+                                            // promise the floor output it is not making.
+                                            const { real: batchReal, latent: batchLatent } = splitJobs(batch.jobs);
+                                            const batchTotals = batchReal.reduce((t, j) => {
                                                 const { totals } = jobWorkPlan(j);
                                                 return {
                                                     count: t.count + totals.count,
@@ -1849,7 +1936,14 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                                         )}
                                                     </div>
                                                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1 text-xs text-slate-500">
-                                                        <span className="flex items-center gap-1"><Package size={13} /> {batch.jobs.length} job{batch.jobs.length !== 1 ? 's' : ''}</span>
+                                                        <span className="flex items-center gap-1">
+                                                            <Package size={13} /> {batchReal.length} job{batchReal.length !== 1 ? 's' : ''}
+                                                        </span>
+                                                        {batchLatent.length > 0 && (
+                                                            <span className="flex items-center gap-1 text-slate-400">
+                                                                <Boxes size={13} /> {batchLatent.length} from stock
+                                                            </span>
+                                                        )}
                                                         {batchTotals.fromStock > 0 && <StockPill kg={batchTotals.fromStock} />}
                                                     </div>
                                                     {batch.startedAt && (
@@ -1899,9 +1993,15 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
 
                                     {selectedBatch.jobs.length === 0 ? (
                                         <Empty icon={Package} title="No jobs in this batch" />
+                                    ) : realJobs.length === 0 ? (
+                                        <Empty
+                                            icon={Boxes}
+                                            title="Nothing to cut in this batch"
+                                            subtitle="Every order here is answered from stock already on the shelf. Collect the finished stock above and the batch is done."
+                                        />
                                     ) : (
                                         <div className="space-y-2.5">
-                                            {[...selectedBatch.jobs].sort(byWorkOrder).map((job) => {
+                                            {[...realJobs].sort(byWorkOrder).map((job) => {
                                             const isUpdating = updatingJobId === job.id;
                                             const plan = jobWorkPlan(job);
                                             const isRunning = job.started && !job.completed;
@@ -1993,6 +2093,10 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                             );
                                         })}
                                         </div>
+                                    )}
+
+                                    {latentJobs.length > 0 && (
+                                        <LatentJobs jobs={latentJobs} onOpen={(id) => setSelectedJobId(id)} />
                                     )}
 
                                     {/* Undoing a whole batch is a rare, destructive
@@ -2158,7 +2262,11 @@ const CollectedItems = ({ batch }) => {
 const BatchInventory = ({ batch, updating, onCollect, onCollectFinished, onReturn }) => {
     const collectedAt = formatDateTime(batch.invCollectedAt);
     const returnedAt = formatDateTime(batch.invReturnedAt);
-    const allJobsCompleted = batch.jobs.length > 0 && batch.jobs.every((job) => job.completed);
+    // The roll goes back when the cutting is done. Jobs met from ready-made stock
+    // have no roll and never complete, so they cannot be part of this test --
+    // and collecting that stock is a separate step above, not a precondition here.
+    const realJobs = splitJobs(batch.jobs).real;
+    const allJobsCompleted = realJobs.every((job) => job.completed);
     const finishedItems = batch.jobs.flatMap((job) => splitStock(job.invItemOptions).finished);
     const finishedAt = formatDateTime(batch.finCollectedAt);
     // The two trips are to different godowns and are made by different people, in
@@ -2757,6 +2865,9 @@ const jobWorkPlan = (job) => {
 };
 
 const JobDetail = ({ job, updating, onStart, onComplete, onViewForm, startBlock }) => {
+    // A job whose whole requirement was already on the shelf: a record of a trip
+    // from the bags godown, not a run on a machine.
+    const latent = isLatentJob(job);
     const startedAt = formatDateTime(job.startedAt);
     const completedAt = formatDateTime(job.completedAt);
     const {
@@ -2819,9 +2930,22 @@ const JobDetail = ({ job, updating, onStart, onComplete, onViewForm, startBlock 
 
                 <JobStock job={job} />
 
+                {/* Nothing here is cut, so there is nothing to start. Offering the
+                    button anyway invites an operator to open a run on a machine
+                    that will never be threaded, and a job started is a job the
+                    batch then waits on. */}
+                {latent && !job.started && (
+                    <div className="mt-3 pt-3 border-t border-slate-100">
+                        <p className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2 break-words">
+                            Answered from stock already on the shelf — there is no roll to cut and nothing
+                            to start. Collecting the batch&apos;s finished stock is all this needs, and the
+                            batch does not wait on it.
+                        </p>
+                    </div>
+                )}
                 {/* Starting is the only action here; finishing belongs with the
                     list the operator ticks off. */}
-                {!job.started && (
+                {!latent && !job.started && (
                     <div className="mt-3 pt-3 border-t border-slate-100">
                         <Button variant="primary" className="w-full py-3 bg-blue-600 hover:bg-blue-700"
                             onClick={onStart} disabled={updating || !!startBlock}

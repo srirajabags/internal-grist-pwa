@@ -34,3 +34,35 @@ export const godownForJob = (job) => {
     if (job?.itemType) return godownOf({ type: job.itemType });
     return /^ROLLS TO /.test(norm(job?.type)) ? ROLLS_GODOWN : BAGS_GODOWN;
 };
+
+// A job with no roll to cut.
+//
+// Some sub-orders are answered entirely out of stock that already exists: the
+// bags are on the shelf, and the whole "job" is a trip from the bags godown to
+// the printing area. A record of it is still worth keeping -- the sub-orders have
+// to be answered by something, and that trip is what answered them -- but there
+// is no production in it. Nothing to start, nothing to complete, nothing for an
+// operator to do at a machine.
+//
+// So it is latent: real enough to exist, not real enough to be counted as work.
+// The stock it draws is still collected with the rest of the batch's finished
+// stock, and that collection is what closes it out.
+//
+// Judged from the stock actually assigned rather than the job type, because a
+// ROLLS TO DCUT job can be met entirely from ready-made DCUT bags -- the type
+// says what it would have cut, not what it is going to. A job whose items cannot
+// be read is treated as real: the failure mode of hiding work is worse than the
+// failure mode of showing a job with nothing in it.
+const knownKind = (item) => Boolean(item?.type || item?.location);
+
+export const isLatentJob = (job) => {
+    const items = job?.invItemOptions || [];
+    if (items.length === 0 || !items.every(knownKind)) return false;
+    return !items.some(isRawStock);
+};
+
+// A batch's jobs divided into the work and the paperwork.
+export const splitJobs = (jobs = []) => ({
+    real: (jobs || []).filter((j) => !isLatentJob(j)),
+    latent: (jobs || []).filter(isLatentJob)
+});
