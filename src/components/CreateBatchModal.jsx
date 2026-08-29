@@ -19,6 +19,7 @@ import {
     BATCH_TYPES, HARD_START_DATE, OUTPUT_TYPE, PRIORITY_LABEL, buildPlan,
     effectiveQty, needsPieceConversion, cannotConvertQty, cannotSizePieces, cannotSizePatty, BUNDLE_SIZE,
     typeNeedsSubOrder, missingInfoFields, outputCount, overageRate, outputSizeLabel, OUTPUT_COUNT_UNIT,
+    missingOutputCodes,
     ROLLS_PER_JOB_NOTICE,
     bagPieceCount
 } from '../utils/productionBatch';
@@ -125,7 +126,14 @@ const runPlans = ({ batchTypes, eligibleBy, itemCodes, inventory, overrides }) =
                 }
             }
         }
-        builtPlans.push({ batchType: bt, plan: built });
+        builtPlans.push({
+            batchType: bt,
+            plan: built,
+            // The articles this plan will produce that the catalogue cannot name
+            // yet. Worked out here so the review, the CSV and the create guard
+            // are all looking at one answer.
+            missingCodes: missingOutputCodes(bt, built.groups, itemCodes)
+        });
     }
     return builtPlans;
 };
@@ -914,6 +922,10 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
 
     // Roll-up across all plans for the header/footer summaries.
     const totalJobs = plans.reduce((s, p) => s + p.plan.jobCount, 0);
+    // Creating jobs whose output cannot be booked only moves the failure to the
+    // worst possible moment -- an operator at a finished machine, unable to record
+    // what they made. Better to stop here, where adding a code costs a minute.
+    const missingCodes = plans.flatMap((p) => (p.missingCodes || []).map((m) => ({ ...m, batchType: p.batchType })));
     const batchesToCreate = plans.filter((p) => p.plan.jobCount > 0);
     const totalPostponed = plans.reduce((s, p) => s + p.plan.postponedCount, 0);
     // kg only: a piece-type batch counts in bundles and cannot be added to these.
@@ -1067,9 +1079,10 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                     {/* STEP 2 — REVIEW, ALLOCATION & CONFIRM (per chosen type) */}
                     {(step === 'review' || step === 'writing') && (
                         <div className="space-y-4">
-                            {plans.map(({ batchType, plan }) => (
+                            {plans.map(({ batchType, plan, missingCodes: planMissing }) => (
                                 <PlanSection
                                     key={batchType} batchType={batchType} plan={plan}
+                                    missingCodes={planMissing || []}
                                     onViewForm={viewOrderForm} itemNames={itemNames} itemMeta={itemMeta}
                                     assigned={overrides[batchType] || {}}
                                     onAssign={step === 'review' ? (g) => setAssigning({ batchType, group: g }) : null}
@@ -1104,10 +1117,20 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                             </Button>
                             <Button
                                 variant="primary" className="bg-green-600 hover:bg-green-700 shrink-0 whitespace-nowrap"
-                                icon={ClipboardCheck} disabled={totalJobs === 0 || stranded}
+                                icon={missingCodes.length > 0 ? AlertTriangle : ClipboardCheck}
+                                disabled={totalJobs === 0 || stranded || missingCodes.length > 0}
                                 onClick={() => setConfirmOpen(true)}
                             >
-                                <span className="hidden sm:inline">Confirm &amp; </span>Create ({totalJobs} job{totalJobs !== 1 ? 's' : ''})
+                                {missingCodes.length > 0 ? (
+                                    <>
+                                        <span className="hidden sm:inline">{missingCodes.length} item code{missingCodes.length === 1 ? '' : 's'} missing</span>
+                                        <span className="sm:hidden">{missingCodes.length} code{missingCodes.length === 1 ? '' : 's'} missing</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <span className="hidden sm:inline">Confirm &amp; </span>Create ({totalJobs} job{totalJobs !== 1 ? 's' : ''})
+                                    </>
+                                )}
                             </Button>
                         </>
                     )}
@@ -1408,6 +1431,48 @@ const UnmatchedPanel = ({ subOrders, batchType, unit, onViewForm }) => (
 // missing-info panel because the remedy is different and the person is different:
 // nothing about the factory can fix it, and nobody should be sent to the godown
 // looking for stock that was never the problem.
+// The articles this plan would make that the catalogue cannot name. Listed as the
+// codes to create, in the catalogue's own wording, so the fix is a copy and paste
+// rather than a puzzle: every one of these is a row somebody has to add to
+// Inventory_Item_Codes before the floor can book what it cuts.
+const MissingCodesPanel = ({ missing, onViewForm }) => {
+    if (!missing || missing.length === 0) return null;
+    return (
+        <div className="rounded-xl border border-red-200 bg-red-50/70 p-3">
+            <p className="text-sm font-bold text-red-900">
+                {missing.length} item code{missing.length === 1 ? '' : 's'} missing
+            </p>
+            <p className="text-[11px] text-red-800 mt-0.5 mb-2">
+                These jobs would produce articles the catalogue has no code for, so the floor could not
+                book what it made. Add them to Inventory_Item_Codes and re-run the plan. Jobs cannot be
+                created until then.
+            </p>
+            <div className="space-y-1.5">
+                {missing.map((m) => (
+                    <div key={m.key} className="bg-white rounded-lg border border-red-200 px-2.5 py-1.5">
+                        <p className="font-mono text-[11px] font-semibold text-slate-800 break-all">{m.label}</p>
+                        <p className="text-[10px] text-slate-500 mt-0.5">
+                            needed by {m.count} sub-order{m.count === 1 ? '' : 's'}
+                            {onViewForm && m.subOrders?.length > 0 && (
+                                <>
+                                    {' · '}
+                                    <button
+                                        type="button"
+                                        onClick={() => onViewForm(m.subOrders[0])}
+                                        className="font-semibold text-teal-700 hover:text-teal-800"
+                                    >
+                                        see one
+                                    </button>
+                                </>
+                            )}
+                        </p>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+};
+
 const PlaceholderColourPanel = ({ subOrders, batchType, unit, onViewForm }) => (
     <FlaggedPanel
         subOrders={subOrders} batchType={batchType} unit={unit} onViewForm={onViewForm}
@@ -1530,7 +1595,7 @@ const SOURCE_TONE = {
 
 // One chosen type's plan: the groups, what each needs, what stock covers it, and
 // the sub-orders behind it — everything the operator checks before creating.
-const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map(), itemMeta = new Map(), assigned = {}, onAssign }) => {
+const PlanSection = ({ batchType, plan, missingCodes = [], onViewForm, itemNames = new Map(), itemMeta = new Map(), assigned = {}, onAssign }) => {
     const [open, setOpen] = useState(false);
     // Which stock chip has been tapped open, or null. One at a time: two panels of
     // specification stacked under a card is harder to read than one.
@@ -1556,6 +1621,7 @@ const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map(), itemM
                         tone="amber"
                     />
                 )}
+                {missingCodes.length > 0 && <Stat label="Item codes missing" value={missingCodes.length} tone="red" />}
                 {plan.placeholderColourCount > 0 && <Stat label="Colour not chosen" value={plan.placeholderColourCount} tone="red" />}
                 {plan.unmatchedCount > 0 && <Stat label="No roll width" value={plan.unmatchedCount} tone="red" />}
                 {plan.missingGsmCount > 0 && <Stat label="Missing info" value={plan.missingGsmCount} tone="red" />}
@@ -1725,6 +1791,7 @@ const PlanSection = ({ batchType, plan, onViewForm, itemNames = new Map(), itemM
                         </div>
                         );
                     })}
+                    <MissingCodesPanel missing={missingCodes} onViewForm={onViewForm} />
                     <PlaceholderColourPanel subOrders={plan.placeholderColour} batchType={batchType} unit={unit} onViewForm={onViewForm} />
                     <UnmatchedPanel subOrders={plan.unmatched} batchType={batchType} unit={unit} onViewForm={onViewForm} />
                     <MissingGsmPanel subOrders={plan.missingGsm} batchType={batchType} unit={unit} onViewForm={onViewForm} />

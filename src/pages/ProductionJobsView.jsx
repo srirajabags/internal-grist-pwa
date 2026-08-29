@@ -16,7 +16,7 @@ import { ItemVisual, Dim } from '../components/itemVisuals';
 import { itemForm, FORM_LABEL, splitJobType } from '../utils/itemForms';
 import {
     outputTypeFor, ROLL_WIDTH_TYPES, effectiveQty, outputSizeLabel,
-    groupOutputCount, outputCount, pattyDims, bottomSheetDims,
+    groupOutputCount, outputCount, pattyDims, bottomSheetDims, outputDims,
     OUTPUT_COUNT_UNIT, outputColour
 } from '../utils/productionBatch';
 import { choiceText } from '../utils/gristValues';
@@ -2687,32 +2687,36 @@ const countDivisor = (outputType, unit) => {
     return PIECES_PER_BUNDLE[itemForm(outputType)] || 1;
 };
 
-// Which of the candidate item codes an output belongs to.
+// Which of the candidate item codes an output belongs to: the one whose
+// specification IS the article's, or none.
 //
-// `dims` are the finished article's own measurements, where the line knows them.
-// A code matching those is unambiguously the right one -- a 16x20 sheet is not a
-// 16x24 sheet -- so size leads. Bags and patty share one code per specification
-// and leave the size fields blank, which means "any"; those fall through to the
-// job-level ladder that has always been used.
+// This used to try a ladder of looser matches -- same GSM and roll width, then
+// merely the same GSM, and failing everything, the first row it happened to have.
+// The ladder came from a time when bags and patty had one code per specification
+// with the size left blank, so matching on size would have found nothing. Once
+// every code carried its own size those rungs stopped meaning "any size" and
+// started meaning "some other size", and a lookup that cannot fail will always
+// return something: 12x16 handle bags were filed as 12x18, a 4.5" bottom patty as
+// a 6.5" one. Silently, because the caller only checks for null.
+//
+// There is no case where guessing beats refusing. A missing code is a five-second
+// fix in the catalogue; a mis-filed transaction moves two stock balances the wrong
+// way and hides the shortfall, because the plan and the output are joined by size.
+//
+// So: exact, or null. Null makes the caller raise the error it already has, which
+// names the code to create.
 const pickOutputCode = (rows, job, dims = null) => {
     const same = (a, b) => String(a ?? '').trim().toUpperCase() === String(b ?? '').trim().toUpperCase();
     const dim = (a, b) => num(a) > 0 && num(b) > 0 && Math.abs(num(a) - num(b)) < 1e-6;
-    const blank = (v) => !String(v ?? '').trim();
     const f = (r) => r.fields ?? r;
-    const ladder = [
-        ...(dims ? [
-            (r) => same(f(r).GSM, job.gsm) && dim(f(r).Width_Inches_, dims.w) && dim(f(r).Height_Inches_, dims.h),
-            (r) => dim(f(r).Width_Inches_, dims.w) && dim(f(r).Height_Inches_, dims.h),
-            (r) => same(f(r).GSM, job.gsm) && dim(f(r).Width_Inches_, dims.w) && blank(f(r).Height_Inches_)
-        ] : []),
-        (r) => same(f(r).GSM, job.gsm) && same(f(r).Width_Inches_, job.width),
-        (r) => same(f(r).GSM, job.gsm)
-    ];
-    for (const test of ladder) {
-        const hit = (rows || []).find(test);
-        if (hit) return f(hit).id ?? null;
-    }
-    return f((rows || [])[0] ?? {}).id ?? null;
+    // Without the article's own measurements there is nothing to match on, and
+    // the catalogue has no unsized codes to fall back to -- every output type in
+    // the document carries both. Not knowing the size is itself a reason to stop.
+    if (!dims || !(num(dims.w) > 0) || !(num(dims.h) > 0)) return null;
+    const hit = (rows || []).find((r) => same(f(r).GSM, dims.gsm ?? job.gsm)
+        && dim(f(r).Width_Inches_, dims.w)
+        && dim(f(r).Height_Inches_, dims.h));
+    return hit ? (f(hit).id ?? null) : null;
 };
 
 // Why a job cannot be started yet, or null when it can. The stock has to be off
@@ -2747,26 +2751,16 @@ const jobWorkPlan = (job) => {
     // The dimensions of the thing this line turns out -- not of the roll it comes
     // from. Used to find the right item code (a 16x20 sheet and a 16x24 sheet are
     // different codes) and to name the stock item where one code covers every size.
-    const dimsFor = (so) => {
-        if (sizeDim === 'sheet') {
-            const m = String(so.sheetSize ?? '').toLowerCase().match(/(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)/);
-            return m ? { w: Number(m[1]), h: Number(m[2]) } : null;
-        }
-        if (sizeDim === 'patty') {
-            if (jobType === 'ROLLS TO BOTTOMPATTY SHEETS') {
-                const d = bottomSheetDims(planShape(so));
-                return d ? { w: num(d.sheetW), h: num(d.sheetH) } : null;
-            }
-            // A side patty's code is keyed on the strip width; the length that
-            // wraps the bag varies by line and lives in the stock item's name.
-            const d = pattyDims(planShape(so));
-            return d ? { w: num(d.width), h: null } : null;
-        }
-        // A handle is the same strip whatever bag it goes on, so its lines carry
-        // no size of their own.
-        if (sizeDim === 'suborder') return null;
-        return { w: num(so.bagW), h: num(so.bagH) };
-    };
+    //
+    // Shared with batch creation, which checks the same codes exist before the
+    // jobs are made. A side patty used to report only its width here, on the
+    // belief that the length "lives in the stock item's name" -- but the
+    // catalogue keys patty codes on both (a 6x40 strip and a 6x54 are different
+    // articles), so half a size was never enough to name one, and every patty
+    // job fell through to whichever code happened to share its GSM. Likewise a
+    // handle: its lines carry no size of their own, but the article is a fixed
+    // 2x13 strip and its code says so.
+    const dimsFor = (so) => outputDims(jobType, planShape(so));
     // A token safe to put in an item id, from the label the operator sees.
     const tagFor = (so) => {
         const d = dimsFor(so);

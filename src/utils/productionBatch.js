@@ -831,6 +831,117 @@ export const outputTypeFor = (batchType, so) => {
     return OUTPUT_TYPE[batchType];
 };
 
+// The finished article's own measurements, for the sub-order's output.
+//
+// One rule, used twice: the completion form resolves an item code with it, and
+// batch creation checks ahead of time that the code exists. Two implementations
+// would eventually disagree, and the failure would be a job that cannot be closed
+// at the one moment somebody is standing at a machine waiting to close it.
+//
+// Returns null when the geometry cannot be worked out -- a missing sheet size, a
+// patty with no bag width. Null means "cannot say", which callers must treat as a
+// reason to stop, never as permission to guess.
+export const outputDims = (batchType, so) => {
+    const type = norm(batchType);
+    if (type === 'ROLLS TO SHEETS' || type === 'ROLLS TO MODEL SHEETS') {
+        const m = String(so?.Sheet_Size ?? '').toLowerCase().match(/(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)/);
+        return m ? { w: Number(m[1]), h: Number(m[2]) } : null;
+    }
+    if (type === 'ROLLS TO BOTTOMPATTY SHEETS') {
+        const d = bottomSheetDims(so);
+        return d ? { w: num(d.sheetW), h: num(d.sheetH) } : null;
+    }
+    if (type === 'ROLLS TO SIDEPATTY') {
+        // The strip: as wide as the gusset, as long as the run that wraps the bag.
+        // Both are on the item code -- a 6x40 side patty and a 6x54 are different
+        // articles -- so both have to be known before one can be named. The GSM
+        // travels with it because a bottom patty is 90 throughout the catalogue
+        // whatever weight of roll it was cut from.
+        const d = pattyDims(so);
+        return d ? { w: num(d.width), h: num(d.length), gsm: d.gsm } : null;
+    }
+    // A handle is one fixed strip whatever bag it goes on. Its lines carry no size
+    // of their own, but the article still has one, and the code carries it.
+    const handle = HANDLE_DIMS[type];
+    if (handle) return { w: num(handle.width), h: num(handle.height) };
+    const w = num(so?.Bag_Width), h = num(so?.Bag_Height);
+    return w > 0 && h > 0 ? { w, h } : null;
+};
+
+// Everything that identifies the item code a sub-order's output belongs to. The
+// specification comes from the roll it is cut from, which is why it takes the
+// assigned stock rather than reading the order: a job cut from an ivory roll
+// produces ivory bags whatever the order said.
+export const outputCodeSpec = (batchType, so, roll) => {
+    const type = outputTypeFor(batchType, so);
+    const dims = outputDims(batchType, so);
+    if (!type || !dims) return null;
+    // Bottom patty is 90 GSM throughout the catalogue whatever roll it came off.
+    const patty = norm(batchType) === 'ROLLS TO SIDEPATTY' ? pattyDims(so) : null;
+    return {
+        type,
+        material: roll?.material ?? null,
+        colour: roll?.colour ?? null,
+        gsm: patty?.gsm ?? roll?.gsm ?? null,
+        w: dims.w,
+        h: dims.h
+    };
+};
+
+// One string per distinct article, for comparing a requirement against a
+// catalogue without caring how either was spelled.
+export const codeKey = (spec) => [
+    norm(spec?.type), norm(spec?.material), norm(spec?.colour), norm(spec?.gsm),
+    num(spec?.w), num(spec?.h)
+].join(' | ');
+
+// The output item codes a plan will need, and which of them the catalogue does not
+// have yet.
+//
+// Asked before the jobs are created, because the alternative is asking at the very
+// end: an operator finishes a run, opens the completion form, and cannot book what
+// they made because nobody catalogued the article. Worse, until the exact-match
+// fix the app did not even ask -- it filed the output under a similar-looking code
+// and the shortfall vanished with it.
+//
+// The specification comes from the roll each group was actually assigned, not from
+// the order, because that is what the completion form will use.
+export const missingOutputCodes = (batchType, groups, itemCodes) => {
+    const byId = new Map((itemCodes || []).map((ic) => [num(ic.id), ic]));
+    const have = new Set((itemCodes || []).map((ic) => codeKey({
+        type: ic.Type, material: ic.Material, colour: ic.Colour,
+        gsm: ic.GSM, w: ic.Width_Inches_, h: ic.Height_Inches_
+    })));
+    const wanted = new Map();
+    for (const g of groups || []) {
+        // Nothing is cut, so nothing is produced: a group met entirely from
+        // finished stock needs no output code at all.
+        if (!(num(g.outputQty) > 0)) continue;
+        const rollCode = byId.get(num(g.rollCodeId))
+            || byId.get(num((g.picks || []).find((p) => p.source === 'roll')?.codeId));
+        const roll = rollCode
+            ? { material: rollCode.Material, colour: rollCode.Colour, gsm: rollCode.GSM }
+            : { material: g.attrs?.material, colour: g.attrs?.colour, gsm: g.attrs?.gsm };
+        for (const so of g.fulfilled || []) {
+            const spec = outputCodeSpec(batchType, so, roll);
+            // Geometry that cannot be worked out is already reported as missing
+            // information; it is not a missing code and must not be listed as one.
+            if (!spec) continue;
+            const key = codeKey(spec);
+            if (have.has(key)) continue;
+            const seen = wanted.get(key);
+            if (seen) { seen.count += 1; seen.subOrders.push(so); continue; }
+            wanted.set(key, { key, spec, count: 1, subOrders: [so], label: codeLabel(spec) });
+        }
+    }
+    return [...wanted.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+};
+
+// The catalogue's own way of writing a code, so what the review asks for can be
+// pasted straight into Inventory_Item_Codes and recognised.
+export const codeLabel = (spec) => `${spec.type} - ${spec.material} - ${spec.colour}`
+    + ` - ${spec.gsm}GSM (${num(spec.w)}x${num(spec.h)})`;
+
 // Group key: roll-width batches group purely by material + roll width + colour +
 // gsm, so every output (e.g. DCUT and HANDLE bags) cuttable from the same roll
 // shares one job. Output products are split out later, at completion, by model.
