@@ -1262,21 +1262,26 @@ const fillMachineRuns = (stock, picks, perRun, source) => {
 
 // Run the 5-priority ladder for one group. Returns the allocation describing the
 // job to create (if any) and which sub-orders are postponed.
-// The size a finished article is stocked at, for one sub-order. A roll-width job
+// The size a finished article is stocked at, for one sub-order -- which is what
+// makes one piece of ready stock interchangeable with another. A roll-width job
 // cuts one roll into several of these, which is why finished stock cannot be
 // pooled across the group: a roll makes any length, a ready 16x18 sheet does not
-// become a 16x21 one. null where the type has no size of its own to match on.
+// become a 16x21 one.
+//
+// Read from the article's own dimensions, so every sized type answers -- not only
+// sheets. It used to answer for sheet types alone and return null for everything
+// else, and null makes finishedBySize give up and hand back every row unfiltered:
+// any length of side patty could be drawn against any side-patty order. A 6x46
+// strip cannot wrap a bag that needs 6x54; it is eight inches short. One batch
+// drew 175 bundles that way before anyone noticed, and the orders it was meant to
+// answer were left unanswered while looking satisfied.
+//
+// Normalised smaller x bigger, matching sizeOf below, so a strip catalogued one
+// way round still meets stock catalogued the other.
 const outputSizeKey = (batchType, so) => {
-    const key = (w, h) => `${Math.min(num(w), num(h))}x${Math.max(num(w), num(h))}`;
-    if (SHEET_TYPES.has(batchType)) {
-        const d = parseSheetSize(so.Sheet_Size);
-        return d ? key(d[0], d[1]) : null;
-    }
-    if (batchType === 'ROLLS TO BOTTOMPATTY SHEETS') {
-        const d = bottomSheetDims(so);
-        return d ? key(d.sheetW, d.sheetH) : null;
-    }
-    return null;
+    const d = outputDims(batchType, so);
+    if (!d || !(num(d.w) > 0) || !(num(d.h) > 0)) return null;
+    return `${Math.min(num(d.w), num(d.h))}x${Math.max(num(d.w), num(d.h))}`;
 };
 
 // Cut each stock row down to what its own size is actually wanted for, so ready
