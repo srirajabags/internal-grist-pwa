@@ -17,7 +17,7 @@ import { itemForm, FORM_LABEL, splitJobType } from '../utils/itemForms';
 import {
     outputTypeFor, ROLL_WIDTH_TYPES, effectiveQty, outputSizeLabel,
     groupOutputCount, outputCount, pattyDims, bottomSheetDims, outputDims,
-    OUTPUT_COUNT_UNIT, outputColour, isFastMovingSize
+    OUTPUT_COUNT_UNIT, outputColour, isFastMovingArticle, rollsPerRun
 } from '../utils/productionBatch';
 import { choiceText } from '../utils/gristValues';
 import { parseAttachmentId } from '../utils/attachments';
@@ -2821,11 +2821,15 @@ const jobWorkPlan = (job) => {
         g.made += soOutput(so);
         g.count += 1;
     }
-    // A fast-moving size gets extra roll on purpose at batch creation, so the
-    // machine runs full. The operator has to know which line that is, or the
-    // surplus goes back to the shelf uncut and the pass was wasted.
+    // A fast-moving size is one the floor runs often. Where the machine carries
+    // several rolls at once, the job is also given extra roll on purpose so the
+    // pass runs full -- and then the operator has to know which line that is, or
+    // the surplus goes back to the shelf uncut and the pass was wasted. On a
+    // machine that takes one roll at a time no extra is given, so the mark is
+    // only a mark and the note below stays away.
+    const fillsMachine = rollsPerRun(jobType, num(job.width)) > 1;
     const sizeGroups = [...map.values()]
-        .map((g) => ({ ...g, fastMoving: isFastMovingSize(job.material, g.key) }))
+        .map((g) => ({ ...g, fastMoving: isFastMovingArticle(job.material, g.outputType, g.dims) }))
         .sort((a, b) => b.made - a.made || b.qty - a.qty);
 
     // The line items follow the tick list exactly: an operator working down one
@@ -2851,7 +2855,7 @@ const jobWorkPlan = (job) => {
 
     return {
         jobType, sizeDim, isDcut, sizeKeyFor, sizeLabelFor, soQty, countUnit, rate,
-        sizeGroups, orderedSubOrders, totals,
+        sizeGroups, orderedSubOrders, totals, fillsMachine,
         // Several sub-orders can belong to one customer order — different bag
         // sizes on the same sheet of paper — so the two counts are not the same
         // thing and must not be labelled as though they were.
@@ -2872,7 +2876,7 @@ const JobDetail = ({ job, updating, onStart, onComplete, onViewForm, startBlock 
     const {
         jobType, sizeDim, sizeKeyFor, soQty, countUnit,
         sizeGroups, orderedSubOrders, totals, sizeTitle, sizeNoun,
-        subOrderCount, orderCount
+        subOrderCount, orderCount, fillsMachine
     } = jobWorkPlan(job);
 
     const [checked, setChecked] = useState({});
@@ -3014,7 +3018,9 @@ const JobDetail = ({ job, updating, onStart, onComplete, onViewForm, startBlock 
                                             {g.fastMoving && (
                                                 <span
                                                     className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 whitespace-nowrap"
-                                                    title="A size that sells: this job carries extra roll so the machine runs full. Cut all of it."
+                                                    title={fillsMachine
+                                                        ? 'A size that sells: this job carries extra roll so the machine runs full. Cut all of it.'
+                                                        : 'A size that sells — worth keeping the shelf stocked'}
                                                 >
                                                     <Zap size={9} /> fast-moving
                                                 </span>
@@ -3033,7 +3039,7 @@ const JobDetail = ({ job, updating, onStart, onComplete, onViewForm, startBlock 
                         })}
                     </div>
 
-                    {sizeGroups.some((g) => g.fastMoving) && (
+                    {fillsMachine && sizeGroups.some((g) => g.fastMoving) && (
                         <p className="mt-3 text-[11px] text-indigo-900 bg-indigo-50 border border-indigo-200 rounded-lg px-2.5 py-2">
                             This job was given more roll than the orders need, so the machine runs at full
                             width. <span className="font-semibold">Cut the whole allocation</span> — the

@@ -328,14 +328,19 @@ export const withCoreAllowance = (kg) => num(kg) * (1 + ROLL_CORE_ALLOWANCE);
 
 // How wide a machine is, in inches of roll it can carry side by side in one pass.
 //
-// Only the plain sheet machine is known to take more than one. Every other type is
-// left out deliberately rather than defaulted -- a DCUT machine may well hold two
-// 27" rolls, and model sheets may well run on this same machine, but nobody has
-// said so. Guessing would have the review quietly halve a job's reported machine
-// time, and would hand it rolls it has no use for, on the strength of an
-// assumption. Adding a line here is how a machine joins in.
+// Every machine here is one somebody has measured. The rest are left out
+// deliberately rather than defaulted -- a DCUT machine may well hold two 27" rolls,
+// and model sheets may well run on the plain sheet machine, but nobody has said
+// so. Guessing would have the review quietly halve a job's reported machine time,
+// and would hand it rolls it has no use for. Adding a line here is how a machine
+// joins in; without a fast-moving size for that type it still changes nothing.
 const MACHINE_WIDTH_INCHES = {
-    'ROLLS TO SHEETS': 64
+    'ROLLS TO SHEETS': 64,
+    // Side and bottom patty are cut on 64" machines too: five 12" rolls for a 6"
+    // side patty, three 18" rolls for a 4.5" bottom patty. Both are ROLLS TO
+    // SIDEPATTY jobs; which article comes out depends on whether the patty is
+    // printed.
+    'ROLLS TO SIDEPATTY': 64
 };
 
 // How many rolls of a width fill one pass: three 19" rolls take 57 of the 64
@@ -351,32 +356,48 @@ export const rollsPerRun = (batchType, rollWidth) => {
     return Math.max(Math.floor(capacity / w), 1);
 };
 
-// Fast-moving sheet sizes: the ones the floor runs often enough that a part-full
-// machine is a waste of a pass. Anything else is cut to the order and no further.
+// Fast-moving articles: the ones the floor runs often enough that the size is
+// worth calling out, and -- where the machine can carry more than one roll --
+// worth filling the machine for. Anything else is cut to the order and no further.
 //
 // Read per material, because the same size is not the same decision in every
 // fabric: 16x19 is a staple in the plain fabrics but not in BOPP, and 16x21 the
 // other way round. Sizes are compared smaller x bigger, like everything else in
 // the catalogue, so "21x19" and "19x21" are one size.
 //
-// NW VIRGIN and NW REGULAR travel together here -- they are the same sizes on the
-// same machine, differing only in the fabric.
+// NW VIRGIN and NW REGULAR travel together on the sheet sizes -- the same sizes on
+// the same machine, differing only in the fabric.
 const PLAIN_MATERIALS = ['NW VIRGIN', 'NW REGULAR'];
 
-const FAST_MOVING_SIZES = [
-    { w: 21, h: 19, materials: [...PLAIN_MATERIALS, 'NW BOPP'] },
-    { w: 16, h: 19, materials: PLAIN_MATERIALS },
-    { w: 16, h: 21, materials: ['NW BOPP'] }
+// Keyed on the article produced rather than on the order, because that is what a
+// size means: a 6x54 side patty is the same strip whatever bag it wraps, and a
+// patty carries no sheet-size string to read it off.
+const FAST_MOVING = [
+    { type: 'SHEET', w: 21, h: 19, materials: [...PLAIN_MATERIALS, 'NW BOPP'] },
+    { type: 'SHEET', w: 16, h: 19, materials: PLAIN_MATERIALS },
+    { type: 'SHEET', w: 16, h: 21, materials: ['NW BOPP'] },
+    // Patty, cut on their own machines: a 6" strip comes off a 12" roll two across,
+    // a 4.5" bottom patty off an 18" roll four across. Marked so the floor and the
+    // planner can see them; no roll is added for them, because nobody has said how
+    // much those machines carry.
+    { type: 'SIDEPATTY', w: 6, h: 54, materials: ['NW REGULAR'] },
+    { type: 'BOTTOMPATTY', w: 4.5, h: 16, materials: ['NW REGULAR'] }
 ];
 
-export const isFastMovingSize = (material, sheetSize) => {
-    const d = parseSheetSize(sheetSize);
-    if (!d) return false;
-    const [a, b] = [Math.min(d[0], d[1]), Math.max(d[0], d[1])];
-    return FAST_MOVING_SIZES.some((s) =>
-        Math.min(s.w, s.h) === a && Math.max(s.w, s.h) === b
-        && s.materials.some((m) => norm(m) === norm(material)));
+// The primitive form: an article's own type, size and fabric. Used where the size
+// groups already carry those and there is no sub-order to hand.
+export const isFastMovingArticle = (material, outputType, dims) => {
+    const w = num(dims?.w), h = num(dims?.h);
+    if (!(w > 0) || !(h > 0)) return false;
+    const [a, b] = [Math.min(w, h), Math.max(w, h)];
+    return FAST_MOVING.some((f) => norm(f.type) === norm(outputType)
+        && Math.min(f.w, f.h) === a && Math.max(f.w, f.h) === b
+        && f.materials.some((m) => norm(m) === norm(material)));
 };
+
+// The same question asked of a sub-order, which knows what it will become.
+export const isFastMovingSize = (batchType, material, so) =>
+    isFastMovingArticle(material, outputTypeFor(batchType, so), outputDims(batchType, so));
 
 // Smallest available width >= target (exact match wins, else next larger); null
 // when nothing is wide enough.
@@ -1284,6 +1305,20 @@ const finishedBySize = (rows, subOrders, batchType, byModel = false) => {
     return capped;
 };
 
+// The width of the roll a group actually loads on the machine.
+//
+// Not always the group's `width`. A sheet or DCUT group is identified BY its roll
+// width, so the two are the same; a patty group is identified by the strip it cuts
+// -- 6" side patty, 4.5" bottom patty -- and the roll it comes off is a multiple
+// of that, carried separately. Reading `width` for a patty group would have the
+// machine hold ten 6" rolls where it holds five 12" ones.
+// Types that are not identified by a roll width have none to give: a handle group
+// carries the BAG's width, which is not a roll and must not be read as one.
+export const groupRollWidth = (batchType, attrs) => {
+    if (isSet(attrs?.rollWidth)) return num(attrs.rollWidth);
+    return ROLL_WIDTH_TYPES.has(batchType) ? num(attrs?.width) : 0;
+};
+
 // The colour a group's roll has to be. Mirrors relevantStock's own resolution: an
 // override that is present but null means the group does not constrain colour.
 export const forcedRollColour = (attrs) =>
@@ -1351,11 +1386,11 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
     const rollNeed = (kg) => withCoreAllowance(kg);
     // How many rolls make one pass of the machine, for a group that is worth
     // filling it for. Zero everywhere else, which turns the top-up off.
-    // Filling the machine is a plain-sheet decision: it is the only machine whose
-    // width is known, and the only one whose spare capacity has a fast-moving size
-    // worth putting in it. The core allowance above applies to every type.
-    const perRun = subOrders.some((so) => isFastMovingSize(attrs.material, so.Sheet_Size))
-        ? rollsPerRun(batchType, num(attrs.width))
+    // Two conditions, both required: the job makes something worth running the
+    // machine full of, and the machine's width is known. The core allowance above
+    // needs neither -- every roll has a core.
+    const perRun = subOrders.some((so) => isFastMovingSize(batchType, attrs.material, so))
+        ? rollsPerRun(batchType, groupRollWidth(batchType, attrs))
         : 0;
     const fill = (picks) => fillMachineRuns(rolls, picks, perRun, 'roll');
 
@@ -1605,7 +1640,9 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, override
             return {
                 ...g,
                 subOrders: mergeLines(g.subOrders),
-                rollWidth: usesRollWidth ? num(g.attrs.width) : null,
+                // The roll on the machine, which for patty is a multiple of the
+                // strip the group is named for.
+                rollWidth: groupRollWidth(batchType, g.attrs) || null,
                 rollCodeId,
                 matchedCodeId: usesRollWidth ? rollCodeId
                     : softMatchItemCode(g.attrs, itemCodes, batchType, outputTypeFor(batchType, g.subOrders[0])),
