@@ -19,7 +19,7 @@ import {
     BATCH_TYPES, HARD_START_DATE, OUTPUT_TYPE, PRIORITY_LABEL, buildPlan,
     effectiveQty, needsPieceConversion, cannotConvertQty, cannotSizePieces, cannotSizePatty, BUNDLE_SIZE,
     typeNeedsSubOrder, missingInfoFields, outputCount, overageRate, outputSizeLabel, OUTPUT_COUNT_UNIT,
-    missingOutputCodes, machineLoads, rollsPerRun, isFastMovingSize,
+    missingOutputCodes, machineLoads, rollsPerRun, isFastMovingSize, isUnverifiedSize,
     ROLL_CORE_ALLOWANCE, withCoreAllowance,
     ROLLS_PER_JOB_NOTICE,
     bagPieceCount
@@ -1275,7 +1275,7 @@ const CSV_HEADERS = [
     'Sidepatty Colour', 'Sidepatty GSM', 'Sidepatty Width', 'Handle Colour',
     'Size Label', 'Size', 'Quantity', 'Quantity Type', 'Planned Quantity (incl. overage)',
     'Order Form Date', 'Factory Updated Date', 'Previously No-Stock Flagged',
-    'Sub-Order Required Count', 'Fast-Moving Size'
+    'Sub-Order Required Count', 'Fast-Moving Size', 'Sheet Size Verified'
 ];
 
 // The review shows "?" wherever a sub-order cannot be sized; the CSV has to say
@@ -1301,7 +1301,9 @@ const csvSubOrderCells = (so, batchType, status) => {
             return c ? Math.ceil(c.count - 1e-9) : '';
         })(),
         // Why this line's job may carry more roll than its orders need.
-        isFastMovingSize(batchType, so) ? 'Yes' : 'No'
+        isFastMovingSize(batchType, so) ? 'Yes' : 'No',
+        // Blank where the type has no sheet size to verify.
+        so.Sheet_Size ? (isUnverifiedSize(so.Sheet_Size) ? 'No' : 'Yes') : ''
     ];
 };
 
@@ -1371,6 +1373,7 @@ const buildCsvRows = (plans, codeNames, itemNames) => {
         }
         const flagged = [
             ...plan.placeholderColour.map((so) => [so, 'Colour not chosen — still MATCHING COLOUR']),
+            ...plan.unverifiedSheet.map((so) => [so, 'Sheet size not verified — still prefixed with #']),
             ...plan.unmatched.map((so) => [so, 'No matching roll width']),
             ...plan.missingGsm.map((so) => [so, 'Missing info — cannot size'])
         ];
@@ -1515,6 +1518,20 @@ const MissingCodesPanel = ({ missing, onViewForm }) => {
         </div>
     );
 };
+
+// Sheet sizes still carrying the "#" a trigger formula wrote them with. Nobody
+// has read them against the order yet, so the roll width, the weight and the item
+// code they would produce are all a guess. Held back rather than planned on.
+const UnverifiedSheetPanel = ({ subOrders, batchType, unit, onViewForm }) => (
+    <FlaggedPanel
+        subOrders={subOrders} batchType={batchType} unit={unit} onViewForm={onViewForm}
+        title="sheet size not verified yet"
+        detail={'These sheet sizes were worked out from the bag and still carry the "#" that says so. '
+            + 'Somebody has to read each one against the order and take the hash off — or type the right '
+            + 'size over it. Until then they are left out of every job: the sheet size decides which roll '
+            + 'width is cut and how much of it, so planning on an unchecked one cuts the wrong roll.'}
+    />
+);
 
 const PlaceholderColourPanel = ({ subOrders, batchType, unit, onViewForm }) => (
     <FlaggedPanel
@@ -1665,6 +1682,7 @@ const PlanSection = ({ batchType, plan, missingCodes = [], onViewForm, itemNames
                     />
                 )}
                 {missingCodes.length > 0 && <Stat label="Item codes missing" value={missingCodes.length} tone="red" />}
+                {plan.unverifiedSheetCount > 0 && <Stat label="Sheet size unverified" value={plan.unverifiedSheetCount} tone="red" />}
                 {plan.placeholderColourCount > 0 && <Stat label="Colour not chosen" value={plan.placeholderColourCount} tone="red" />}
                 {plan.unmatchedCount > 0 && <Stat label="No roll width" value={plan.unmatchedCount} tone="red" />}
                 {plan.missingGsmCount > 0 && <Stat label="Missing info" value={plan.missingGsmCount} tone="red" />}
@@ -1862,6 +1880,7 @@ const PlanSection = ({ batchType, plan, missingCodes = [], onViewForm, itemNames
                         );
                     })}
                     <MissingCodesPanel missing={missingCodes} onViewForm={onViewForm} />
+                    <UnverifiedSheetPanel subOrders={plan.unverifiedSheet} batchType={batchType} unit={unit} onViewForm={onViewForm} />
                     <PlaceholderColourPanel subOrders={plan.placeholderColour} batchType={batchType} unit={unit} onViewForm={onViewForm} />
                     <UnmatchedPanel subOrders={plan.unmatched} batchType={batchType} unit={unit} onViewForm={onViewForm} />
                     <MissingGsmPanel subOrders={plan.missingGsm} batchType={batchType} unit={unit} onViewForm={onViewForm} />

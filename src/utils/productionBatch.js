@@ -211,6 +211,28 @@ export const unresolvedColour = (batchType, so) => {
     return PLACEHOLDER_COLOURS.has(c) ? c : null;
 };
 
+// A sheet size the office has not checked yet.
+//
+// Sheet_Size is computed from the bag by a trigger formula and written with a "#"
+// in front of it -- "#16x18". Somebody reads it against the order and takes the
+// hash off, or replaces the value outright. Until then the number is a machine's
+// guess, and everything downstream of it is too: which roll width the job cuts,
+// how many kilos it needs, which item code its output is booked against.
+//
+// The prefix survives every reader, because parseSheetSize looks for digits and
+// ignores what surrounds them. That is deliberate -- an unchecked size still
+// displays and still sorts -- but it must never be planned on, so batch creation
+// sets these aside before grouping and says why.
+export const UNVERIFIED_PREFIX = '#';
+
+export const isUnverifiedSize = (v) => String(v ?? '').trim().startsWith(UNVERIFIED_PREFIX);
+
+// True where a sub-order's own sheet size is still unchecked. Only sheet types
+// carry one; for anything else the column is not the size that matters.
+export const unverifiedSheetSize = (batchType, so) =>
+    (SHEET_TYPES.has(batchType) || batchType === 'ROLLS TO BOTTOMPATTY SHEETS')
+    && isUnverifiedSize(so?.Sheet_Size);
+
 // --- Roll-width matching ---
 // Some batch types are produced by cutting a roll of a fixed width. A sub-order's
 // required roll width is derived from its output geometry (sheet size / bag
@@ -1571,6 +1593,7 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, override
     const unmatched = [];
     const missingGsm = [];   // STITCHING pieces orders with no Bag_GSM -> can't convert to kg
     const placeholderColour = [];  // colour still says MATCHING COLOUR
+    const unverifiedSheet = [];    // sheet size still carries its "#" 
     const groupable = [];
     for (const so of eligible) {
         // A pieces-quoted order with no GSM (or a patty missing strip width / bag
@@ -1578,6 +1601,9 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, override
         // An unresolved colour is an unfinished order, not missing stock. Caught
         // before grouping so it is never reported as postponed for want of fabric.
         if (unresolvedColour(batchType, so)) { placeholderColour.push(so); continue; }
+        // A sheet size nobody has checked is not a shortage either. Caught here so
+        // no roll is cut to a number that was never read by a person.
+        if (unverifiedSheetSize(batchType, so)) { unverifiedSheet.push(so); continue; }
         if (cannotConvertQty(batchType, so) || cannotSizePieces(batchType, so) || cannotSizePatty(batchType, so)) { missingGsm.push(so); continue; }
         // Side/bottom patty need a roll width that is an exact multiple of the strip
         // width; flag orders no fixed roll width can satisfy.
@@ -1702,6 +1728,8 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, override
         unmatched: mergeLines(unmatched), unmatchedCount: mergeLines(unmatched).length,
         missingGsm: mergeLines(missingGsm), missingGsmCount: mergeLines(missingGsm).length,
         placeholderColour: mergeLines(placeholderColour),
-        placeholderColourCount: mergeLines(placeholderColour).length
+        placeholderColourCount: mergeLines(placeholderColour).length,
+        unverifiedSheet: mergeLines(unverifiedSheet),
+        unverifiedSheetCount: mergeLines(unverifiedSheet).length
     };
 };
