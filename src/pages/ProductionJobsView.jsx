@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
     ArrowLeft, Boxes, AlertCircle, Loader2, RefreshCw, Package,
     PlayCircle, CheckCircle2, Circle, Clock, ChevronRight, Layers, FileText, ArrowRight, Plus, X, Warehouse,
-    AlertTriangle, Trash2, Lock, History, Printer
+    AlertTriangle, Trash2, Lock, History, Printer, Zap
 } from 'lucide-react';
 import Card from '../components/Card';
 import Button from '../components/Button';
@@ -17,7 +17,7 @@ import { itemForm, FORM_LABEL, splitJobType } from '../utils/itemForms';
 import {
     outputTypeFor, ROLL_WIDTH_TYPES, effectiveQty, outputSizeLabel,
     groupOutputCount, outputCount, pattyDims, bottomSheetDims, outputDims,
-    OUTPUT_COUNT_UNIT, outputColour
+    OUTPUT_COUNT_UNIT, outputColour, isFastMovingSize
 } from '../utils/productionBatch';
 import { choiceText } from '../utils/gristValues';
 import { parseAttachmentId } from '../utils/attachments';
@@ -2821,7 +2821,12 @@ const jobWorkPlan = (job) => {
         g.made += soOutput(so);
         g.count += 1;
     }
-    const sizeGroups = [...map.values()].sort((a, b) => b.made - a.made || b.qty - a.qty);
+    // A fast-moving size gets extra roll on purpose at batch creation, so the
+    // machine runs full. The operator has to know which line that is, or the
+    // surplus goes back to the shelf uncut and the pass was wasted.
+    const sizeGroups = [...map.values()]
+        .map((g) => ({ ...g, fastMoving: isFastMovingSize(job.material, g.key) }))
+        .sort((a, b) => b.made - a.made || b.qty - a.qty);
 
     // The line items follow the tick list exactly: an operator working down one
     // and looking things up in the other should not have to hunt.
@@ -2980,7 +2985,15 @@ const JobDetail = ({ job, updating, onStart, onComplete, onViewForm, startBlock 
                             const on = !!checked[g.key];
                             const made = g.made > 0 ? Math.ceil(g.made - 1e-9) : null;
                             return (
-                                <label key={g.key} className="flex items-center gap-3 py-3 cursor-pointer select-none">
+                                <label
+                                    key={g.key}
+                                    // The whole row is tinted, not just the tag: on a tally
+                                    // sheet of eight sizes the operator is looking down the
+                                    // left edge, and a chip on the right is easy to miss.
+                                    className={`flex items-center gap-3 py-3 cursor-pointer select-none ${g.fastMoving
+                                        ? 'bg-indigo-50 -mx-2 px-2 rounded-lg'
+                                        : ''}`}
+                                >
                                     <input
                                         type="checkbox"
                                         checked={on}
@@ -2998,6 +3011,14 @@ const JobDetail = ({ job, updating, onStart, onComplete, onViewForm, startBlock 
                                                     {g.chip}
                                                 </span>
                                             )}
+                                            {g.fastMoving && (
+                                                <span
+                                                    className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 whitespace-nowrap"
+                                                    title="A size that sells: this job carries extra roll so the machine runs full. Cut all of it."
+                                                >
+                                                    <Zap size={9} /> fast-moving
+                                                </span>
+                                            )}
                                         </span>
                                         <span className="block text-[11px] text-slate-500">
                                             {[
@@ -3011,6 +3032,15 @@ const JobDetail = ({ job, updating, onStart, onComplete, onViewForm, startBlock 
                             );
                         })}
                     </div>
+
+                    {sizeGroups.some((g) => g.fastMoving) && (
+                        <p className="mt-3 text-[11px] text-indigo-900 bg-indigo-50 border border-indigo-200 rounded-lg px-2.5 py-2">
+                            This job was given more roll than the orders need, so the machine runs at full
+                            width. <span className="font-semibold">Cut the whole allocation</span> — the
+                            fast-moving sizes above sell, and whatever the orders do not take becomes stock.
+                            Leaving roll uncut wastes the pass.
+                        </p>
+                    )}
 
                     {job.started && !job.completed && (
                         <div className="mt-3 pt-3 border-t border-slate-100">

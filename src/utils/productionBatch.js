@@ -312,6 +312,60 @@ export const ROLL_WIDTH_TYPES = new Set(['ROLLS TO SHEETS', 'ROLLS TO MODEL SHEE
 // differ only in what the finished sheet is stocked as; see isModelNumberSheet.
 export const SHEET_TYPES = new Set(['ROLLS TO SHEETS', 'ROLLS TO MODEL SHEETS']);
 
+// A roll's recorded weight includes the core it is wound on -- cardboard that
+// holds the fabric and never becomes a bag. Nobody weighs the core separately, so
+// every roll reads a little heavier than the fabric it can actually give. Asking
+// for exactly the requirement therefore plans a shortage into every job.
+//
+// Five per cent is the allowance, applied to the roll side only: ready stock is
+// already the finished article and has no core to discount.
+export const ROLL_CORE_ALLOWANCE = 0.05;
+
+// The roll weight a job should have on the floor to be able to make `kg` of
+// output. Not a bigger requirement -- the job still owes what it owed -- just
+// enough fabric behind it that the requirement is reachable.
+export const withCoreAllowance = (kg) => num(kg) * (1 + ROLL_CORE_ALLOWANCE);
+
+// The sheet machine takes several rolls side by side, up to 60 inches across, and
+// runs them as one pass. 58 is the width actually usable once the rolls are
+// mounted with a gap between them.
+const MACHINE_WIDTH_INCHES = 58;
+
+// How many rolls of a width fill one pass of the machine: three 19" rolls make 57
+// of the 58 inches. A job given four is a full pass plus one roll running alone at
+// a third of the machine's capacity, which is the expensive way to cut sheets.
+export const rollsPerRun = (rollWidth) => {
+    const w = num(rollWidth);
+    return w > 0 ? Math.floor(MACHINE_WIDTH_INCHES / w) : 0;
+};
+
+// Fast-moving sheet sizes: the ones the floor runs often enough that a part-full
+// machine is a waste of a pass. Anything else is cut to the order and no further.
+//
+// Read per material, because the same size is not the same decision in every
+// fabric: 16x19 is a staple in the plain fabrics but not in BOPP, and 16x21 the
+// other way round. Sizes are compared smaller x bigger, like everything else in
+// the catalogue, so "21x19" and "19x21" are one size.
+//
+// NW VIRGIN and NW REGULAR travel together here -- they are the same sizes on the
+// same machine, differing only in the fabric.
+const PLAIN_MATERIALS = ['NW VIRGIN', 'NW REGULAR'];
+
+const FAST_MOVING_SIZES = [
+    { w: 21, h: 19, materials: [...PLAIN_MATERIALS, 'NW BOPP'] },
+    { w: 16, h: 19, materials: PLAIN_MATERIALS },
+    { w: 16, h: 21, materials: ['NW BOPP'] }
+];
+
+export const isFastMovingSize = (material, sheetSize) => {
+    const d = parseSheetSize(sheetSize);
+    if (!d) return false;
+    const [a, b] = [Math.min(d[0], d[1]), Math.max(d[0], d[1])];
+    return FAST_MOVING_SIZES.some((s) =>
+        Math.min(s.w, s.h) === a && Math.max(s.w, s.h) === b
+        && s.materials.some((m) => norm(m) === norm(material)));
+};
+
 // Smallest available width >= target (exact match wins, else next larger); null
 // when nothing is wide enough.
 const nextRollWidth = (target, widths) => {
@@ -1068,9 +1122,22 @@ const takeFrom = (stock, need, source) => {
 
 // A job takes as many rolls as the work needs -- capping it would postpone a
 // large order for ever, since a sub-order is fulfilled whole or not at all. Past
-// this many the review says so, because every extra roll is a changeover
-// mid-run and the planner should see it coming.
+// this many the review says so, so the planner sees the machine time coming.
 export const ROLLS_PER_JOB_NOTICE = 10;
+
+// What a pile of rolls costs the machine, in stops.
+//
+// Counted in loads, not rolls. A sheet machine takes three 16" rolls side by side
+// and runs them as one pass, so twelve rolls is four loads -- not twelve
+// interruptions. Counting rolls made a job that had been *optimised* into full
+// passes look like the worst job in the batch, which is exactly backwards.
+//
+// Machines that take one roll at a time have a per-run capacity of one, and there
+// loads and rolls are the same number, as they always were.
+export const machineLoads = (rollCount, rollWidth) => {
+    const perRun = rollsPerRun(rollWidth);
+    return perRun > 1 ? Math.ceil(num(rollCount) / perRun) : num(rollCount);
+};
 
 // Choosing which physical rolls a job gets.
 //
@@ -1123,6 +1190,33 @@ const splitByCapacity = (batchType, subOrders, capacity) => {
         else postponed.push(so);
     }
     return { fulfilled, postponed };
+};
+
+// Add whole rolls until the job holds a number that fills the machine.
+//
+// Only for fast-moving sizes, and only from what is actually on the shelf: this
+// hands the floor more fabric than the order needs, on the understanding that a
+// full pass gets run and the surplus becomes stock of a size that sells. Doing it
+// for a one-off size would just park a roll in a job that has no use for it.
+//
+// Rolls are added in the same order takeRolls chose them -- oldest vintage first --
+// so filling the machine also moves the oldest fabric.
+const fillMachineRuns = (stock, picks, perRun, source) => {
+    if (!(perRun > 1) || picks.length === 0) return picks;
+    const short = (perRun - (picks.length % perRun)) % perRun;
+    if (short === 0) return picks;
+    const taken = new Set(picks.map((p) => p.itemId));
+    const spare = stock
+        .filter((r) => !taken.has(r.itemId) && num(r.avail) > 0)
+        .sort((a, b) => num(a.intakeAt) - num(b.intakeAt) || num(a.avail) - num(b.avail));
+    // Whatever is there, up to a full pass. Short of that the job runs as it is --
+    // a roll that does not exist cannot be allocated.
+    return [...picks, ...spare.slice(0, short).map((r) => ({
+        itemId: r.itemId, codeId: r.codeId,
+        // None of this weight answers the order; it is there to fill the machine.
+        take: 0, source, whole: num(r.avail), fillsRun: true,
+        ...(r.manual ? { manual: true } : {})
+    }))];
 };
 
 // Run the 5-priority ladder for one group. Returns the allocation describing the
@@ -1239,6 +1333,18 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
     const finishedTotal = finished.reduce((s, r) => s + r.avail, 0);
     const rollsTotal = rolls.reduce((s, r) => s + r.avail, 0);
 
+    // Roll weight is asked for with the core allowance on top; the requirement
+    // itself is untouched. A job still owes what it owed -- it is just given
+    // enough fabric behind that figure to actually reach it.
+    const rollNeed = (kg) => withCoreAllowance(kg);
+    // How many rolls make one pass of the machine, for a group that is worth
+    // filling it for. Zero everywhere else, which turns the top-up off.
+    const perRun = SHEET_TYPES.has(batchType)
+        && subOrders.some((so) => isFastMovingSize(attrs.material, so.Sheet_Size))
+        ? rollsPerRun(num(attrs.width))
+        : 0;
+    const fill = (picks) => fillMachineRuns(rolls, picks, perRun, 'roll');
+
     // Model sheets are printed for one customer's model and are no use to anyone
     // else, so whatever is in the godown is always drawn on first and the rolls
     // only make up the shortfall. Every other type prefers to cut from a roll when
@@ -1257,12 +1363,17 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
                 ? takeFrom(alternates, Math.min(shortfall, alternatesTotal), 'blank')
                 : { picks: [], covered: 0 };
             shortfall -= fromBlanks.covered;
-            const fromRolls = shortfall > 0 ? takeRolls(rolls, shortfall, 'roll') : { picks: [], covered: 0 };
+            // Only the roll share carries the core allowance: a printed sheet on
+            // the shelf is already the article and weighs what it weighs.
+            const fromRolls = shortfall > 0
+                ? takeRolls(rolls, rollNeed(shortfall), 'roll')
+                : { picks: [], covered: 0 };
+            const rollCover = Math.min(fromRolls.covered, Math.max(shortfall, 0));
             return {
-                picks: [...fromFinished.picks, ...fromBlanks.picks, ...fromRolls.picks],
-                covered: fromFinished.covered + fromBlanks.covered + fromRolls.covered,
+                picks: [...fromFinished.picks, ...fromBlanks.picks, ...fill(fromRolls.picks)],
+                covered: fromFinished.covered + fromBlanks.covered + rollCover,
                 fromGodown: fromFinished.covered + fromBlanks.covered,
-                fromRolls: fromRolls.covered
+                fromRolls: rollCover
             };
         };
         const full = ladder(required);
@@ -1290,18 +1401,23 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
         const { picks } = takeFrom(finished, required, 'finished');
         return { priority: 1, picks, fulfilledQty: required, fulfilled: subOrders, postponed: [] };
     }
-    // Priority 2 — a raw roll (or rolls) covers the whole requirement.
+    // Priority 2 — a raw roll (or rolls) covers the whole requirement. The gate is
+    // the requirement itself: a group that can just be covered is still planned,
+    // and the core allowance then takes another roll if one is there to take.
     if (rollsTotal >= required && required > 0) {
-        const { picks } = takeRolls(rolls, required, 'roll');
-        return { priority: 2, picks, fulfilledQty: required, fulfilled: subOrders, postponed: [] };
+        const { picks } = takeRolls(rolls, rollNeed(required), 'roll');
+        return { priority: 2, picks: fill(picks), fulfilledQty: required, fulfilled: subOrders, postponed: [] };
     }
     // Priority 3 — mix: rolls take the major share, finished covers the rest.
     if (rollsTotal > 0 && rollsTotal + finishedTotal >= required && required > 0) {
-        const fromRolls = takeRolls(rolls, required, 'roll');
-        const fromFinished = takeFrom(finished, required - fromRolls.covered, 'finished');
+        const fromRolls = takeRolls(rolls, rollNeed(required), 'roll');
+        // What the rolls answer of the requirement, not of the padded target: the
+        // allowance buys fabric, it does not fill orders.
+        const rollCover = Math.min(fromRolls.covered, required);
+        const fromFinished = takeFrom(finished, required - rollCover, 'finished');
         return {
             priority: 3,
-            picks: [...fromRolls.picks, ...fromFinished.picks],
+            picks: [...fill(fromRolls.picks), ...fromFinished.picks],
             fulfilledQty: required,
             fulfilled: subOrders,
             postponed: []
@@ -1317,11 +1433,12 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
             // shelf: taking the full capacity deducted stock that later groups in
             // the same run then could not see, and left the review claiming a job
             // had drawn several times the weight it was actually planned for.
-            const fromRolls = takeRolls(rolls, fulfilledQty, 'roll');
-            const fromFinished = takeFrom(finished, fulfilledQty - fromRolls.covered, 'finished');
+            const fromRolls = takeRolls(rolls, rollNeed(fulfilledQty), 'roll');
+            const rollCover = Math.min(fromRolls.covered, fulfilledQty);
+            const fromFinished = takeFrom(finished, fulfilledQty - rollCover, 'finished');
             return {
                 priority: 4,
-                picks: [...fromRolls.picks, ...fromFinished.picks],
+                picks: [...fill(fromRolls.picks), ...fromFinished.picks],
                 fulfilledQty,
                 fulfilled,
                 postponed

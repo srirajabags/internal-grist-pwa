@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
     X, Loader2, AlertCircle, CheckCircle2, ChevronRight, ChevronLeft, ChevronDown,
-    Search, Layers, Package, CalendarDays, ClipboardCheck, Maximize2, Download, AlertTriangle,
+    Search, Layers, Package, CalendarDays, ClipboardCheck, Maximize2, Download, AlertTriangle, Zap,
     Wrench
 } from 'lucide-react';
 import Button from './Button';
@@ -19,7 +19,8 @@ import {
     BATCH_TYPES, HARD_START_DATE, OUTPUT_TYPE, PRIORITY_LABEL, buildPlan,
     effectiveQty, needsPieceConversion, cannotConvertQty, cannotSizePieces, cannotSizePatty, BUNDLE_SIZE,
     typeNeedsSubOrder, missingInfoFields, outputCount, overageRate, outputSizeLabel, OUTPUT_COUNT_UNIT,
-    missingOutputCodes,
+    missingOutputCodes, machineLoads, rollsPerRun, isFastMovingSize,
+    ROLL_CORE_ALLOWANCE, withCoreAllowance,
     ROLLS_PER_JOB_NOTICE,
     bagPieceCount
 } from '../utils/productionBatch';
@@ -1260,6 +1261,12 @@ const CSV_HEADERS = [
     'Group', 'Group Material', 'Group Colour', 'Group GSM', 'Group Width (in)', 'Roll Width (in)',
     'Unit', 'Group Required', 'Group Fulfilled', 'Group To Produce', 'Group From Stock',
     'Group Required Count', 'Count Unit', 'Production Overage %',
+    // What the roll side of the allocation actually is: the requirement lifted by
+    // the core allowance, the weight of roll committed against it, and what that
+    // costs the machine. Without these the file could not explain why a job holding
+    // 300 kg of roll is answering a 286 kg order.
+    'Core Allowance %', 'Roll Target (incl. core)', 'Roll Weight Committed',
+    'Rolls Allocated', 'Rolls Per Machine Load', 'Machine Loads', 'Rolls For Machine Fill',
     'Priority', 'Priority Label', 'Stock Items', 'Allocation Detail',
     'Rolls Assigned By Hand', 'Assigned But Unused', 'Assigned But Refused',
     'Group Postponed Count', 'Group Postponed Qty',
@@ -1268,7 +1275,7 @@ const CSV_HEADERS = [
     'Sidepatty Colour', 'Sidepatty GSM', 'Sidepatty Width', 'Handle Colour',
     'Size Label', 'Size', 'Quantity', 'Quantity Type', 'Planned Quantity (incl. overage)',
     'Order Form Date', 'Factory Updated Date', 'Previously No-Stock Flagged',
-    'Sub-Order Required Count'
+    'Sub-Order Required Count', 'Fast-Moving Size'
 ];
 
 // The review shows "?" wherever a sub-order cannot be sized; the CSV has to say
@@ -1292,13 +1299,17 @@ const csvSubOrderCells = (so, batchType, status) => {
             if (!sized) return '';
             const c = outputCount(batchType, so);
             return c ? Math.ceil(c.count - 1e-9) : '';
-        })()
+        })(),
+        // Why this line's job may carry more roll than its orders need.
+        isFastMovingSize(so.Roll_Material, so.Sheet_Size) ? 'Yes' : 'No'
     ];
 };
 
 // Blank group/job/allocation cells (everything after Batch Type + Output Type),
 // for sub-orders that never reached a group.
-const CSV_EMPTY_GROUP_CELLS = new Array(25).fill('');
+// Filler for a flagged sub-order, which belongs to no group: every group column
+// except the two batch ones that are written directly.
+const CSV_EMPTY_GROUP_CELLS = new Array(32).fill('');
 
 const buildCsvRows = (plans, codeNames, itemNames) => {
     const rows = [];
@@ -1310,12 +1321,20 @@ const buildCsvRows = (plans, codeNames, itemNames) => {
                 .map((p) => [
                     itemNames.get(num(p.itemId)) || `#${p.itemId}`,
                     p.source,
-                    `${fmtKg(p.take)}kg`,
+                    // Both figures: a roll leaves the shelf whole however little of
+                    // it the order needs, and a roll taken to fill the machine needs
+                    // none of it at all.
+                    p.whole != null ? `${fmtKg(p.whole)}kg whole` : `${fmtKg(p.take)}kg`,
+                    p.whole != null ? `(${fmtKg(p.take)}kg needed)` : null,
+                    p.fillsRun ? '(fills the machine)' : null,
                     // A roll the matcher would not have chosen is worth being able
                     // to find again in the file, not just on screen.
                     p.manual ? '(assigned by hand)' : null
                 ].filter(Boolean).join(' '))
                 .join(' | ');
+            const rollPicks = g.picks.filter((p) => p.source === 'roll');
+            const rollWeight = rollPicks.reduce((t, p) => t + num(p.whole ?? p.take), 0);
+            const perLoad = rollsPerRun(g.rollWidth);
             const named = (ids) => (ids || [])
                 .map((id) => itemNames.get(num(id)) || `#${id}`)
                 .join(' | ');
@@ -1329,6 +1348,13 @@ const buildCsvRows = (plans, codeNames, itemNames) => {
                 fmtKg(g.outputQty), fmtKg(g.finishedQty),
                 Math.ceil(g.requiredCount.count - 1e-9), g.requiredCount.unit,
                 Math.round(overageRate(batchType) * 100),
+                Math.round(ROLL_CORE_ALLOWANCE * 100),
+                fmtKg(withCoreAllowance(g.requiredQty)),
+                fmtKg(rollWeight),
+                rollPicks.length,
+                perLoad || '',
+                rollPicks.length > 0 ? machineLoads(rollPicks.length, g.rollWidth) : 0,
+                rollPicks.filter((p) => p.fillsRun).length,
                 g.priority, PRIORITY_LABEL[g.priority] || '', itemIds.length, allocation,
                 named(g.picks.filter((p) => p.manual).map((p) => p.itemId)),
                 named(g.manualUnused),
@@ -1366,12 +1392,19 @@ const SubOrderPill = ({ so, batchType, unit, tone = 'slate', onViewForm, showMis
     const orderId = so.Order_ID === null || so.Order_ID === undefined || so.Order_ID === '' ? null : so.Order_ID;
     const hasForm = onViewForm && parseAttachmentId(so.Order_Form) != null;
     const missing = showMissing ? missingInfoFields(batchType, so) : null;
+    // A size the floor runs often: the job carries extra roll for it so the machine
+    // runs full, and the planner should be able to see which lines those are while
+    // reading the group. Marked only on an otherwise unremarkable pill -- a
+    // postponed or missing-information sub-order has a more urgent thing to say.
+    const fast = isFastMovingSize(so.Roll_Material, so.Sheet_Size);
     // Amber matches the "postponed → No_Stock_Identified" note under the group, so
     // the sub-orders it refers to are identifiable at a glance.
     const cls = {
         red: 'bg-white text-red-700 ring-red-200',
         amber: 'bg-amber-50 text-amber-800 ring-amber-300'
-    }[tone] || 'bg-slate-100 text-slate-600 ring-slate-200';
+    }[tone] || (fast
+        ? 'bg-indigo-50 text-indigo-900 ring-indigo-300'
+        : 'bg-slate-100 text-slate-600 ring-slate-200');
     return (
         <span className={'inline-flex flex-col gap-0.5 px-2 py-1 rounded-md text-[11px] ring-1 ' + cls}>
             <span className="inline-flex items-center gap-1 font-medium">
@@ -1387,7 +1420,17 @@ const SubOrderPill = ({ so, batchType, unit, tone = 'slate', onViewForm, showMis
                     </button>
                 )}
             </span>
-            <span>{size.label}: <span className="font-medium">{size.value}</span></span>
+            <span className="inline-flex items-center gap-1">
+                {size.label}: <span className="font-medium">{size.value}</span>
+                {fast && (
+                    <span
+                        className="inline-flex items-center gap-0.5 font-semibold text-indigo-700"
+                        title="Fast-moving size — this job carries extra roll so the machine runs full"
+                    >
+                        <Zap size={10} /> fast-moving
+                    </span>
+                )}
+            </span>
             {missing && missing.length > 0 && (
                 <span className="font-semibold">Missing: {missing.join(', ')}</span>
             )}
@@ -1657,16 +1700,26 @@ const PlanSection = ({ batchType, plan, missingCodes = [], onViewForm, itemNames
                                         <Package size={12} /> {[...new Set(g.picks.map((p) => p.itemId))].length} stock item(s)
                                     </span>
                                 )}
-                                {/* A job takes as many rolls as the work needs, but
-                                    every roll past the first is a changeover mid-run,
-                                    so a long list is worth seeing before the batch is
-                                    created rather than on the floor. */}
-                                {g.picks.filter((p) => p.source === 'roll').length >= ROLLS_PER_JOB_NOTICE && (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium text-amber-800 bg-amber-50 ring-1 ring-amber-200">
-                                        <AlertTriangle size={12} />
-                                        {g.picks.filter((p) => p.source === 'roll').length} roll changeovers
-                                    </span>
-                                )}
+                                {/* A job takes as many rolls as the work needs, and
+                                    every load is a stop, so a long run is worth seeing
+                                    before the batch is created rather than on the
+                                    floor. Counted in loads: a machine that takes three
+                                    rolls at once is stopped once per three, not once
+                                    per roll. */}
+                                {(() => {
+                                    const rolls = g.picks.filter((p) => p.source === 'roll').length;
+                                    const loads = machineLoads(rolls, g.rollWidth);
+                                    const perRun = rollsPerRun(g.rollWidth);
+                                    if (loads < ROLLS_PER_JOB_NOTICE) return null;
+                                    return (
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium text-amber-800 bg-amber-50 ring-1 ring-amber-200">
+                                            <AlertTriangle size={12} />
+                                            {perRun > 1
+                                                ? `${loads} machine loads (${rolls} rolls, ${perRun} at a time)`
+                                                : `${loads} roll changeovers`}
+                                        </span>
+                                    );
+                                })()}
                             </div>
 
                             {g.picks.length > 0 && (
@@ -1693,9 +1746,24 @@ const PlanSection = ({ batchType, plan, missingCodes = [], onViewForm, itemNames
                                             <span className="font-mono font-medium min-w-0 break-all">
                                                 {itemNames.get(num(p.itemId)) || `#${p.itemId}`}
                                             </span>
+                                            {/* A roll leaves the shelf whole, so the
+                                                chip says what the floor will carry.
+                                                Showing the slice the order needs read
+                                                as 0.00 kg for a roll taken purely to
+                                                fill the machine -- a real roll, on the
+                                                trolley, labelled as nothing. The tapped
+                                                panel below still gives both figures. */}
                                             <span className="tabular-nums shrink-0">
-                                                {fmtKg(p.take)}{unit}
+                                                {fmtKg(p.whole != null ? p.whole : p.take)}{unit}
                                             </span>
+                                            {p.fillsRun && (
+                                                <span
+                                                    className="shrink-0 inline-flex items-center gap-0.5 text-[10px] font-semibold"
+                                                    title="Taken to fill the machine, not to answer an order"
+                                                >
+                                                    <Zap size={9} /> fill
+                                                </span>
+                                            )}
                                         </button>
                                         );
                                     })}
@@ -1720,7 +1788,9 @@ const PlanSection = ({ batchType, plan, missingCodes = [], onViewForm, itemNames
                                     ['Width', meta?.w ? `${meta.w}″` : null],
                                     ['Height', meta?.h ? `${meta.h}″` : null],
                                     ['Taken', `${fmtKg(pick.take)}${unit}`],
-                                    ['Source', pick.manual ? 'assigned by hand' : `${pick.source} stock`],
+                                    ['Source', pick.manual ? 'assigned by hand'
+                                        : pick.fillsRun ? 'roll stock — fills the machine'
+                                            : `${pick.source} stock`],
                                     // A roll leaves the shelf whole however little of
                                     // it this job needs, so the two figures differ and
                                     // the difference is worth seeing.
