@@ -396,8 +396,16 @@ export const isFastMovingArticle = (material, outputType, dims) => {
 };
 
 // The same question asked of a sub-order, which knows what it will become.
-export const isFastMovingSize = (batchType, material, so) =>
-    isFastMovingArticle(material, outputTypeFor(batchType, so), outputDims(batchType, so));
+//
+// The material is taken from the group the sub-order lands in, never from the
+// order's own Roll_Material. Those are not the same thing: side and bottom patty
+// are always cut from NW REGULAR whatever the order says, and orders routinely say
+// NW VIRGIN. Reading the order made the review mark nothing while still allocating
+// the fill roll -- the allocator asked the group and the pill asked the order, and
+// they disagreed on every patty job.
+export const isFastMovingSize = (batchType, so) =>
+    isFastMovingArticle(groupAttrs(batchType, so).material,
+        outputTypeFor(batchType, so), outputDims(batchType, so));
 
 // Smallest available width >= target (exact match wins, else next larger); null
 // when nothing is wide enough.
@@ -1389,7 +1397,7 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
     // Two conditions, both required: the job makes something worth running the
     // machine full of, and the machine's width is known. The core allowance above
     // needs neither -- every roll has a core.
-    const perRun = subOrders.some((so) => isFastMovingSize(batchType, attrs.material, so))
+    const perRun = subOrders.some((so) => isFastMovingSize(batchType, so))
         ? rollsPerRun(batchType, groupRollWidth(batchType, attrs))
         : 0;
     const fill = (picks) => fillMachineRuns(rolls, picks, perRun, 'roll');

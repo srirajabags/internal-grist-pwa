@@ -1301,7 +1301,7 @@ const csvSubOrderCells = (so, batchType, status) => {
             return c ? Math.ceil(c.count - 1e-9) : '';
         })(),
         // Why this line's job may carry more roll than its orders need.
-        isFastMovingSize(batchType, so.Roll_Material, so) ? 'Yes' : 'No'
+        isFastMovingSize(batchType, so) ? 'Yes' : 'No'
     ];
 };
 
@@ -1396,7 +1396,7 @@ const SubOrderPill = ({ so, batchType, unit, tone = 'slate', onViewForm, showMis
     // runs full, and the planner should be able to see which lines those are while
     // reading the group. Marked only on an otherwise unremarkable pill -- a
     // postponed or missing-information sub-order has a more urgent thing to say.
-    const fast = isFastMovingSize(batchType, so.Roll_Material, so);
+    const fast = isFastMovingSize(batchType, so);
     // Amber matches the "postponed → No_Stock_Identified" note under the group, so
     // the sub-orders it refers to are identifiable at a glance.
     const cls = {
