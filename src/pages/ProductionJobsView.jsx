@@ -393,6 +393,21 @@ const batchLabel = (batch) => batch?.name || `${formatDate(batch?.date)} · ${ba
 // Likewise for a job: its Job_ID, never a row number dressed up as a name.
 const jobLabel = (job) => job?.name || `${job?.type || 'Job'} #${job?.id}`;
 
+// The batch and job numbers alone -- "8 - 25" -- which is how the floor says it
+// out loud. The full Job_ID opens with a date and a batch type that every row in a
+// batch already shares, so in a list of one batch's jobs it spends the whole line
+// on what they have in common and truncates what tells them apart.
+const jobShortRef = (job) => {
+    const parts = String(job?.name ?? '').split(' - ').map((p) => p.trim()).filter(Boolean);
+    return parts.length >= 2 ? parts.slice(-2).join(' - ') : `#${job?.id ?? '?'}`;
+};
+
+// What a job is made of. The same wording the godown and the batch review use, so
+// a roll recognised on one screen is recognised on the others.
+const jobSpecText = (job) => attrText({
+    mat: job?.material, col: job?.colour, gsm: job?.gsm, w: job?.width, h: job?.height
+});
+
 // Group the flat joined rows into batches -> jobs -> sub-orders.
 const groupRows = (rows) => {
     const batches = new Map();
@@ -544,9 +559,16 @@ const unackedOf = (batch) => (batch?.jobs || []).reduce((t, j) => t + num(j.unac
 // Headings and figures share one grid so a column heading sits over its own
 // column. Laying them out as two separate flex rows let the numbers drift out
 // from under their labels as soon as one of them grew a digit.
-// Narrower figure columns on a phone: four of them at desktop width left the job
-// name about a hundred pixels, which truncated it to "2...".
-const LEDGER_GRID = 'grid grid-cols-[1fr_2.9rem_2.9rem_2.9rem_2.9rem] sm:grid-cols-[1fr_3.4rem_3.4rem_3.4rem_3.4rem] gap-1 items-baseline';
+//
+// On a phone the name gets its own line instead of a column. Five figure columns
+// beside it left roughly a hundred pixels, which truncated "NW VIRGIN · WHITE ·
+// 110 GSM · 16"" to "N.." -- the one thing on the row worth reading. Spanning the
+// full width costs a line and gives the figures a fifth of the card each, which
+// is more than they need. From `sm` up there is room for one row and it stays one
+// row.
+const LEDGER_GRID = 'grid grid-cols-5 sm:grid-cols-[1fr_3.4rem_3.4rem_3.4rem_3.4rem_3.4rem] gap-1 items-baseline';
+// The label cell: a line of its own on a phone, a column from `sm` up.
+const LEDGER_LEAD = 'col-span-5 sm:col-span-1 min-w-0';
 
 // What one job moved, and what it turned that into. Collapsed to four figures,
 // because that is the question asked at the end of a run; opened, the same output
@@ -555,7 +577,11 @@ const JobLedgerRow = ({ job, open, onToggle }) => {
     const l = jobLedger(job);
     // The plan is what makes the breakdown worth opening: a run can hit its total
     // and still miss a size.
-    const rows = outputBreakdown(job, jobWorkPlan(job));
+    const plan = jobWorkPlan(job);
+    const rows = outputBreakdown(job, plan);
+    // What the job was asked to make, with the overage it was planned with. Beside
+    // what it made, the pair is the whole question a finished job raises.
+    const required = plan.totals.kg;
     const shortRows = rows.filter((r) => r.short > 0);
     const ran = elapsedText(job.startedAt, job.completedAt);
     const from = formatDateTime(job.startedAt);
@@ -574,12 +600,19 @@ const JobLedgerRow = ({ job, open, onToggle }) => {
                 className="w-full py-1.5 text-left disabled:cursor-default"
             >
                 <span className={LEDGER_GRID}>
-                    <span className="min-w-0 flex items-center gap-1.5">
+                    <span className={`${LEDGER_LEAD} flex items-center gap-1.5`}>
                         <ChevronRight
                             size={13}
                             className={`shrink-0 text-slate-300 transition-transform ${open ? 'rotate-90' : ''} ${rows.length === 0 ? 'opacity-0' : ''}`}
                         />
-                        <span className="text-[11px] font-semibold text-slate-700 truncate">{jobLabel(job)}</span>
+                        {/* The specification leads: in a list of one batch's jobs
+                            that is the only thing that differs between rows. The
+                            job number goes on the line below, where there is room
+                            for it -- six figure columns leave this one about a
+                            hundred pixels on a phone. */}
+                        <span className="text-[11px] font-semibold text-slate-700 truncate">
+                            {jobSpecText(job) === '—' ? jobLabel(job) : jobSpecText(job)}
+                        </span>
                         <AckDot count={job.unackedTxns} />
                         {shortRows.length > 0 && (
                             <span
@@ -591,6 +624,7 @@ const JobLedgerRow = ({ job, open, onToggle }) => {
                             </span>
                         )}
                     </span>
+                <span className="text-right text-[11px] tabular-nums text-slate-500">{fmtKg(required)}</span>
                 {l.empty ? (
                     <span className="col-span-4 text-right text-[11px] text-slate-300">nothing booked</span>
                 ) : (
@@ -600,6 +634,14 @@ const JobLedgerRow = ({ job, open, onToggle }) => {
                         <span className="text-right text-[11px] tabular-nums text-sky-700">{fmtKg(l.returned)}</span>
                         <span className={`text-right text-[11px] tabular-nums ${l.wastage < 0 ? 'text-red-600 font-semibold' : 'text-slate-500'}`}>
                             {fmtKg(l.wastage)}
+                            {/* The rate matters more than the figure: 11 kg off a
+                                209 kg roll and 11 kg off a 30 kg one are not the
+                                same run. */}
+                            {wastePct(l.collected - l.returned, l.wastage) != null && (
+                                <span className="block text-[9px] font-normal text-slate-400">
+                                    {wastePct(l.collected - l.returned, l.wastage)}%
+                                </span>
+                            )}
                         </span>
                     </>
                 )}
@@ -609,6 +651,8 @@ const JobLedgerRow = ({ job, open, onToggle }) => {
                     Full width and below the figures, because squeezed into the name
                     column on a phone it wrapped and split "pm" off its own time. */}
                 <span className="block text-[10px] text-slate-400 pl-[1.15rem]">
+                    <span className="font-mono text-slate-500" title={jobLabel(job)}>{jobShortRef(job)}</span>
+                    <span className="text-slate-300"> · </span>
                     {job.completed ? (
                         <>
                             <span className="whitespace-nowrap">{from || '—'}</span>
@@ -694,6 +738,9 @@ const BatchProgress = ({ batch }) => {
     // Only jobs that have actually moved something have a ledger to show, and only
     // jobs that cut a roll can.
     const moved = splitJobs(jobs).real.filter((j) => j.started || j.completed);
+    // What the batch set out to make, so the total line answers the same question
+    // as the rows above it.
+    const plannedTotal = moved.reduce((sum, j) => sum + num(jobWorkPlan(j).totals.kg), 0);
     const t = batchLedger(moved);
 
     return (
@@ -776,7 +823,8 @@ const BatchProgress = ({ batch }) => {
             {open && moved.length > 0 && (
                 <div className="mt-2 pt-2 border-t border-slate-200">
                     <div className={`${LEDGER_GRID} pb-1 border-b border-slate-200 text-[9px] uppercase tracking-wide text-slate-400`}>
-                        <span>What each job moved</span>
+                        <span className={LEDGER_LEAD}>What each job moved</span>
+                        <span className="text-right">plan kg</span>
                         <span className="text-right">roll kg</span>
                         <span className="text-right text-emerald-700">made kg</span>
                         <span className="text-right text-sky-700">back kg</span>
@@ -791,12 +839,18 @@ const BatchProgress = ({ batch }) => {
                         />
                     ))}
                     <div className={`${LEDGER_GRID} pt-2 mt-1 border-t border-slate-200 text-[11px] font-bold`}>
-                        <span className="text-slate-600 font-semibold">Batch total</span>
+                        <span className={`${LEDGER_LEAD} text-slate-600 font-semibold`}>Batch total</span>
+                        <span className="text-right tabular-nums text-slate-500">{fmtKg(plannedTotal)}</span>
                         <span className="text-right tabular-nums text-slate-700">{fmtKg(t.collected)}</span>
                         <span className="text-right tabular-nums text-emerald-700">{fmtKg(t.produced)}</span>
                         <span className="text-right tabular-nums text-sky-700">{fmtKg(t.returned)}</span>
                         <span className={`text-right tabular-nums ${t.wastage < 0 ? 'text-red-600' : 'text-slate-700'}`}>
                             {fmtKg(t.wastage)}
+                            {wastePct(t.collected - t.returned, t.wastage) != null && (
+                                <span className="block text-[9px] font-normal text-slate-400">
+                                    {wastePct(t.collected - t.returned, t.wastage)}%
+                                </span>
+                            )}
                         </span>
                     </div>
                 </div>
@@ -878,6 +932,18 @@ const StatusBadge = ({ started, completed }) => {
             <Circle size={12} /> Not started
         </span>
     );
+};
+
+// Waste as a share of the fabric the run actually consumed -- what it took out
+// less what it handed back. Against the roll it collected instead, a job that
+// returned most of its roll would read as barely wasting anything.
+//
+// Null where there is nothing to divide by: a job that consumed nothing has no
+// waste rate, and 0/0 printed as a percentage reads as a real measurement.
+const wastePct = (consumedKg, wasteKg) => {
+    const used = num(consumedKg);
+    if (!(used > 0.005)) return null;
+    return Math.round((num(wasteKg) / used) * 1000) / 10;
 };
 
 // Compact kg label: whole numbers as-is, fractions to 1 dp.
