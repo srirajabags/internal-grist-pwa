@@ -326,17 +326,29 @@ export const ROLL_CORE_ALLOWANCE = 0.05;
 // enough fabric behind it that the requirement is reachable.
 export const withCoreAllowance = (kg) => num(kg) * (1 + ROLL_CORE_ALLOWANCE);
 
-// The sheet machine takes several rolls side by side, up to 60 inches across, and
-// runs them as one pass. 58 is the width actually usable once the rolls are
-// mounted with a gap between them.
-const MACHINE_WIDTH_INCHES = 58;
+// How wide a machine is, in inches of roll it can carry side by side in one pass.
+//
+// Only the plain sheet machine is known to take more than one. Every other type is
+// left out deliberately rather than defaulted -- a DCUT machine may well hold two
+// 27" rolls, and model sheets may well run on this same machine, but nobody has
+// said so. Guessing would have the review quietly halve a job's reported machine
+// time, and would hand it rolls it has no use for, on the strength of an
+// assumption. Adding a line here is how a machine joins in.
+const MACHINE_WIDTH_INCHES = {
+    'ROLLS TO SHEETS': 64
+};
 
-// How many rolls of a width fill one pass of the machine: three 19" rolls make 57
-// of the 58 inches. A job given four is a full pass plus one roll running alone at
-// a third of the machine's capacity, which is the expensive way to cut sheets.
-export const rollsPerRun = (rollWidth) => {
+// How many rolls of a width fill one pass: three 19" rolls take 57 of the 64
+// inches, four 16" rolls take all 64. A job given one more than that is a full
+// pass plus a roll running alone, which is the expensive way to cut sheets.
+//
+// One, for a machine that carries one roll at a time -- which is the answer for
+// every type but sheets, and the answer that leaves their behaviour unchanged.
+export const rollsPerRun = (batchType, rollWidth) => {
+    const capacity = MACHINE_WIDTH_INCHES[norm(batchType)];
     const w = num(rollWidth);
-    return w > 0 ? Math.floor(MACHINE_WIDTH_INCHES / w) : 0;
+    if (!capacity || !(w > 0)) return 1;
+    return Math.max(Math.floor(capacity / w), 1);
 };
 
 // Fast-moving sheet sizes: the ones the floor runs often enough that a part-full
@@ -1134,8 +1146,8 @@ export const ROLLS_PER_JOB_NOTICE = 10;
 //
 // Machines that take one roll at a time have a per-run capacity of one, and there
 // loads and rolls are the same number, as they always were.
-export const machineLoads = (rollCount, rollWidth) => {
-    const perRun = rollsPerRun(rollWidth);
+export const machineLoads = (batchType, rollCount, rollWidth) => {
+    const perRun = rollsPerRun(batchType, rollWidth);
     return perRun > 1 ? Math.ceil(num(rollCount) / perRun) : num(rollCount);
 };
 
@@ -1339,9 +1351,11 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
     const rollNeed = (kg) => withCoreAllowance(kg);
     // How many rolls make one pass of the machine, for a group that is worth
     // filling it for. Zero everywhere else, which turns the top-up off.
-    const perRun = SHEET_TYPES.has(batchType)
-        && subOrders.some((so) => isFastMovingSize(attrs.material, so.Sheet_Size))
-        ? rollsPerRun(num(attrs.width))
+    // Filling the machine is a plain-sheet decision: it is the only machine whose
+    // width is known, and the only one whose spare capacity has a fast-moving size
+    // worth putting in it. The core allowance above applies to every type.
+    const perRun = subOrders.some((so) => isFastMovingSize(attrs.material, so.Sheet_Size))
+        ? rollsPerRun(batchType, num(attrs.width))
         : 0;
     const fill = (picks) => fillMachineRuns(rolls, picks, perRun, 'roll');
 

@@ -1334,7 +1334,7 @@ const buildCsvRows = (plans, codeNames, itemNames) => {
                 .join(' | ');
             const rollPicks = g.picks.filter((p) => p.source === 'roll');
             const rollWeight = rollPicks.reduce((t, p) => t + num(p.whole ?? p.take), 0);
-            const perLoad = rollsPerRun(g.rollWidth);
+            const perLoad = rollsPerRun(batchType, g.rollWidth);
             const named = (ids) => (ids || [])
                 .map((id) => itemNames.get(num(id)) || `#${id}`)
                 .join(' | ');
@@ -1352,8 +1352,8 @@ const buildCsvRows = (plans, codeNames, itemNames) => {
                 fmtKg(withCoreAllowance(g.requiredQty)),
                 fmtKg(rollWeight),
                 rollPicks.length,
-                perLoad || '',
-                rollPicks.length > 0 ? machineLoads(rollPicks.length, g.rollWidth) : 0,
+                perLoad,
+                rollPicks.length > 0 ? machineLoads(batchType, rollPicks.length, g.rollWidth) : 0,
                 rollPicks.filter((p) => p.fillsRun).length,
                 g.priority, PRIORITY_LABEL[g.priority] || '', itemIds.length, allocation,
                 named(g.picks.filter((p) => p.manual).map((p) => p.itemId)),
@@ -1708,8 +1708,8 @@ const PlanSection = ({ batchType, plan, missingCodes = [], onViewForm, itemNames
                                     per roll. */}
                                 {(() => {
                                     const rolls = g.picks.filter((p) => p.source === 'roll').length;
-                                    const loads = machineLoads(rolls, g.rollWidth);
-                                    const perRun = rollsPerRun(g.rollWidth);
+                                    const loads = machineLoads(batchType, rolls, g.rollWidth);
+                                    const perRun = rollsPerRun(batchType, g.rollWidth);
                                     if (loads < ROLLS_PER_JOB_NOTICE) return null;
                                     return (
                                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium text-amber-800 bg-amber-50 ring-1 ring-amber-200">
