@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { X, Warehouse, CheckCircle2, Circle, Loader2, AlertTriangle, Boxes } from 'lucide-react';
+import { X, Warehouse, CheckCircle2, Circle, Loader2, AlertTriangle, Boxes, ChevronDown } from 'lucide-react';
 import Button from './Button';
 import { ItemVisual } from './itemVisuals';
 import { attrText } from '../utils/txnDisplay';
@@ -32,6 +32,99 @@ const buildLines = (batch) => (batch?.jobs || []).flatMap((job) =>
         .map((job) => ({ key: `${job.id}:none`, job, item: null, godown: godownForJob(job), took: null, back: null, pending: false }))
 );
 
+// A roll the floor used up has nothing to carry: the godown will see no weight
+// come back for it, so there is no handover to tick. Those lines still belong on
+// the sheet -- an operator wondering what became of a roll should find it here --
+// but they are not work, so they fold away and stay out of the count.
+const nothingToCarry = (line) => Boolean(line.item) && line.took != null && line.back == null;
+
+// One item on the sheet. Without `onToggle` it is a record rather than a task:
+// no tick, and muted so the eye passes over it.
+const ReturnLine = ({ line, ring, on, onToggle }) => (
+    <div
+        className={'rounded-xl border p-3 ' + (onToggle
+            ? (on ? 'border-green-300 bg-green-50/60' : `border-slate-200 bg-white ring-1 ring-inset ${ring}`)
+            : 'border-slate-200 bg-slate-50/60')}
+    >
+        <div className="flex items-start gap-3">
+            {onToggle && (
+                <button
+                    type="button"
+                    onClick={onToggle}
+                    className={`mt-0.5 shrink-0 ${on ? 'text-green-600' : 'text-slate-300'}`}
+                    aria-label={on ? 'Mark not handed over' : 'Mark handed over'}
+                >
+                    {on ? <CheckCircle2 size={22} /> : <Circle size={22} />}
+                </button>
+            )}
+            <span className="shrink-0 mt-0.5">
+                <ItemVisual
+                    colour={line.item?.colour ?? line.job.colour}
+                    type={line.item?.type ?? line.job.itemType}
+                    name={line.item?.code ?? line.job.itemName}
+                />
+            </span>
+            <span className="min-w-0 flex-1">
+                {line.item ? (
+                    <span className="block font-mono text-sm font-semibold text-slate-800 break-all">{line.item.itemId}</span>
+                ) : (
+                    <span className="flex items-center gap-1.5 text-sm font-semibold text-amber-800">
+                        <AlertTriangle size={14} className="shrink-0" /> No stock item recorded
+                    </span>
+                )}
+                <span className="block text-[11px] text-slate-500 mt-0.5 break-words">
+                    {line.item
+                        ? attrText({ mat: line.item.material, col: line.item.colour, gsm: line.item.gsm, w: line.item.w, h: line.item.h })
+                        : attrText({ mat: line.job.material, col: line.job.colour, gsm: line.job.gsm, w: line.job.width, h: line.job.height })}
+                </span>
+                <span className="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-white mt-1.5 break-all">
+                    {line.job.name || `Job #${line.job.id}`}
+                </span>
+            </span>
+        </div>
+
+        {line.item && (
+            <div className="flex items-center justify-between gap-2 mt-2.5 pt-2.5 border-t border-slate-100">
+                <span className="text-[11px] text-slate-500 min-w-0">
+                    {line.took != null && <>{fmtKg(line.took)} kg taken out</>}
+                    {line.took != null && line.back != null && ' · '}
+                    {line.back != null && (
+                        <span className="text-slate-700 font-semibold">{fmtKg(line.back)} kg going back</span>
+                    )}
+                    {line.back == null && line.took != null && <span className="text-slate-400"> · nothing left over</span>}
+                </span>
+                {line.pending && (
+                    <span className="shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800 whitespace-nowrap">
+                        awaiting incharge
+                    </span>
+                )}
+            </div>
+        )}
+    </div>
+);
+
+// The used-up rolls, folded away until someone asks for them.
+const SpentLines = ({ lines }) => {
+    const [open, setOpen] = useState(false);
+    if (lines.length === 0) return null;
+    return (
+        <div className="mt-2">
+            <button
+                type="button"
+                onClick={() => setOpen(!open)}
+                aria-expanded={open}
+                className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-semibold text-slate-500 hover:text-slate-700 hover:bg-slate-50"
+            >
+                <ChevronDown size={13} className={'transition-transform ' + (open ? '' : '-rotate-90')} />
+                {lines.length} used up, nothing to carry
+            </button>
+            {open && <div className="space-y-2 mt-2">
+                {lines.map((line) => <ReturnLine key={line.key} line={line} />)}
+            </div>}
+        </div>
+    );
+};
+
 // The counterpart of the collection checklist, and the last step of a batch.
 //
 // The leftover roll was already booked back when each job finished — the roll was
@@ -43,17 +136,25 @@ const ReturnChecklistModal = ({ batch, updating, onClose, onConfirm }) => {
     const lines = useMemo(() => buildLines(batch), [batch]);
     const [ticked, setTicked] = useState(() => new Set());
 
+    // Only the lines with something to carry are work; the rest are there to be
+    // looked up, not ticked.
+    const carry = useMemo(() => lines.filter((l) => !nothingToCarry(l)), [lines]);
+    const spentCount = lines.length - carry.length;
+
     const sections = useMemo(() => [ROLLS_GODOWN, BAGS_GODOWN]
-        .map((godown) => ({ godown, lines: lines.filter((l) => l.godown === godown) }))
-        .filter((s) => s.lines.length > 0), [lines]);
+        .map((godown) => {
+            const own = lines.filter((l) => l.godown === godown);
+            return { godown, carry: own.filter((l) => !nothingToCarry(l)), spent: own.filter(nothingToCarry) };
+        })
+        .filter((s) => s.carry.length + s.spent.length > 0), [lines]);
 
     const toggle = (key) => setTicked((prev) => {
         const next = new Set(prev);
         if (next.has(key)) next.delete(key); else next.add(key);
         return next;
     });
-    const allTicked = lines.length > 0 && lines.every((l) => ticked.has(l.key));
-    const tickAll = () => setTicked(allTicked ? new Set() : new Set(lines.map((l) => l.key)));
+    const allTicked = lines.length > 0 && carry.every((l) => ticked.has(l.key));
+    const tickAll = () => setTicked(allTicked ? new Set() : new Set(carry.map((l) => l.key)));
 
     const totalBack = lines.reduce((t, l) => t + num(l.back), 0);
     const anyUnrecorded = lines.some((l) => !l.item);
@@ -73,7 +174,8 @@ const ReturnChecklistModal = ({ batch, updating, onClose, onConfirm }) => {
                         <div className="min-w-0">
                             <h2 className="font-bold text-slate-800 leading-tight">Hand over to the godown</h2>
                             <p className="text-xs text-slate-500">
-                                {lines.length} item{lines.length === 1 ? '' : 's'}
+                                {carry.length} to carry
+                                {spentCount > 0 ? ` · ${spentCount} used up` : ''}
                                 {totalBack > 0 ? ` · ${fmtKg(totalBack)} kg booked back` : ''}
                             </p>
                         </div>
@@ -82,10 +184,10 @@ const ReturnChecklistModal = ({ batch, updating, onClose, onConfirm }) => {
                 </div>
 
                 <div className="px-4 py-2 border-b border-slate-100 flex items-center justify-between gap-2 shrink-0">
-                    <p className="text-xs font-semibold text-slate-600">{ticked.size} of {lines.length} handed over</p>
+                    <p className="text-xs font-semibold text-slate-600">{ticked.size} of {carry.length} handed over</p>
                     <button
                         onClick={tickAll}
-                        disabled={lines.length === 0}
+                        disabled={carry.length === 0}
                         className="text-xs font-semibold text-teal-700 hover:text-teal-800 disabled:text-slate-300"
                     >
                         {allTicked ? 'Clear all' : 'Tick all'}
@@ -96,82 +198,30 @@ const ReturnChecklistModal = ({ batch, updating, onClose, onConfirm }) => {
                     {lines.length === 0 && (
                         <p className="text-sm text-slate-500 text-center py-8">This batch has no stock to return.</p>
                     )}
-                    {sections.map(({ godown, lines: sectionLines }) => {
+                    {sections.map(({ godown, carry: sectionCarry, spent }) => {
                         const style = GODOWN_STYLE[godown];
                         const GodownIcon = style.icon;
-                        const doneHere = sectionLines.filter((l) => ticked.has(l.key)).length;
+                        const doneHere = sectionCarry.filter((l) => ticked.has(l.key)).length;
                         return (
                             <section key={godown}>
                                 <header className="flex items-center justify-between gap-2 mb-2 px-0.5">
                                     <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-bold tracking-wide ${style.chip}`}>
                                         <GodownIcon size={13} /> {godown}
                                     </span>
-                                    <span className="text-[11px] font-semibold text-slate-500">{doneHere} / {sectionLines.length}</span>
+                                    <span className="text-[11px] font-semibold text-slate-500">{doneHere} / {sectionCarry.length}</span>
                                 </header>
                                 <div className="space-y-2">
-                                    {sectionLines.map((line) => {
-                                        const on = ticked.has(line.key);
-                                        return (
-                                            <div
-                                                key={line.key}
-                                                className={`rounded-xl border p-3 ${on ? 'border-green-300 bg-green-50/60' : `border-slate-200 bg-white ring-1 ring-inset ${style.ring}`}`}
-                                            >
-                                                <div className="flex items-start gap-3">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => toggle(line.key)}
-                                                        className={`mt-0.5 shrink-0 ${on ? 'text-green-600' : 'text-slate-300'}`}
-                                                        aria-label={on ? 'Mark not handed over' : 'Mark handed over'}
-                                                    >
-                                                        {on ? <CheckCircle2 size={22} /> : <Circle size={22} />}
-                                                    </button>
-                                                    <span className="shrink-0 mt-0.5">
-                                                        <ItemVisual
-                                                            colour={line.item?.colour ?? line.job.colour}
-                                                            type={line.item?.type ?? line.job.itemType}
-                                                            name={line.item?.code ?? line.job.itemName}
-                                                        />
-                                                    </span>
-                                                    <span className="min-w-0 flex-1">
-                                                        {line.item ? (
-                                                            <span className="block font-mono text-sm font-semibold text-slate-800 break-all">{line.item.itemId}</span>
-                                                        ) : (
-                                                            <span className="flex items-center gap-1.5 text-sm font-semibold text-amber-800">
-                                                                <AlertTriangle size={14} className="shrink-0" /> No stock item recorded
-                                                            </span>
-                                                        )}
-                                                        <span className="block text-[11px] text-slate-500 mt-0.5 break-words">
-                                                            {line.item
-                                                                ? attrText({ mat: line.item.material, col: line.item.colour, gsm: line.item.gsm, w: line.item.w, h: line.item.h })
-                                                                : attrText({ mat: line.job.material, col: line.job.colour, gsm: line.job.gsm, w: line.job.width, h: line.job.height })}
-                                                        </span>
-                                                        <span className="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-white mt-1.5 break-all">
-                                                            {line.job.name || `Job #${line.job.id}`}
-                                                        </span>
-                                                    </span>
-                                                </div>
-
-                                                {line.item && (
-                                                    <div className="flex items-center justify-between gap-2 mt-2.5 pt-2.5 border-t border-slate-100">
-                                                        <span className="text-[11px] text-slate-500 min-w-0">
-                                                            {line.took != null && <>{fmtKg(line.took)} kg taken out</>}
-                                                            {line.took != null && line.back != null && ' · '}
-                                                            {line.back != null && (
-                                                                <span className="text-slate-700 font-semibold">{fmtKg(line.back)} kg going back</span>
-                                                            )}
-                                                            {line.back == null && line.took != null && <span className="text-slate-400"> · nothing left over</span>}
-                                                        </span>
-                                                        {line.pending && (
-                                                            <span className="shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800 whitespace-nowrap">
-                                                                awaiting incharge
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                )}
-                                            </div>
-                                        );
-                                    })}
+                                    {sectionCarry.map((line) => (
+                                        <ReturnLine
+                                            key={line.key}
+                                            line={line}
+                                            ring={style.ring}
+                                            on={ticked.has(line.key)}
+                                            onToggle={() => toggle(line.key)}
+                                        />
+                                    ))}
                                 </div>
+                                <SpentLines lines={spent} />
                             </section>
                         );
                     })}
