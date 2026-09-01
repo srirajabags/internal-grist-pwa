@@ -20,6 +20,7 @@ import {
     effectiveQty, needsPieceConversion, cannotConvertQty, cannotSizePieces, cannotSizePatty, BUNDLE_SIZE,
     typeNeedsSubOrder, missingInfoFields, outputCount, overageRate, outputSizeLabel, OUTPUT_COUNT_UNIT,
     missingOutputCodes, machineLoads, rollsPerRun, isFastMovingSize, isUnverifiedSize,
+    isModelNumberSheet,
     ROLL_CORE_ALLOWANCE, withCoreAllowance,
     ROLLS_PER_JOB_NOTICE,
     bagPieceCount
@@ -1515,6 +1516,13 @@ const SubOrderPill = ({ so, batchType, unit, tone = 'slate', onViewForm, showMis
     // reading the group. Marked only on an otherwise unremarkable pill -- a
     // postponed or missing-information sub-order has a more urgent thing to say.
     const fast = isFastMovingSize(batchType, so);
+    // What this line is asking for, in its own words. On a model-number order the
+    // Bag_Colour field holds the model, and the whole group is cut from one white
+    // roll -- so the group heading says WHITE while each line wants a different
+    // model. Without this the review cannot say which sub-order the K10 sheets on
+    // the shelf were picked for.
+    const modelOrder = isModelNumberSheet(so);
+    const colours = choiceText(so.Bag_Colour);
     // Amber matches the "postponed → No_Stock_Identified" note under the group, so
     // the sub-orders it refers to are identifiable at a glance.
     const cls = {
@@ -1547,6 +1555,11 @@ const SubOrderPill = ({ so, batchType, unit, tone = 'slate', onViewForm, showMis
                     </HoldButton>
                 )}
             </span>
+            {colours && (
+                <span>
+                    {modelOrder ? 'Model' : 'Colour'}: <span className="font-medium">{colours}</span>
+                </span>
+            )}
             <span className="inline-flex items-center gap-1">
                 {size.label}: <span className="font-medium">{size.value}</span>
                 {fast && (
@@ -1873,7 +1886,24 @@ const PlanSection = ({ batchType, plan, missingCodes = [], onViewForm, itemNames
                         <div key={g.key} className="bg-white rounded-xl border border-slate-200 p-3">
                             <div className="flex items-start justify-between gap-2 mb-1.5">
                                 <div className="min-w-0">
-                                    <p className="font-semibold text-slate-800 text-sm break-words">{attrText(g.attrs)}</p>
+                                    <p className="font-semibold text-slate-800 text-sm break-words">
+                                        {attrText(g.attrs)}
+                                        {/* Two groups can share every attribute in that
+                                            heading and still be different jobs: a model
+                                            run and a plain run cut the same white roll,
+                                            but only one of them can be pre-filled from
+                                            sheets already printed with the model. Without
+                                            this the review shows the same title twice and
+                                            looks like it has double-counted. */}
+                                        {g.attrs?.finishedType === 'MODEL NUMBER SHEET' && (
+                                            <span
+                                                className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-800 align-middle"
+                                                title="Some of these orders carry a model number. Each is answered first from sheets already printed with its own model, then from plain white sheets to print on, and only then by cutting the roll — which is the same roll the plain orders in this job are cut from."
+                                            >
+                                                includes model numbers
+                                            </span>
+                                        )}
+                                    </p>
                                     {g.rollWidth ? <div className="mt-1"><RollBadge width={g.rollWidth} /></div> : null}
                                     <p className="text-[11px] text-slate-400 mt-1">
                                         {g.matchedCodeId ? `Item code #${g.matchedCodeId}` : 'No matching item code'}
@@ -1898,6 +1928,26 @@ const PlanSection = ({ batchType, plan, missingCodes = [], onViewForm, itemNames
                                     floor. Counted in loads: a machine that takes three
                                     rolls at once is stopped once per three, not once
                                     per roll. */}
+                                {/* A model-number run is lifted to the fewest sheets
+                                    worth setting the plate up for, so the machine is
+                                    asked for more than the orders owe. Said plainly,
+                                    with the surplus named -- it is not waste, it is
+                                    next month's order of that model. */}
+                                {num(g.floorSheets) > 0 && (
+                                    <span
+                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium text-violet-800 bg-violet-50 ring-1 ring-violet-200"
+                                        title={'Each model is its own plate, so each carries its own minimum and '
+                                            + 'they add up. A model already answered by sheets printed with it needs '
+                                            + 'no setup and adds nothing. The extra is stocked and answers the next '
+                                            + 'order of that model.'}
+                                    >
+                                        <Layers size={12} />
+                                        {num(g.floorSheets).toLocaleString('en-IN')}-sheet minimum run
+                                        {num(g.floorModels) > 1 ? ` · ${num(g.floorModels)} models` : ''}
+                                        {num(g.floorSurplus) > 0
+                                            ? ` · ${fmtKg(g.floorSurplus)} kg spare for the shelf` : ''}
+                                    </span>
+                                )}
                                 {(() => {
                                     const rolls = g.picks.filter((p) => p.source === 'roll').length;
                                     const loads = machineLoads(batchType, rolls, g.rollWidth);

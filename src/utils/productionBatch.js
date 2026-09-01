@@ -7,9 +7,12 @@
 // Factory_Production_Job_Batches.Type metadata. ROLLS TO UCUT and ROLLS TO WCUT
 // are parked for now — their OUTPUT_TYPE / qualification rules stay defined below
 // so they can be re-added here without further changes.
+// ROLLS TO MODEL SHEETS is deliberately absent: a model-number order is a sheet
+// order like any other, cut on the same machine from the same white virgin roll,
+// and it is planned inside ROLLS TO SHEETS. Its constants are kept below so
+// batches created before the merge still read correctly.
 export const BATCH_TYPES = [
     'ROLLS TO SHEETS',
-    'ROLLS TO MODEL SHEETS',
     'ROLLS TO DCUT',
     'ROLLS TO SIDEPATTY',
     'ROLLS TO BOTTOMPATTY SHEETS',
@@ -25,7 +28,7 @@ export const HARD_START_DATE = '2026-08-16';
 // value is the Inventory_Item_Codes.Type string for that output.
 export const OUTPUT_TYPE = {
     'ROLLS TO SHEETS': 'SHEET',
-    'ROLLS TO MODEL SHEETS': 'MODEL NUMBER SHEET',
+    'ROLLS TO MODEL SHEETS': 'SHEET',
     'ROLLS TO DCUT': 'DCUT BAG',
     'ROLLS TO UCUT': 'UCUT BAG',
     'ROLLS TO WCUT': 'WCUT BAG',
@@ -33,6 +36,72 @@ export const OUTPUT_TYPE = {
     'ROLLS TO BOTTOMPATTY SHEETS': 'BOTTOMPATTY SHEET',
     'ROLLS TO HANDLES': 'READYMADE HANDLE',
     'ROLLS TO PRESSING HANDLES': 'PRESSING HANDLE'
+};
+
+// A model-number order is answered outright by a sheet already printed with that
+// model, which is not what the job produces: the job cuts a plain white virgin
+// sheet and the number goes on afterwards, at printing. Groups carry the
+// distinction on attrs.finishedType -- see groupAttrs.
+
+// The fewest sheets worth setting the press up for, by sheet size.
+//
+// A model number is printed onto plain white stock, and the plate is made for that
+// customer. Cutting two hundred sheets for one order and setting the same plate up
+// again next month costs more than the paper does, so a run is lifted to a round
+// number and the surplus waits on the shelf for the next order of that model.
+//
+// Counted in sheets, before the production overage: 1000 becomes 1100 once the
+// 10% is added. A size not listed here has no floor -- it is cut to the order.
+// Keys are smaller x bigger, the way sizes are compared everywhere else -- a
+// 24x17 sheet and a 17x24 one are the same sheet.
+export const MODEL_SHEET_MINIMUMS = {
+    '17x24': 1000,   // a 12x16 bag: two 12x17 sheets printed side by side
+    '16x19': 2000,   // a 16x18 bag
+    '16x21': 2000    // a 16x19 stick bag
+};
+
+// The floor for a group, in kg, or 0 where there is none. Read from the sheet size
+// the group is cutting and the weight of one of those sheets.
+// The minimum for each model in a group, keyed by model.
+//
+// Every model is its own plate. Two models sharing a job -- same white roll, same
+// machine setup -- are still two press setups, so each carries its own minimum and
+// the group's floor is the sum. Only a model number has one: a plain run is cut to
+// its orders, because there is no plate to amortise.
+export const modelSheetMinimums = (subOrders) => {
+    const out = new Map();
+    for (const so of subOrders || []) {
+        if (!isModelNumberSheet(so)) continue;
+        const dims = parseSheetSize(so.Sheet_Size);
+        const model = norm(firstChoice(so.Bag_Colour));
+        if (!dims || !model || out.has(model)) continue;
+        const [w, h] = dims;
+        const sheets = num(MODEL_SHEET_MINIMUMS[`${Math.min(w, h)}x${Math.max(w, h)}`]);
+        if (sheets > 0) out.set(model, { sheets, w, h, gsm: num(so.Bag_GSM) });
+    }
+    return out;
+};
+
+// Total sheets the group must run. `only` narrows it to the models that actually
+// need a press setup; without it, every model in the group counts.
+export const modelSheetMinimum = (subOrders, only) => {
+    let sheets = 0;
+    for (const [model, m] of modelSheetMinimums(subOrders)) {
+        if (!only || only.has(model)) sheets += m.sheets;
+    }
+    return sheets;
+};
+
+export const modelSheetFloorKg = (subOrders, rate, only) => {
+    let kg = 0;
+    for (const [model, m] of modelSheetMinimums(subOrders)) {
+        if (only && !only.has(model)) continue;
+        if (!(m.gsm > 0)) continue;
+        // The same overage the orders themselves carry, so a floor of 1000 sheets
+        // asks the machine for 1100 exactly as a 1000-sheet order would.
+        kg += withOverage('ROLLS TO SHEETS', m.sheets * (m.w * m.h * m.gsm) / PIECE_TO_KG_DIVISOR, rate);
+    }
+    return kg;
 };
 
 // Sub-order Roll_Material -> Inventory_Item_Codes.Material. Plastic variants have
@@ -443,6 +512,30 @@ const parseSheetSize = (v) => {
     return m ? [Number(m[1]), Number(m[2])] : null;
 };
 
+// The size a printed model sheet is stocked at, which is not always the size the
+// machine cut.
+//
+// A sheet small enough to fit twice inside the press is cut double: a 12x16 bag is
+// run as one 24x17 white sheet, printed with the model twice, and cut apart. The
+// halves are what reach the godown, so a 12x16 order is answered by 12x17 model
+// sheets even though the job produced 24x17 ones. Where nothing was doubled -- a
+// 16x18 bag's 16x19 sheet -- the two sizes are the same.
+//
+// Doubling is detected against the bag, not guessed from the sheet: a sheet is
+// twice as wide as its bag only when it holds two of them. Sizes near but not
+// double the bag width are left alone -- a BOPP 16" bag is cut 17x18, which is
+// wider than the bag and still one sheet.
+export const finishedSheetDims = (so) => {
+    const dims = parseSheetSize(so?.Sheet_Size);
+    if (!dims) return null;
+    let [w, h] = dims;
+    const bagW = num(so?.Bag_Width), bagH = num(so?.Bag_Height);
+    const isDouble = (sheet, bag) => bag > 0 && Math.abs(sheet - 2 * bag) < 0.51;
+    if (isDouble(w, bagW)) w /= 2;          // two bags across the sheet
+    else if (bagH > 0 && h >= 2 * bagH) h /= 2;   // two bags along it
+    return { w, h };
+};
+
 // Required roll width for a sub-order, or one of two sentinels:
 //   'ignore' -> not enough / junk geometry; drop the sub-order silently.
 //   null     -> a genuine requirement that no available roll width can satisfy;
@@ -814,7 +907,9 @@ export const typeNeedsSubOrder = (batchType, so) => {
         case 'ROLLS TO UCUT': return model === 'UCUT';
         case 'ROLLS TO HANDLES': return model === 'STITCHING' && !usesStick(so);
         case 'ROLLS TO PRESSING HANDLES': return model === 'HANDLE';
-        case 'ROLLS TO SHEETS': return (model === 'STITCHING' || model === 'PLAIN') && !isModelNumberSheet(so);
+        // Model-number orders included: they are sheets, and the difference is in
+        // what can answer them, not in what the machine does.
+        case 'ROLLS TO SHEETS': return model === 'STITCHING' || model === 'PLAIN';
         case 'ROLLS TO MODEL SHEETS': return isModelNumberSheet(so);
         // ROLLS TO SIDEPATTY makes the bag's single gusset: a side patty, or a
         // bottom patty when the side patty is PRINTED. Either way needs a width.
@@ -883,7 +978,7 @@ export const groupAttrs = (batchType, so) => {
     // sub-order carries in Bag_Colour (e.g. K10), so finished stock is searched for
     // on that. Nothing is printed with a model number on a coloured roll: the raw
     // material is plain white NW VIRGIN, cut to the width the sheet size needs.
-    if (batchType === 'ROLLS TO MODEL SHEETS') {
+    if (SHEET_TYPES.has(batchType) && isModelNumberSheet(so)) {
         const rw = requiredRollWidth(batchType, so);
         return {
             // The job is the machine set to a white NW VIRGIN roll. The model
@@ -893,6 +988,13 @@ export const groupAttrs = (batchType, so) => {
             colour: 'WHITE',
             gsm: so.Bag_GSM || '',
             width: typeof rw === 'number' ? String(rw) : '',
+            // What answers an order in this job outright: a sheet already printed
+            // with its model, or -- for the plain orders sharing the same white roll
+            // -- a plain sheet. finishedBySize keys both sides on colour, and a
+            // model number sits in the colour field, so each line can only be
+            // answered by stock that carries its own model or its own colour.
+            finishedTypes: ['MODEL NUMBER SHEET', 'SHEET'],
+            finishedType: 'MODEL NUMBER SHEET',
             // Ready model sheets carry a model and a size of their own; neither
             // constrains the group.
             finishedColour: null,
@@ -1034,8 +1136,9 @@ export const missingOutputCodes = (batchType, groups, itemCodes) => {
         // Nothing is cut, so nothing is produced: a group met entirely from
         // finished stock needs no output code at all.
         if (!(num(g.outputQty) > 0)) continue;
-        const rollCode = byId.get(num(g.rollCodeId))
-            || byId.get(num((g.picks || []).find((p) => p.source === 'roll')?.codeId));
+        // Only ever the roll: what the job cuts decides what comes off it.
+        const rollCode = byId.get(num((g.picks || []).find((p) => p.source === 'roll')?.codeId))
+            || byId.get(num(g.rollCodeId));
         const roll = rollCode
             ? { material: rollCode.Material, colour: rollCode.Colour, gsm: rollCode.GSM }
             : { material: g.attrs?.material, colour: g.attrs?.colour, gsm: g.attrs?.gsm };
@@ -1108,7 +1211,9 @@ const relevantStock = (attrs, inventory, batchType, outputType) => {
     // Every type is planned in kg, so stock is measured by weight -- a roll has no
     // bundle count, which is why a handle job could never draw on one before.
     const availOf = (r) => num(r.availWeight);
-    const outType = norm(outputType || OUTPUT_TYPE[batchType]);
+    // The stock that answers the order, which for model sheets is not the thing
+    // the job makes -- see the note above MODEL_SHEET_MINIMUMS.
+    const outType = norm(outputType || attrs.finishedType || OUTPUT_TYPE[batchType]);
 
     // Finished stock must match the output width too (a 16" sheet ≠ a 32" sheet).
     // Rolls: roll-width types match the group width (which IS the roll width);
@@ -1138,8 +1243,11 @@ const relevantStock = (attrs, inventory, batchType, outputType) => {
     // Pressing handles are printed and cut as the bags are made, so there is no
     // finished stock of them to draw on -- only the roll.
     const stocked = batchType !== 'ROLLS TO PRESSING HANDLES';
+    // A sheet job can hold model-number orders and plain ones at once -- they cut
+    // the same roll -- so more than one kind of stock can answer it.
+    const outTypes = new Set((attrs.finishedTypes || [outType]).map(norm));
     const finished = (stocked ? inventory : [])
-        .filter((r) => norm(r.type) === outType && matchesSpec(r, finishedSpec) && availOf(r) > 0)
+        .filter((r) => outTypes.has(norm(r.type)) && matchesSpec(r, finishedSpec) && availOf(r) > 0)
         .map((r) => ({ ...r, avail: availOf(r) }))
         .sort((a, b) => b.avail - a.avail);
     // Blanks: stock that is already cut to size but not yet the finished article --
@@ -1300,11 +1408,11 @@ const fillMachineRuns = (stock, picks, perRun, source) => {
 //
 // Normalised smaller x bigger, matching sizeOf below, so a strip catalogued one
 // way round still meets stock catalogued the other.
-const outputSizeKey = (batchType, so) => {
-    const d = outputDims(batchType, so);
-    if (!d || !(num(d.w) > 0) || !(num(d.h) > 0)) return null;
-    return `${Math.min(num(d.w), num(d.h))}x${Math.max(num(d.w), num(d.h))}`;
-};
+const sizeKey = (d) => (d && num(d.w) > 0 && num(d.h) > 0
+    ? `${Math.min(num(d.w), num(d.h))}x${Math.max(num(d.w), num(d.h))}`
+    : null);
+
+const outputSizeKey = (batchType, so) => sizeKey(outputDims(batchType, so));
 
 // Cut each stock row down to what its own size is actually wanted for, so ready
 // stock can only ever answer the sub-orders it fits. Rows of a size nobody ordered
@@ -1320,7 +1428,12 @@ const finishedBySize = (rows, subOrders, batchType, byModel = false) => {
     const demand = new Map();
     let sized = false;
     for (const so of subOrders) {
-        const k = outputSizeKey(batchType, so);
+        // What the shelf holds for this order. For a model number that is the
+        // printed half-sheet; the plain white blanks it is printed on are matched
+        // on the run size, which is why only the finished leg passes byModel.
+        const k = byModel && isModelNumberSheet(so)
+            ? sizeKey(finishedSheetDims(so))
+            : outputSizeKey(batchType, so);
         if (!k) continue;
         sized = true;
         const d = key(k, firstChoice(so.Bag_Colour));
@@ -1396,8 +1509,8 @@ const withForcedRolls = (rolls, forced) => {
     return [...first, ...rest.values()];
 };
 
-export const allocateStock = (attrs, subOrders, inventory, batchType, outputType, forcedRolls) => {
-    const required = subOrders.reduce((s, so) => s + effectiveQty(batchType, so), 0);
+export const allocateStock = (attrs, subOrders, inventory, batchType, outputType, forcedRolls, rate) => {
+    const required = subOrders.reduce((s, so) => s + effectiveQty(batchType, so, rate), 0);
     const stockLists = relevantStock(attrs, inventory, batchType, outputType);
     // Of the weights this group may be cut from, the first that can cover the
     // whole requirement on its own -- so the preferred weight is cleared while it
@@ -1409,16 +1522,52 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
     const chosenPool = pools.find(covers) || pools.find((p) => p.length > 0) || [];
     const rolls = withForcedRolls(chosenPool, forcedRolls);
     // Ready stock is size-specific; the roll it would otherwise be cut from is not.
-    const isModelSheets = batchType === 'ROLLS TO MODEL SHEETS';
+    // A model-number group, wherever it was planned. Every sub-order in a group
+    // agrees, because the group key separates them.
+    const isModelSheets = SHEET_TYPES.has(batchType) && subOrders.some(isModelNumberSheet);
     const finished = finishedBySize(stockLists.finished, subOrders, batchType, isModelSheets);
     const alternates = finishedBySize(stockLists.alternates, subOrders, batchType);
     const finishedTotal = finished.reduce((s, r) => s + r.avail, 0);
     const rollsTotal = rolls.reduce((s, r) => s + r.avail, 0);
 
+    // Which models still need the press, and so a plate and a minimum run.
+    //
+    // A model already answered by sheets printed with it is finished work: nothing
+    // is set up for it and it adds no floor. Every other model in the group does,
+    // and they add up -- two models sharing the roll are still two setups. The
+    // fewest kilos worth running, then, is the sum over the models that need one.
+    const printedByModel = new Map();
+    for (const r of finished) {
+        const m = norm(r.colour);
+        printedByModel.set(m, (printedByModel.get(m) || 0) + r.avail);
+    }
+    const needsRun = new Set();
+    if (isModelSheets) {
+        const demandByModel = new Map();
+        for (const so of subOrders) {
+            if (!isModelNumberSheet(so)) continue;
+            const m = norm(firstChoice(so.Bag_Colour));
+            demandByModel.set(m, (demandByModel.get(m) || 0) + effectiveQty(batchType, so, rate));
+        }
+        for (const [m, want] of demandByModel) {
+            if (want - (printedByModel.get(m) || 0) > 1e-9) needsRun.add(m);
+        }
+    }
+    const floorKg = isModelSheets ? modelSheetFloorKg(subOrders, rate, needsRun) : 0;
+    // Carried onto the group so the review can name the run rather than leaving a
+    // planner to wonder why the machine is asked for more than the orders.
+    const floorInfo = {
+        floorKg,
+        floorSheets: isModelSheets ? modelSheetMinimum(subOrders, needsRun) : 0,
+        floorModels: needsRun.size
+    };
+
     // Roll weight is asked for with the core allowance on top; the requirement
     // itself is untouched. A job still owes what it owed -- it is just given
     // enough fabric behind that figure to actually reach it.
     const rollNeed = (kg) => withCoreAllowance(kg);
+    // Once a roll is going on the machine, it runs for at least the floor.
+    const rollTarget = (kg) => rollNeed(Math.max(kg, floorKg));
     // How many rolls make one pass of the machine, for a group that is worth
     // filling it for. Zero everywhere else, which turns the top-up off.
     // Two conditions, both required: the job makes something worth running the
@@ -1433,24 +1582,36 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
     // else, so whatever is in the godown is always drawn on first and the rolls
     // only make up the shortfall. Every other type prefers to cut from a roll when
     // a roll can cover the lot.
-    if (batchType === 'ROLLS TO MODEL SHEETS' && required > 0) {
+    if (isModelSheets && required > 0) {
         // Sheets already printed with this model come first; then plain white
         // sheets of the same size, which only need printing; and a roll is cut
         // only for whatever neither of those covers. takeFrom only reads, so the
         // ladder can be run twice -- once to see how far the stock goes, again to
         // reserve just the part the job will actually consume.
-        const alternatesTotal = alternates.reduce((s, r) => s + r.avail, 0);
         const ladder = (budget) => {
             const fromFinished = takeFrom(finished, Math.min(budget, finishedTotal), 'finished');
             let shortfall = budget - fromFinished.covered;
+            // A plain white sheet answers a plain order outright AND is a blank a
+            // model number can be printed onto, so the same row appears in both
+            // lists. Whatever the finished leg took comes off what the blank leg
+            // may take, or one sheet is promised to two orders.
+            const spent = new Map();
+            for (const p of fromFinished.picks) spent.set(p.itemId, (spent.get(p.itemId) || 0) + p.take);
+            const blanksLeft = alternates
+                .map((r) => ({ ...r, avail: r.avail - (spent.get(r.itemId) || 0) }))
+                .filter((r) => r.avail > 1e-9);
+            const blanksLeftTotal = blanksLeft.reduce((t, r) => t + r.avail, 0);
             const fromBlanks = shortfall > 0
-                ? takeFrom(alternates, Math.min(shortfall, alternatesTotal), 'blank')
+                ? takeFrom(blanksLeft, Math.min(shortfall, blanksLeftTotal), 'blank')
                 : { picks: [], covered: 0 };
             shortfall -= fromBlanks.covered;
             // Only the roll share carries the core allowance: a printed sheet on
             // the shelf is already the article and weighs what it weighs.
+            // Once a roll goes on for a model number, it runs for at least the
+            // floor: the plate is set up either way. No shortfall, no roll, no
+            // floor -- the shelf answered it and nothing was printed.
             const fromRolls = shortfall > 0
-                ? takeRolls(rolls, rollNeed(shortfall), 'roll')
+                ? takeRolls(rolls, rollTarget(shortfall), 'roll')
                 : { picks: [], covered: 0 };
             const rollCover = Math.min(fromRolls.covered, Math.max(shortfall, 0));
             return {
@@ -1469,7 +1630,8 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
                 picks: full.picks,
                 fulfilledQty: required,
                 fulfilled: subOrders,
-                postponed: []
+                postponed: [],
+                ...floorInfo
             };
         }
         const { fulfilled, postponed } = splitByCapacity(batchType, subOrders, full.covered);
@@ -1477,7 +1639,7 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
             return { priority: 5, picks: [], fulfilledQty: 0, fulfilled: [], postponed: subOrders };
         }
         const fulfilledQty = fulfilled.reduce((s, so) => s + effectiveQty(batchType, so), 0);
-        return { priority: 4, picks: ladder(fulfilledQty).picks, fulfilledQty, fulfilled, postponed };
+        return { priority: 4, picks: ladder(fulfilledQty).picks, fulfilledQty, fulfilled, postponed, ...floorInfo };
     }
 
     // Priority 1 — finished/semi stock covers the whole requirement.
@@ -1489,14 +1651,16 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
     // the requirement itself: a group that can just be covered is still planned,
     // and the core allowance then takes another roll if one is there to take.
     if (rollsTotal >= required && required > 0) {
-        const { picks } = takeRolls(rolls, rollNeed(required), 'roll');
-        return { priority: 2, picks: fill(picks), fulfilledQty: required, fulfilled: subOrders, postponed: [] };
+        const { picks } = takeRolls(rolls, rollTarget(required), 'roll');
+        return { priority: 2, picks: fill(picks), fulfilledQty: required, fulfilled: subOrders,
+            postponed: [], ...floorInfo };
     }
     // Priority 3 — mix: rolls take the major share, finished covers the rest.
     if (rollsTotal > 0 && rollsTotal + finishedTotal >= required && required > 0) {
-        const fromRolls = takeRolls(rolls, rollNeed(required), 'roll');
+        const fromRolls = takeRolls(rolls, rollTarget(required), 'roll');
         // What the rolls answer of the requirement, not of the padded target: the
-        // allowance buys fabric, it does not fill orders.
+        // allowance buys fabric and the floor buys a worthwhile run, but neither
+        // fills an order.
         const rollCover = Math.min(fromRolls.covered, required);
         const fromFinished = takeFrom(finished, required - rollCover, 'finished');
         return {
@@ -1504,7 +1668,8 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
             picks: [...fill(fromRolls.picks), ...fromFinished.picks],
             fulfilledQty: required,
             fulfilled: subOrders,
-            postponed: []
+            postponed: [],
+            ...floorInfo
         };
     }
     // Priority 4 — partial: take everything available, postpone what does not fit.
@@ -1606,7 +1771,10 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, override
     const waitingIds = new Set(waiting.map((so) => num(so.id)));
     const excludedSubOrders = wanted.filter((so) => setAside.has(num(so.id)));
     const kept = wanted.filter((so) => !setAside.has(num(so.id)) && !waitingIds.has(num(so.id)));
-    const eligible = batchType === 'ROLLS TO MODEL SHEETS' ? splitByModel(kept) : kept;
+    // A sub-order naming two models is two lines of work, one per model. Only
+    // model-number orders are split: everywhere else Bag_Colour holds actual
+    // colours, and splitting those would turn one order into several.
+    const eligible = kept.flatMap((so) => (isModelNumberSheet(so) ? splitByModel([so]) : [so]));
 
     // For roll-width batch types, resolve each sub-order's roll width first: drop
     // the ones with blank/junk geometry ('ignore'), and set aside the ones with a
@@ -1650,7 +1818,16 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, override
     for (const so of groupable) {
         const key = groupKeyFor(batchType, so);
         if (!byKey.has(key)) byKey.set(key, { key, attrs: groupAttrs(batchType, so), subOrders: [] });
-        byKey.get(key).subOrders.push(so);
+        const group = byKey.get(key);
+        // A sheet job can hold plain and model-number orders together: same white
+        // roll, same machine setup. Which of them arrived first must not decide how
+        // the job looks for stock, so the model variant wins -- it is the wider one,
+        // knowing about printed stock and about blanks to print on, and it says the
+        // same things about the roll.
+        if (isModelNumberSheet(so) && !group.attrs.finishedTypes) {
+            group.attrs = groupAttrs(batchType, so);
+        }
+        group.subOrders.push(so);
     }
 
     // Work on a mutable copy of inventory and deduct what each group consumes, so
@@ -1689,12 +1866,23 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, override
             }
             // Roll-width jobs are identified by the roll they consume (one roll code
             // per group), so output codes can be resolved per model at completion.
-            const rollCodeId = usesRollWidth ? (alloc.picks.find((p) => p.codeId)?.codeId ?? null) : null;
+            //
+            // The roll's code, not the first code in the list. A model-sheets group
+            // is offered finished stock, then blanks, then roll -- in that order --
+            // so taking the first pick with a code id named a sheet already printed
+            // with the customer's model. Everything downstream then believed the job
+            // was cutting an "M11" roll, and asked the catalogue for an M11 sheet.
+            const rollCodeId = usesRollWidth
+                ? (alloc.picks.find((p) => p.source === 'roll' && p.codeId)?.codeId ?? null)
+                : null;
             // Split the fulfilled requirement into what is produced from raw rolls
             // (the planned output) vs. what is pulled ready from finished godown
             // stock — finished stock is netted off the output to produce.
             const rollTaken = alloc.picks.reduce((s, p) => s + (p.source === 'roll' ? p.take : 0), 0);
-            const outputQty = Math.min(rollTaken, alloc.fulfilledQty);
+            // What comes off the machine, which for a model-number run is the floor
+            // rather than the orders -- the surplus goes to the shelf for the next
+            // order of that model.
+            const outputQty = Math.min(rollTaken, Math.max(alloc.fulfilledQty, num(alloc.floorKg)));
             const finishedQty = Math.max(alloc.fulfilledQty - outputQty, 0);
             const fulfilled = mergeLines(alloc.fulfilled);
             const fulfilledIds = new Set(fulfilled.map((so) => so.id));
@@ -1714,6 +1902,14 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, override
                 postponed: mergeLines(alloc.postponed).filter((so) => !fulfilledIds.has(so.id)),
                 outputQty,
                 finishedQty,
+                // The plate minimum, and how much of the run it added beyond what
+                // the orders need. A job cutting 1100 sheets for a 200-sheet order
+                // reads as a fault unless the review says why, so both travel with
+                // the group. Zero everywhere a run was cut to its orders.
+                floorKg: num(alloc.floorKg),
+                floorSheets: num(alloc.floorSheets),
+                floorModels: num(alloc.floorModels),
+                floorSurplus: Math.max(outputQty - (alloc.fulfilledQty - finishedQty), 0),
                 // What was assigned by hand, and which of those the plan did not
                 // need after all -- a roll quietly left out would otherwise look
                 // like the assignment had failed.
