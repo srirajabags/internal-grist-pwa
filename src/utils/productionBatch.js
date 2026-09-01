@@ -1581,10 +1581,32 @@ const mergeLines = (lines) => {
 // `overrides` maps a group key to the ids of physical rolls assigned to it by
 // hand: { 'NW BOPP|WHITE|90|38': [412, 418] }. Everything else about the plan is
 // computed the same way, so a revised plan can be reviewed exactly like a fresh one.
-export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, overrides }) => {
-    const eligible = batchType === 'ROLLS TO MODEL SHEETS'
-        ? splitByModel(subOrders.filter((so) => typeNeedsSubOrder(batchType, so)))
-        : subOrders.filter((so) => typeNeedsSubOrder(batchType, so));
+// Batch types that make a component of a bag rather than the bag itself. A side
+// patty and a handle are only useful once the bag they belong to is being made, so
+// the planner can choose to leave them until the sheets are planned.
+export const COMPONENT_TYPES = new Set(['ROLLS TO SIDEPATTY', 'ROLLS TO HANDLES']);
+
+// Sub-orders the planner has set aside by hand for this run.
+//
+// Not a shortage, not bad data, not a decision the app is entitled to make: the
+// person creating the batch knows something the document does not -- the customer
+// rang, the fabric is wrong, it is going out with next week's lot -- and says so
+// by taking the line out. Held apart from every other bucket so the review can say
+// plainly that a person did this, and put it back on request.
+export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, overrides,
+    excluded, sheetsFirst }) => {
+    const setAside = new Set((excluded || []).map(num));
+    const wanted = subOrders.filter((so) => typeNeedsSubOrder(batchType, so));
+    // Waiting on the bag: a patty or a handle whose sheets are not being made yet.
+    // Cutting it now only moves fabric onto a shelf to wait for the rest of the bag,
+    // and it takes roll a sheet job may want first.
+    const waiting = sheetsFirst && COMPONENT_TYPES.has(batchType)
+        ? wanted.filter((so) => !so._hasSheetsJob && !setAside.has(num(so.id)))
+        : [];
+    const waitingIds = new Set(waiting.map((so) => num(so.id)));
+    const excludedSubOrders = wanted.filter((so) => setAside.has(num(so.id)));
+    const kept = wanted.filter((so) => !setAside.has(num(so.id)) && !waitingIds.has(num(so.id)));
+    const eligible = batchType === 'ROLLS TO MODEL SHEETS' ? splitByModel(kept) : kept;
 
     // For roll-width batch types, resolve each sub-order's roll width first: drop
     // the ones with blank/junk geometry ('ignore'), and set aside the ones with a
@@ -1729,6 +1751,10 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, override
         missingGsm: mergeLines(missingGsm), missingGsmCount: mergeLines(missingGsm).length,
         placeholderColour: mergeLines(placeholderColour),
         placeholderColourCount: mergeLines(placeholderColour).length,
+        excluded: mergeLines(excludedSubOrders),
+        excludedCount: mergeLines(excludedSubOrders).length,
+        awaitingSheets: mergeLines(waiting),
+        awaitingSheetsCount: mergeLines(waiting).length,
         unverifiedSheet: mergeLines(unverifiedSheet),
         unverifiedSheetCount: mergeLines(unverifiedSheet).length
     };

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
     X, Loader2, AlertCircle, CheckCircle2, ChevronRight, ChevronLeft, ChevronDown,
-    Search, Layers, Package, CalendarDays, ClipboardCheck, Maximize2, Download, AlertTriangle, Zap,
+    Search, Layers, Package, CalendarDays, ClipboardCheck, Maximize2, Download, AlertTriangle, Zap, Plus,
     Wrench
 } from 'lucide-react';
 import Button from './Button';
@@ -16,7 +16,7 @@ import { intakeOrder } from '../utils/stockAge';
 import { newJournal } from '../utils/writeJournal';
 import { downloadCsv } from '../utils/csvFile';
 import {
-    BATCH_TYPES, HARD_START_DATE, OUTPUT_TYPE, PRIORITY_LABEL, buildPlan,
+    BATCH_TYPES, HARD_START_DATE, OUTPUT_TYPE, PRIORITY_LABEL, buildPlan, COMPONENT_TYPES,
     effectiveQty, needsPieceConversion, cannotConvertQty, cannotSizePieces, cannotSizePatty, BUNDLE_SIZE,
     typeNeedsSubOrder, missingInfoFields, outputCount, overageRate, outputSizeLabel, OUTPUT_COUNT_UNIT,
     missingOutputCodes, machineLoads, rollsPerRun, isFastMovingSize, isUnverifiedSize,
@@ -99,7 +99,7 @@ const sizeText = (batchType, so) => outputSizeLabel(String(batchType || '').trim
 // physical roll consumed by an earlier type is not offered again to a later one.
 // Kept pure and separate from the fetch: revising a plan after a roll is assigned
 // by hand is then a re-run over data already in hand, not another round trip.
-const runPlans = ({ batchTypes, eligibleBy, itemCodes, inventory, overrides }) => {
+const runPlans = ({ batchTypes, eligibleBy, itemCodes, inventory, overrides, excluded, sheetsFirst }) => {
     const working = inventory.map((r) => ({ ...r }));
     const workingById = new Map(working.map((r) => [r.itemId, r]));
     const builtPlans = [];
@@ -109,7 +109,9 @@ const runPlans = ({ batchTypes, eligibleBy, itemCodes, inventory, overrides }) =
             subOrders: eligibleBy[bt] || [],
             itemCodes,
             inventory: working,
-            overrides: overrides?.[bt]
+            overrides: overrides?.[bt],
+            excluded,
+            sheetsFirst
         });
         for (const g of built.groups) {
             for (const p of g.picks) {
@@ -304,6 +306,12 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
     // Rolls put on a group by hand when the matcher found none:
     // { [batchType]: { [groupKey]: [itemId, ...] } }. Cleared on every fresh search.
     const [overrides, setOverrides] = useState({});
+    // Sub-orders the planner has taken out of this run by hand. Ids, not rows: the
+    // plan is rebuilt from scratch on every change and the rows are replaced.
+    const [excluded, setExcluded] = useState([]);
+    // Leave a patty or a handle alone until the bag it belongs to is being made.
+    // Off by default: it is a judgement about sequencing, not a rule of the floor.
+    const [sheetsFirst, setSheetsFirst] = useState(false);
     // The group whose roll assignment is open, or null.
     const [assigning, setAssigning] = useState(null);
     // Everything the planner needs, kept from the last search so a revision is a
@@ -601,6 +609,13 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                 if (plannedTypes.get(num(so.id))?.has(bt)) return false;
                 return !parseRefList(so.Factory_Production_Jobs).some((jid) => jobType.get(jid) === bt);
             });
+            // Whether the bag this line belongs to is being made yet. Read from both
+            // sides of the reference, exactly as eligibleFor does -- the forward list
+            // on the job is the side that is written, the reverse one can lag.
+            const SHEETS = 'ROLLS TO SHEETS';
+            const hasSheetsJob = (so) => Boolean(plannedTypes.get(num(so.id))?.has(SHEETS))
+                || parseRefList(so.Factory_Production_Jobs).some((jid) => jobType.get(jid) === SHEETS);
+            for (const so of subOrders) so._hasSheetsJob = hasSheetsJob(so);
 
             // 3. Inventory item codes + available stock per physical item.
             const itemCodes = await runSql(
@@ -731,7 +746,9 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
             // again: nothing upstream of the allocation has changed.
             planInputs.current = { batchTypes, eligibleBy, itemCodes, inventory };
             setOverrides({});
-            setPlans(runPlans({ batchTypes, eligibleBy, itemCodes, inventory, overrides: {} }));
+            setExcluded([]);
+            setPlans(runPlans({ batchTypes, eligibleBy, itemCodes, inventory,
+                overrides: {}, excluded: [], sheetsFirst }));
             setStep('review');
         } catch (err) {
             setError(err.message || String(err));
@@ -771,7 +788,29 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
         const next = { ...overrides, [batchType]: forType };
         setOverrides(next);
         if (planInputs.current) {
-            setPlans(runPlans({ ...planInputs.current, overrides: next }));
+            setPlans(runPlans({ ...planInputs.current, overrides: next, excluded, sheetsFirst }));
+        }
+    };
+
+    // Take a sub-order out of this run, or put it back, and rebuild every plan
+    // around the decision. A line removed here frees the stock it was holding, so
+    // the groups after it can change -- which is the point, and why the whole plan
+    // is re-run rather than the row merely hidden.
+    const setSubOrderAside = (soId, aside) => {
+        const next = aside
+            ? [...new Set([...excluded, num(soId)])]
+            : excluded.filter((id) => id !== num(soId));
+        setExcluded(next);
+        if (planInputs.current) {
+            setPlans(runPlans({ ...planInputs.current, overrides, excluded: next, sheetsFirst }));
+        }
+    };
+
+    // Turn the sequencing rule on or off and rebuild every plan around it.
+    const toggleSheetsFirst = (on) => {
+        setSheetsFirst(on);
+        if (planInputs.current) {
+            setPlans(runPlans({ ...planInputs.current, overrides, excluded, sheetsFirst: on }));
         }
     };
 
@@ -1080,10 +1119,30 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
                     {/* STEP 2 — REVIEW, ALLOCATION & CONFIRM (per chosen type) */}
                     {(step === 'review' || step === 'writing') && (
                         <div className="space-y-4">
+                            {batchTypes.some((t) => COMPONENT_TYPES.has(t)) && (
+                                <label className="flex items-start gap-2 bg-white border border-slate-200 rounded-xl p-3 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={sheetsFirst}
+                                        onChange={(e) => toggleSheetsFirst(e.target.checked)}
+                                        disabled={step !== 'review'}
+                                        className="mt-0.5 accent-sky-600"
+                                    />
+                                    <span className="text-xs text-slate-700">
+                                        <span className="font-semibold block">Only make patty and handles for bags already being made</span>
+                                        <span className="text-[11px] text-slate-500">
+                                            Leaves out any line whose sheets have no production job yet. A gusset or a
+                                            handle with no bag to go on sits in the godown, and the roll it took could
+                                            have gone to a sheet job.
+                                        </span>
+                                    </span>
+                                </label>
+                            )}
                             {plans.map(({ batchType, plan, missingCodes: planMissing }) => (
                                 <PlanSection
                                     key={batchType} batchType={batchType} plan={plan}
                                     missingCodes={planMissing || []}
+                                    onSetAside={step === 'review' ? setSubOrderAside : null}
                                     onViewForm={viewOrderForm} itemNames={itemNames} itemMeta={itemMeta}
                                     assigned={overrides[batchType] || {}}
                                     onAssign={step === 'review' ? (g) => setAssigning({ batchType, group: g }) : null}
@@ -1374,6 +1433,8 @@ const buildCsvRows = (plans, codeNames, itemNames) => {
         const flagged = [
             ...plan.placeholderColour.map((so) => [so, 'Colour not chosen — still MATCHING COLOUR']),
             ...plan.unverifiedSheet.map((so) => [so, 'Sheet size not verified — still prefixed with #']),
+            ...(plan.excluded || []).map((so) => [so, 'Left out of this batch by the planner']),
+            ...(plan.awaitingSheets || []).map((so) => [so, 'Waiting on its sheets — no sheet job planned yet']),
             ...plan.unmatched.map((so) => [so, 'No matching roll width']),
             ...plan.missingGsm.map((so) => [so, 'Missing info — cannot size'])
         ];
@@ -1390,7 +1451,61 @@ const buildCsvRows = (plans, codeNames, itemNames) => {
 
 // BOM so Excel opens the UTF-8 content correctly.
 
-const SubOrderPill = ({ so, batchType, unit, tone = 'slate', onViewForm, showMissing = false }) => {
+// How long a finger has to stay down before a line moves in or out of the batch.
+const HOLD_MS = 600;
+
+// The pills sit shoulder to shoulder on a phone, so a stray tap used to pull a
+// line out of the plan straight away. Holding makes it deliberate: the button
+// fills while the finger is down, and empties the moment it lifts or the list
+// scrolls under it.
+const HoldButton = ({ onHold, label, className = '', children }) => {
+    const [holding, setHolding] = useState(false);
+    const timer = useRef(null);
+    const stop = () => {
+        if (timer.current) clearTimeout(timer.current);
+        timer.current = null;
+        setHolding(false);
+    };
+    const start = (e) => {
+        if (e && e.button != null && e.button !== 0) return;
+        if (timer.current) return;
+        setHolding(true);
+        timer.current = setTimeout(() => {
+            timer.current = null;
+            setHolding(false);
+            onHold();
+        }, HOLD_MS);
+    };
+    useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+    return (
+        <button
+            type="button"
+            title={label + ' (hold to confirm)'}
+            aria-label={label + ' (hold to confirm)'}
+            onPointerDown={start}
+            onPointerUp={stop}
+            onPointerLeave={stop}
+            onPointerCancel={stop}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') start(e); }}
+            onKeyUp={stop}
+            onBlur={stop}
+            onContextMenu={(e) => e.preventDefault()}
+            className={'relative inline-flex items-center justify-center shrink-0 select-none '
+                + 'rounded-full w-4 h-4 ' + className}
+        >
+            <span
+                aria-hidden="true"
+                className={'absolute inset-0 rounded-full bg-current ease-linear '
+                    + 'transition-transform ' + (holding ? 'scale-100 opacity-25' : 'scale-0 opacity-0')}
+                style={{ transitionDuration: (holding ? HOLD_MS : 120) + 'ms' }}
+            />
+            <span className="relative">{children}</span>
+        </button>
+    );
+};
+
+const SubOrderPill = ({ so, batchType, unit, tone = 'slate', onViewForm, showMissing = false,
+    onSetAside, asideLabel = 'Leave out of this batch' }) => {
     const size = sizeText(batchType, so);
     const orderId = so.Order_ID === null || so.Order_ID === undefined || so.Order_ID === '' ? null : so.Order_ID;
     const hasForm = onViewForm && parseAttachmentId(so.Order_Form) != null;
@@ -1421,6 +1536,15 @@ const SubOrderPill = ({ so, batchType, unit, tone = 'slate', onViewForm, showMis
                     >
                         <Maximize2 size={11} />
                     </button>
+                )}
+                {onSetAside && (
+                    <HoldButton
+                        onHold={() => onSetAside(so.id)}
+                        label={asideLabel}
+                        className="ml-auto hover:opacity-60"
+                    >
+                        {asideLabel.startsWith('Put') ? <Plus size={12} /> : <X size={12} />}
+                    </HoldButton>
                 )}
             </span>
             <span className="inline-flex items-center gap-1">
@@ -1532,6 +1656,54 @@ const UnverifiedSheetPanel = ({ subOrders, batchType, unit, onViewForm }) => (
             + 'width is cut and how much of it, so planning on an unchecked one cuts the wrong roll.'}
     />
 );
+
+// Lines a person took out of this run. Not a shortage and not bad data -- somebody
+// decided, and can undo it here.
+const ExcludedPanel = ({ subOrders, batchType, unit, onViewForm, onPutBack }) => {
+    if (!subOrders || subOrders.length === 0) return null;
+    return (
+        <div className="rounded-xl border border-slate-300 bg-slate-50 p-3">
+            <p className="text-sm font-bold text-slate-700">
+                {subOrders.length} sub-order{subOrders.length === 1 ? '' : 's'} left out of this batch
+            </p>
+            <p className="text-[11px] text-slate-500 mt-0.5 mb-2">
+                Taken out by hand, so nothing is planned for them here and the stock they would have
+                held is free for the rest. They stay available for the next batch.
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+                {subOrders.map((so) => (
+                    <SubOrderPill
+                        key={so.id} so={so} batchType={batchType} unit={unit}
+                        onViewForm={onViewForm} onSetAside={onPutBack}
+                        asideLabel="Put back into this batch"
+                    />
+                ))}
+            </div>
+        </div>
+    );
+};
+
+// Components whose bag is not being made yet.
+const AwaitingSheetsPanel = ({ subOrders, batchType, unit, onViewForm }) => {
+    if (!subOrders || subOrders.length === 0) return null;
+    return (
+        <div className="rounded-xl border border-sky-200 bg-sky-50 p-3">
+            <p className="text-sm font-bold text-sky-900">
+                {subOrders.length} waiting on their sheets
+            </p>
+            <p className="text-[11px] text-sky-800 mt-0.5 mb-2">
+                No sheet job has been planned for these bags yet. A patty or a handle is only useful once
+                the bag it belongs to is being made, so cutting one now puts fabric on a shelf to wait —
+                and takes roll a sheet job may want first. Turn the option off above to plan them anyway.
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+                {subOrders.map((so) => (
+                    <SubOrderPill key={so.id} so={so} batchType={batchType} unit={unit} onViewForm={onViewForm} />
+                ))}
+            </div>
+        </div>
+    );
+};
 
 const PlaceholderColourPanel = ({ subOrders, batchType, unit, onViewForm }) => (
     <FlaggedPanel
@@ -1655,7 +1827,7 @@ const SOURCE_TONE = {
 
 // One chosen type's plan: the groups, what each needs, what stock covers it, and
 // the sub-orders behind it — everything the operator checks before creating.
-const PlanSection = ({ batchType, plan, missingCodes = [], onViewForm, itemNames = new Map(), itemMeta = new Map(), assigned = {}, onAssign }) => {
+const PlanSection = ({ batchType, plan, missingCodes = [], onViewForm, itemNames = new Map(), itemMeta = new Map(), assigned = {}, onAssign, onSetAside }) => {
     const [open, setOpen] = useState(false);
     // Which stock chip has been tapped open, or null. One at a time: two panels of
     // specification stacked under a card is harder to read than one.
@@ -1683,6 +1855,8 @@ const PlanSection = ({ batchType, plan, missingCodes = [], onViewForm, itemNames
                 )}
                 {missingCodes.length > 0 && <Stat label="Item codes missing" value={missingCodes.length} tone="red" />}
                 {plan.unverifiedSheetCount > 0 && <Stat label="Sheet size unverified" value={plan.unverifiedSheetCount} tone="red" />}
+                {plan.awaitingSheetsCount > 0 && <Stat label="Waiting on sheets" value={plan.awaitingSheetsCount} tone="sky" />}
+                {plan.excludedCount > 0 && <Stat label="Left out" value={plan.excludedCount} tone="slate" />}
                 {plan.placeholderColourCount > 0 && <Stat label="Colour not chosen" value={plan.placeholderColourCount} tone="red" />}
                 {plan.unmatchedCount > 0 && <Stat label="No roll width" value={plan.unmatchedCount} tone="red" />}
                 {plan.missingGsmCount > 0 && <Stat label="Missing info" value={plan.missingGsmCount} tone="red" />}
@@ -1832,6 +2006,7 @@ const PlanSection = ({ batchType, plan, missingCodes = [], onViewForm, itemNames
                                         key={so.id} so={so} batchType={batchType} unit={unit}
                                         tone={postponedIds.has(so.id) ? 'amber' : 'slate'}
                                         onViewForm={onViewForm}
+                                        onSetAside={onSetAside ? (id) => onSetAside(id, true) : null}
                                     />
                                 ))}
                             </div>
@@ -1880,6 +2055,11 @@ const PlanSection = ({ batchType, plan, missingCodes = [], onViewForm, itemNames
                         );
                     })}
                     <MissingCodesPanel missing={missingCodes} onViewForm={onViewForm} />
+                    <AwaitingSheetsPanel subOrders={plan.awaitingSheets} batchType={batchType}
+                        unit={unit} onViewForm={onViewForm} />
+                    <ExcludedPanel subOrders={plan.excluded} batchType={batchType} unit={unit}
+                        onViewForm={onViewForm}
+                        onPutBack={onSetAside ? (id) => onSetAside(id, false) : null} />
                     <UnverifiedSheetPanel subOrders={plan.unverifiedSheet} batchType={batchType} unit={unit} onViewForm={onViewForm} />
                     <PlaceholderColourPanel subOrders={plan.placeholderColour} batchType={batchType} unit={unit} onViewForm={onViewForm} />
                     <UnmatchedPanel subOrders={plan.unmatched} batchType={batchType} unit={unit} onViewForm={onViewForm} />
