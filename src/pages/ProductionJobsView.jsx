@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
     ArrowLeft, Boxes, AlertCircle, Loader2, RefreshCw, Package,
     PlayCircle, CheckCircle2, Circle, Clock, ChevronRight, Layers, FileText, ArrowRight, Plus, X, Warehouse,
-    AlertTriangle, Trash2, Lock, History, Printer, Zap
+    AlertTriangle, Trash2, Lock, History, Printer, Zap, ChevronDown
 } from 'lucide-react';
 import Card from '../components/Card';
 import Button from '../components/Button';
@@ -231,20 +231,41 @@ const treeSql = (scope) => `
         -- back; any other ADD is what it produced.
         (SELECT ROUND(SUM(ABS(tx.Weight_Kg_)), 2) FROM ${TXN_TABLE} tx
          WHERE tx.Production_Job = j.id AND tx.Transaction_Type = 'LESS') AS job_collected_kg,
-        -- Every item the job was assigned needs an ACKNOWLEDGED collection entry.
+        -- The roll the machine will cut, and whether it is signed out yet.
         -- Counting the items rather than the transactions catches both halves of
         -- it: one booked but not signed for, and one never booked at all. Until
         -- the incharge signs, the books show the stock still on the shelf whatever
         -- the floor has in its hands.
+        --
+        -- Roll only. Ready-made stock never goes on the machine -- it is fetched
+        -- and walked to the printing area -- so whether it has been signed out has
+        -- no bearing on whether the operator can start cutting.
         (SELECT COUNT(*)
          FROM json_each(CASE WHEN json_valid(j.Inventory_Items) THEN j.Inventory_Items ELSE '[]' END) ji
-         WHERE ji.value != 'L'
+         LEFT JOIN Inventory_Items ri ON ri.id = ji.value
+         LEFT JOIN Inventory_Item_Codes rc ON rc.id = ri.Item_Code
+         WHERE ji.value != 'L' AND UPPER(COALESCE(rc.Type, '')) = 'ROLL'
            AND NOT EXISTS (
                SELECT 1 FROM ${TXN_TABLE} tx
                WHERE tx.Production_Job = j.id AND tx.Item_ID = ji.value
                  AND tx.Transaction_Type = 'LESS' AND COALESCE(tx.Incharge_Ack, 0) = 1)
-        ) AS job_collect_unacked,
-        -- The same test, narrowed to ready-made stock: the raw trip waits on it.
+        ) AS job_raw_unacked,
+        -- Of those, the ones with no collection entry at all. Never booked and
+        -- booked-but-unsigned both stop the machine, but they are fixed by
+        -- different people -- one by the floor, one by the incharge -- so the two
+        -- are counted apart and the card says which it is.
+        (SELECT COUNT(*)
+         FROM json_each(CASE WHEN json_valid(j.Inventory_Items) THEN j.Inventory_Items ELSE '[]' END) ji
+         LEFT JOIN Inventory_Items ui ON ui.id = ji.value
+         LEFT JOIN Inventory_Item_Codes uc ON uc.id = ui.Item_Code
+         WHERE ji.value != 'L' AND UPPER(COALESCE(uc.Type, '')) = 'ROLL'
+           AND NOT EXISTS (
+               SELECT 1 FROM ${TXN_TABLE} tx
+               WHERE tx.Production_Job = j.id AND tx.Item_ID = ji.value
+                 AND tx.Transaction_Type = 'LESS')
+        ) AS job_raw_uncollected,
+        -- The same test for ready-made stock. It does not hold the machine up, but
+        -- the operator is told, since the job is not finished without it.
         (SELECT COUNT(*)
          FROM json_each(CASE WHEN json_valid(j.Inventory_Items) THEN j.Inventory_Items ELSE '[]' END) ji
          LEFT JOIN Inventory_Items fi ON fi.id = ji.value
@@ -441,7 +462,13 @@ const groupRows = (rows) => {
             if (!job) {
                 const invItems = parseRefList(f.job_inv_items);
                 const invItemOptions = parseInventoryItemOptions(f.job_inv_item_options, invItems);
-                const assigned = invItemOptions[0] || {};
+                // What a job is made of is the roll it cuts, not whichever item
+                // happens to be first in its list. A sheet job that also draws on
+                // ready-made stock would otherwise describe itself by a sheet off
+                // the shelf: the finished size instead of the roll width, and a
+                // model number where the colour goes. A job with no roll at all
+                // still has to say something, so it falls back to what it has.
+                const assigned = splitStock(invItemOptions).raw[0] || invItemOptions[0] || {};
                 job = {
                     id: f.job_id,
                     // Grist's Job_ID formula. Everything the floor and the office
@@ -469,7 +496,8 @@ const groupRows = (rows) => {
                     // Movement figures come from the transactions, not the job row:
                     // the row would only ever be a stale copy of them.
                     collectedKg: num(f.job_collected_kg),
-                    collectUnacked: num(f.job_collect_unacked),
+                    rawUnacked: num(f.job_raw_unacked),
+                    rawUncollected: num(f.job_raw_uncollected),
                     finishedUnacked: num(f.job_finished_unacked),
                     returnedKg: num(f.job_returned_kg),
                     producedKg: num(f.job_produced_kg),
@@ -1093,10 +1121,58 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
         }
     };
 
+    // Swapping a roll on the collection sheet.
+    //
+    // Before the batch is collected this is only a change of plan: the job is
+    // pointed at a different roll and the collection that follows books whatever is
+    // assigned. Once the batch IS collected the swap is a physical movement -- one
+    // roll goes back on the shelf, another leaves it -- and the books have to say
+    // so. Repointing the job alone leaves the swapped-out roll booked out to a job
+    // that no longer uses it, while the roll actually on the machine still reads as
+    // available: both balances wrong, in opposite directions.
+    //
+    // The two movements are written as a pair, and before the job is re-pointed. If
+    // the second step then fails the stock still matches what is on the floor and
+    // the journal names what is left to do; the other order would leave exactly the
+    // mismatch this exists to prevent.
+    //
+    // The new LESS starts unsigned, so the job waits for the incharge again -- which
+    // is right, since they signed for a roll that has since gone back.
     const swapRoll = async (job, fromId, toId) => {
         setUpdatingBatchId(collectingBatch?.id ?? null);
         const journal = newJournal();
+        const from = (job.invItemOptions || []).find((it) => num(it.id) === num(fromId));
+        const to = (from?.swaps || []).find((a) => num(a.id) === num(toId));
+        const tookKg = num(from?.collectedKg);
         try {
+            if (tookKg > 0) {
+                const takeKg = num(to?.kg);
+                if (!(takeKg > 0)) {
+                    // Without a weight for the incoming roll there is no honest
+                    // entry to write, and a swap that moves no stock is the bug.
+                    throw new Error(`No available weight is recorded for ${to?.itemId || 'the roll chosen'},`
+                        + ' so the swap cannot be booked. Refresh and try again.');
+                }
+                const now = Date.now() / 1000;
+                const where = godownOf(from);
+                await journal.run(
+                    `Book ${from?.itemId || 'the roll'} back in and ${to?.itemId || 'the other'} out`,
+                    () => writeRecords(TXN_TABLE, 'POST', {
+                        records: [
+                            { fields: {
+                                Item_ID: num(fromId), Production_Job: job.id,
+                                Transaction_Type: 'ADD', Weight_Kg_: roundWeight(tookKg),
+                                Location: where, Transaction_Time: now
+                            } },
+                            { fields: {
+                                Item_ID: num(toId), Production_Job: job.id,
+                                Transaction_Type: 'LESS', Weight_Kg_: roundWeight(takeKg),
+                                Location: where, Transaction_Time: now
+                            } }
+                        ]
+                    })
+                );
+            }
             const ids = (job.invItems || []).map(num).filter(Number.isInteger);
             const next = ids.map((id) => (id === num(fromId) ? num(toId) : id));
             await journal.run(
@@ -2146,13 +2222,22 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                                             </div>
                                                         )}
                                                     </div>
+                                                    {!block && num(job.finishedUnacked) > 0 && !job.completed && (
+                                                        <p className="text-[11px] text-sky-700 text-center mt-2 break-words">
+                                                            {num(job.finishedUnacked)} ready-made item
+                                                            {num(job.finishedUnacked) === 1 ? '' : 's'} still to fetch from the
+                                                            godown — the machine need not wait.
+                                                        </p>
+                                                    )}
                                                     {block && (
                                                         <p className="text-[11px] text-slate-400 text-center mt-2 break-words">
                                                             {block.kind === 'collect'
                                                                 ? 'Collect the batch inventory before starting.'
-                                                                : block.kind === 'ack'
-                                                                    ? `Waiting on the incharge to acknowledge ${block.count} collected item${block.count === 1 ? '' : 's'}.`
-                                                                    : `Finish ${jobLabel(block.job)} before starting this one.`}
+                                                                : block.kind === 'fetch'
+                                                                    ? `${block.count} roll${block.count === 1 ? ' has' : 's have'} not been collected from the godown yet.`
+                                                                    : block.kind === 'ack'
+                                                                        ? `Waiting on the incharge to acknowledge ${block.count} collected roll${block.count === 1 ? '' : 's'}.`
+                                                                        : `Finish ${jobLabel(block.job)} before starting this one.`}
                                                         </p>
                                                     )}
                                                 </Card>
@@ -2614,12 +2699,28 @@ const OutputHeadline = ({ totals }) => {
 // roll and part ready-made stock off the shelf, and those are different errands:
 // one gets cut, the other gets carried. The item's own code says which it is, so
 // no extra column is needed to tell them apart.
-const StockGroup = ({ title, items, tone }) => {
+const StockGroup = ({ title, items, tone, foldable = false }) => {
+    // Ready stock is not this operator's errand: it never reaches the machine, and
+    // a long list of it pushes the rolls -- the thing they are about to cut -- off
+    // the screen. Folded away, still one tap from anyone who wants it.
+    const [open, setOpen] = useState(!foldable);
     if (items.length === 0) return null;
     return (
         <div>
-            <p className={`text-[10px] font-semibold uppercase tracking-wider mb-1.5 ${tone}`}>{title}</p>
-            <div className="space-y-1.5">
+            {foldable ? (
+                <button
+                    type="button"
+                    onClick={() => setOpen(!open)}
+                    aria-expanded={open}
+                    className={`w-full flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider mb-1.5 ${tone}`}
+                >
+                    <ChevronDown size={12} className={'transition-transform ' + (open ? '' : '-rotate-90')} />
+                    {title}
+                </button>
+            ) : (
+                <p className={`text-[10px] font-semibold uppercase tracking-wider mb-1.5 ${tone}`}>{title}</p>
+            )}
+            {open && <div className="space-y-1.5">
                 {items.map((item) => (
                     <div key={item.id} className="flex items-center gap-2.5 rounded-lg border border-slate-200 px-2.5 py-1.5">
                         <span className="w-9 shrink-0">
@@ -2643,7 +2744,7 @@ const StockGroup = ({ title, items, tone }) => {
                         )}
                     </div>
                 ))}
-            </div>
+            </div>}
         </div>
     );
 };
@@ -2661,6 +2762,7 @@ const JobStock = ({ job }) => {
                 title={finished.length === 1 ? 'Ready stock to pull' : `${finished.length} ready items to pull`}
                 items={finished}
                 tone="text-sky-600"
+                foldable
             />
         </div>
     );
@@ -2792,7 +2894,12 @@ const startBlocker = ({ batch, job, runningJob }) => {
     // Collected is the floor's word for it; acknowledged is the godown's. Running
     // on stock the incharge has not signed out leaves the books showing it still
     // on the shelf while it is being cut.
-    if (num(job?.collectUnacked) > 0) return { kind: 'ack', count: num(job.collectUnacked) };
+    // Never booked out is the floor's problem; booked and unsigned is the
+    // incharge's. Saying "waiting on the incharge" for roll nobody has fetched
+    // sends the operator to someone who has already signed everything in front of
+    // them, so the two are named separately.
+    if (num(job?.rawUncollected) > 0) return { kind: 'fetch', count: num(job.rawUncollected) };
+    if (num(job?.rawUnacked) > 0) return { kind: 'ack', count: num(job.rawUnacked) };
 
     if (runningJob && runningJob.id !== job.id) return { kind: 'running', job: runningJob };
     return null;

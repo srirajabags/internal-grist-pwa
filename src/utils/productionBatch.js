@@ -620,6 +620,11 @@ export const outputColour = (batchType, so) => {
     if (batchType === 'ROLLS TO BOTTOMPATTY SHEETS') {
         return firstChoice(so.Handle_Colour) || firstChoice(so.Sidepatty_Colour) || '';
     }
+    // A model number is printed after production, not cut into the sheet, so what
+    // comes off this machine is plain white virgin stock whatever model the order
+    // names. Bag_Colour holds the model on those lines -- reading it here painted
+    // the sheet in a model number, which is not a colour at all.
+    if (SHEET_TYPES.has(batchType) && isModelNumberSheet(so)) return 'WHITE';
     return firstChoice(so.Bag_Colour) || '';
 };
 
