@@ -136,22 +136,205 @@ const parseInventoryItemOptions = (v, fallbackIds = []) => {
     }));
 };
 
-// One joined query fetches the whole tree (open batches -> jobs -> sub-orders),
-// plus inventory item details and the sub-order's customer/order. Reference-list
-// columns are stored as JSON, so json_each() expands them for the joins.
-// LEFT JOINs keep batches with no jobs and jobs with no sub-orders.
+// How much of the history comes down at a time. The whole of it is unbounded --
+// every batch the factory has ever run -- so it is read a page at a time and the
+// screen asks for the next one, rather than a fixed cap that quietly hides the
+// rest once the factory has run past it.
+export const HISTORY_PAGE = 12;
+
+// Completing the last job is not the end of the batch: the rolls are still on the
+// floor until somebody walks them back. A batch stays open until they have, and
+// only then moves into the history.
 const OPEN_BATCHES = `(b.Production_Completed_At IS NULL
        OR COALESCE(b.Remaining_Inventory_Returned, 0) = 0)`;
-const CLOSED_BATCHES = `(b.Production_Completed_At IS NOT NULL
-       AND COALESCE(b.Remaining_Inventory_Returned, 0) = 1
-       AND b.id IN (SELECT id FROM Factory_Production_Job_Batches
-                    WHERE Production_Completed_At IS NOT NULL
-                      AND COALESCE(Remaining_Inventory_Returned, 0) = 1
-                    ORDER BY Date DESC, id DESC LIMIT 40))`;
+const IS_CLOSED = `Production_Completed_At IS NOT NULL
+                      AND COALESCE(Remaining_Inventory_Returned, 0) = 1`;
 
-const treeSql = (scope) => `
+// A page of the history, taken from below a cursor rather than by counting rows
+// in: a batch closing while somebody reads back through the pages would shift an
+// offset under them and skip whatever it pushed down.
+const closedPage = (cursor) => {
+    const date = Number(cursor?.date) || 0;
+    const id = Number(cursor?.id) || 0;
+    return `(b.${IS_CLOSED}
+       AND b.id IN (SELECT id FROM ${BATCHES_TABLE}
+                    WHERE ${IS_CLOSED}
+                      ${cursor ? `AND (COALESCE(Date, 0) < ${date}
+                           OR (COALESCE(Date, 0) = ${date} AND id < ${id}))` : ''}
+                    ORDER BY COALESCE(Date, 0) DESC, id DESC LIMIT ${HISTORY_PAGE}))`;
+};
+
+// How many closed batches there are in all, so the screen can say what is left to
+// read rather than offering a button that may turn out to fetch nothing.
+const closedCountSql = () => `
+    SELECT COUNT(*) AS total FROM ${BATCHES_TABLE} WHERE ${IS_CLOSED}
+`;
+
+// Which batches a query covers: all the open work, or one page of the history --
+// and when the history is being refreshed rather than extended, exactly the
+// batches already on screen, so a refresh never costs more than what it redraws.
+const scopeFilter = (scope, page) => {
+    if (scope !== 'closed') return OPEN_BATCHES;
+    const ids = (page?.ids || []).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+    if (page?.ids) return `(b.id IN (${ids.join(',') || '0'}))`;
+    return closedPage(page?.after);
+};
+
+// The tree -- batches -> jobs -> sub-orders -- is read as two queries, not one
+// flat join, and they are grouped back together on arrival.
+//
+// The join is one row per sub-order, but everything expensive on it belongs to
+// the job: what it drew, what it handed back, what it made. Asked for on the flat
+// join, each of those was worked out again for every sub-order the job carries --
+// a batch of jobs with fifty orders between them paid for the same arithmetic
+// fifty times. On the history, where every batch ever run is in scope, that ran
+// past the SQL timeout and the page came back empty-handed.
+//
+// So the job figures are asked for once per job, the sub-order columns are asked
+// for on their own, and neither query pays for the other's rows.
+const jobScopeCtes = (scope, page) => `
+    batch AS (
+        SELECT b.id, b.Type, b.Date, b.Job_Batch_ID, b.Jobs,
+               b.Production_Started_At, b.Production_Completed_At,
+               b.Required_Inventory_Collected, b.Inventory_Collected_At,
+               b.Finished_Stock_Collected, b.Finished_Stock_Collected_At,
+               b.Remaining_Inventory_Returned, b.Inventory_Returned_At
+        FROM ${BATCHES_TABLE} b
+        WHERE ${scopeFilter(scope, page)}
+    ),
+    -- The jobs each batch names. Walking the batch's own list and looking each
+    -- job up by its row id keeps the reading proportional to the batch, where
+    -- asking which jobs claim to be in it re-reads every job ever run, once per
+    -- batch on the page.
+    batch_job AS (
+        SELECT b.id AS batch_id, jj.value AS job_id
+        FROM batch b
+        JOIN json_each(CASE WHEN json_valid(b.Jobs) THEN b.Jobs ELSE '[]' END) jj
+        WHERE jj.value != 'L'
+    ),
+    -- One row per job. LEFT JOINs so a batch with nothing in it yet still shows
+    -- up: an empty batch is a batch somebody still has to fill.
+    bj AS (
+        SELECT b.id AS batch_id, j.id AS job_id, j.Job_ID AS job_name,
+               j.Job_Overage, j.Inventory_Items,
+               j.Production_Started, j.Production_Started_At,
+               j.Production_Completed, j.Production_Completed_At,
+               j.From_Date, j.To_Date
+        FROM batch b
+        LEFT JOIN batch_job bjb ON bjb.batch_id = b.id
+        LEFT JOIN ${JOBS_TABLE} j ON j.id = bjb.job_id
+    ),
+    -- The stock each job was assigned, one row per item, so the movements below
+    -- can tell a job's own roll going back on the shelf from what it produced.
+    job_item AS (
+        SELECT DISTINCT bj.job_id, ji.value AS item_id
+        FROM bj
+        JOIN json_each(CASE WHEN json_valid(bj.Inventory_Items) THEN bj.Inventory_Items ELSE '[]' END) ji
+        WHERE ji.value != 'L'
+    ),
+    -- Every movement the jobs in scope have written, read once. The transactions
+    -- carry no index on the job they belong to, so a figure worked out from them
+    -- per job row costs a pass over the whole table; this is that pass, and the
+    -- sums below are grouped out of it.
+    tx AS (
+        SELECT t.Production_Job AS job_id, t.Item_ID AS item_id,
+               t.Transaction_Type AS type, t.Weight_Kg_ AS kg,
+               t.Count_Bundles_ AS cnt, t.Location AS loc,
+               COALESCE(t.Incharge_Ack, 0) AS ack,
+               UPPER(COALESCE(ic.Type, '')) AS kind,
+               it.Item_ID AS item_name, ic.Item_Code AS code_name, ic.Type AS code_type,
+               ic.Width_Inches_ AS w, ic.Height_Inches_ AS h, ic.GSM AS gsm,
+               -- An ADD against the job's own stock is roll going back; any other
+               -- ADD is what the job made.
+               EXISTS (SELECT 1 FROM job_item ji
+                       WHERE ji.job_id = t.Production_Job AND ji.item_id = t.Item_ID) AS own_item
+        FROM ${TXN_TABLE} t
+        LEFT JOIN ${ITEMS_TABLE} it ON it.id = t.Item_ID
+        LEFT JOIN Inventory_Item_Codes ic ON ic.id = it.Item_Code
+        WHERE t.Production_Job IN (SELECT job_id FROM bj WHERE job_id IS NOT NULL)
+    ),
+    -- What each job did with each of its items: took out, handed back, and
+    -- whether the godown has signed for either.
+    item_tx AS (
+        SELECT job_id, item_id,
+               -- Once collection is booked the item's available weight is 0, so
+               -- the shelf figure is no longer what the operator is holding --
+               -- this is.
+               ROUND(SUM(CASE WHEN type = 'LESS' THEN ABS(kg) END), 2) AS collected_kg,
+               ROUND(SUM(CASE WHEN type = 'ADD' THEN ABS(kg) END), 2) AS returned_kg,
+               SUM(CASE WHEN type = 'ADD' AND ack = 0 THEN 1 ELSE 0 END) AS returned_unacked,
+               -- Booked but unsigned and never booked at all both stop the
+               -- machine, but they are fixed by different people, so the two are
+               -- counted apart and the card says which it is.
+               SUM(CASE WHEN type = 'LESS' THEN 1 ELSE 0 END) AS less_rows,
+               MAX(CASE WHEN type = 'LESS' AND ack = 1 THEN 1 ELSE 0 END) AS less_acked
+        FROM tx GROUP BY job_id, item_id
+    ),
+    -- What the job moved in total, cross-referenced from the transactions that
+    -- carry its reference rather than mirrored into columns on the job.
+    job_tx AS (
+        SELECT job_id,
+               ROUND(SUM(CASE WHEN type = 'LESS' THEN ABS(kg) END), 2) AS collected_kg,
+               ROUND(SUM(CASE WHEN type = 'ADD' AND own_item THEN kg END), 2) AS returned_kg,
+               ROUND(SUM(CASE WHEN type = 'ADD' AND NOT own_item THEN kg END), 2) AS produced_kg,
+               -- Counted from the rows themselves, not from what the job was
+               -- assigned: before anything is collected there is nothing to sign,
+               -- and a batch that has not started should not be flagged as
+               -- waiting.
+               SUM(CASE WHEN ack = 0 THEN 1 ELSE 0 END) AS unacked,
+               -- Of what it took out, how much was ready-made stock rather than
+               -- raw roll, so the planned figure on the job row can be checked
+               -- against what was actually drawn.
+               ROUND(SUM(CASE WHEN type = 'LESS' AND kind != 'ROLL' THEN ABS(kg) END), 2) AS finished_taken_kg
+        FROM tx GROUP BY job_id
+    ),
+    -- Every produced line, one object per transaction. Not summed here: the rows
+    -- are few enough that adding them up on arrival is simpler, and the article's
+    -- size rides on its item code, so this is the breakdown for whatever the job
+    -- type happens to divide by, with no per-type rule.
+    job_out AS (
+        SELECT job_id, json_group_array(json_object(
+                   'item', item_name, 'code', code_name, 'type', code_type,
+                   'w', w, 'h', h, 'gsm', gsm,
+                   'kg', kg, 'cnt', cnt, 'loc', loc)) AS lines
+        FROM tx WHERE type = 'ADD' AND NOT own_item GROUP BY job_id
+    ),
+    -- What the godown still shows against the assigned stock, and which godown to
+    -- walk to for it. Narrowed to the items actually in scope: aggregating the
+    -- whole stock summary and then picking rows out of it costs more than the
+    -- figures are worth.
+    item_stock AS (
+        SELECT Item_ID AS item_id, ROUND(SUM(Available_Weight_Kg_), 2) AS kg
+        FROM ${SUMMARY_BY_ID_TABLE}
+        WHERE Incharge_Ack = 1 AND Item_ID IN (SELECT item_id FROM job_item)
+        GROUP BY Item_ID
+    ),
+    -- Where an item has stock in more than one godown, the heaviest holding is
+    -- the one worth sending them to.
+    item_loc AS (
+        SELECT Item_ID AS item_id, Location AS loc, MAX(Available_Weight_Kg_) AS heaviest
+        FROM ${SUMMARY_BY_ID_TABLE}
+        WHERE Incharge_Ack = 1 AND Item_ID IN (SELECT item_id FROM job_item)
+        GROUP BY Item_ID
+    ),
+    -- Sheets and patty in the bags godown are booked by COUNT and carry 0 kg, so
+    -- the weight alone reads as "nothing there". Only the by-code summary holds
+    -- counts; each non-roll code has one physical item, so it maps one to one.
+    -- One code can be counted in more than one godown; MIN(id) pins the answer
+    -- to the first of them rather than whichever row the scan happened to reach.
+    code_count AS (
+        SELECT Item_Code AS code_id, Available_Count_Bundles_ AS cnt, MIN(id) AS first_row
+        FROM ${SUMMARY_BY_CODE_TABLE}
+        WHERE Incharge_Ack = 1
+          AND Item_Code IN (SELECT it.Item_Code FROM job_item ji
+                            JOIN ${ITEMS_TABLE} it ON it.id = ji.item_id)
+        GROUP BY Item_Code
+    )`;
+
+const jobTreeSql = (scope, page) => `
+    WITH ${jobScopeCtes(scope, page)}
     SELECT
-        b.id AS batch_id, b.Type AS batch_type, b.Date AS batch_date,
+        bj.batch_id AS batch_id, b.Type AS batch_type, b.Date AS batch_date,
         b.Job_Batch_ID AS batch_name,
         b.Production_Started_At AS batch_started_at,
         b.Production_Completed_At AS batch_completed_at,
@@ -162,166 +345,97 @@ const treeSql = (scope) => `
         b.Remaining_Inventory_Returned AS batch_inv_returned,
         b.Inventory_Returned_At AS batch_inv_returned_at,
 
-        j.id AS job_id, j.Job_ID AS job_name,
+        bj.job_id AS job_id, bj.job_name AS job_name,
         -- The overage this job was planned with, so a later config change cannot
         -- silently re-price work that has already been run.
-        j.Job_Overage AS job_overage,
-        j.Inventory_Items AS job_inv_items,
+        bj.Job_Overage AS job_overage,
+        bj.Inventory_Items AS job_inv_items,
+        -- The collection list, in the order the job carries its items: what is on
+        -- the shelf, where to look for it, and what this job has already done
+        -- with it. The alternatives an item could be swapped for are not here --
+        -- they are only ever read inside the collection sheet, see loadSwaps.
         (
             SELECT json_group_array(json_object(
                 'id', it.id, 'itemId', it.Item_ID,
                 -- The item's OWN code, not the job's: a job can be assigned stock
                 -- before its Inventory_Item_Code is resolved, and the collection
                 -- list still has to name and draw what is on the shelf.
-                'code', ic2.Item_Code, 'type', ic2.Type, 'material', ic2.Material,
-                'colour', ic2.Colour, 'gsm', ic2.GSM,
-                'w', ic2.Width_Inches_, 'h', ic2.Height_Inches_,
-                -- What the godown still shows against this item, so the collection
-                -- list can say which roll to look for and how heavy it should be.
-                'kg', (SELECT ROUND(SUM(s.Available_Weight_Kg_), 2)
-                       FROM ${SUMMARY_BY_ID_TABLE} s
-                       WHERE s.Item_ID = it.id AND s.Incharge_Ack = 1),
-                -- Sheets and patty in the bags godown are booked by COUNT and carry
-                -- 0 kg, so the weight alone reads as "nothing there". Only the
-                -- by-code summary holds counts; each non-roll code has one physical
-                -- item, so it maps one to one.
-                'count', COALESCE((SELECT c.Available_Count_Bundles_
-                                   FROM ${SUMMARY_BY_CODE_TABLE} c
-                                   WHERE c.Item_Code = it.Item_Code AND c.Incharge_Ack = 1
-                                   LIMIT 1), 0),
-                -- The item's code, so the alternatives it could be swapped for can
-                -- be looked up when they are actually wanted. They used to be
-                -- fetched here, which meant aggregating the whole stock summary
-                -- once per item per job -- over half the time this query took, for
-                -- a list only ever read inside the collection sheet. See
-                -- loadSwaps.
+                'code', ic.Item_Code, 'type', ic.Type, 'material', ic.Material,
+                'colour', ic.Colour, 'gsm', ic.GSM,
+                'w', ic.Width_Inches_, 'h', ic.Height_Inches_,
+                'kg', st.kg,
+                'count', COALESCE(cc.cnt, 0),
                 'codeId', it.Item_Code,
-                -- Which godown to walk to. Where an item has stock in more than
-                -- one, the heaviest holding is the one worth sending them to.
-                'location', (SELECT s2.Location
-                             FROM ${SUMMARY_BY_ID_TABLE} s2
-                             WHERE s2.Item_ID = it.id AND s2.Incharge_Ack = 1
-                             ORDER BY s2.Available_Weight_Kg_ DESC LIMIT 1),
-                -- What this job actually took off the shelf. Once collection is
-                -- booked the item's available weight is 0, so the shelf figure is
-                -- no longer what the operator is holding -- this is.
-                'collectedKg', (SELECT ROUND(SUM(ABS(tx.Weight_Kg_)), 2)
-                                FROM ${TXN_TABLE} tx
-                                WHERE tx.Production_Job = j.id AND tx.Item_ID = it.id
-                                  AND tx.Transaction_Type = 'LESS'),
-                -- What the finished job already put back, and whether the godown
-                -- has signed for it yet.
-                'returnedKg', (SELECT ROUND(SUM(ABS(tx.Weight_Kg_)), 2)
-                               FROM ${TXN_TABLE} tx
-                               WHERE tx.Production_Job = j.id AND tx.Item_ID = it.id
-                                 AND tx.Transaction_Type = 'ADD'),
-                'returnedAcked', (SELECT COUNT(*)
-                                  FROM ${TXN_TABLE} tx
-                                  WHERE tx.Production_Job = j.id AND tx.Item_ID = it.id
-                                    AND tx.Transaction_Type = 'ADD'
-                                    AND COALESCE(tx.Incharge_Ack, 0) = 0)))
-            FROM json_each(CASE WHEN json_valid(j.Inventory_Items) THEN j.Inventory_Items ELSE '[]' END) ji
-            LEFT JOIN Inventory_Items it ON it.id = ji.value
-            LEFT JOIN Inventory_Item_Codes ic2 ON ic2.id = it.Item_Code
+                'location', lo.loc,
+                'collectedKg', itx.collected_kg,
+                'returnedKg', itx.returned_kg,
+                'returnedAcked', COALESCE(itx.returned_unacked, 0)))
+            FROM json_each(CASE WHEN json_valid(bj.Inventory_Items) THEN bj.Inventory_Items ELSE '[]' END) ji
+            LEFT JOIN ${ITEMS_TABLE} it ON it.id = ji.value
+            LEFT JOIN Inventory_Item_Codes ic ON ic.id = it.Item_Code
+            LEFT JOIN item_stock st ON st.item_id = ji.value
+            LEFT JOIN item_loc lo ON lo.item_id = ji.value
+            LEFT JOIN code_count cc ON cc.code_id = it.Item_Code
+            LEFT JOIN item_tx itx ON itx.job_id = bj.job_id AND itx.item_id = ji.value
             WHERE ji.value != 'L'
         ) AS job_inv_item_options,
-        -- What the job actually moved, cross-referenced from the transactions that
-        -- carry its reference rather than mirrored into columns on the job. A LESS
-        -- is stock it took out; an ADD against one of its OWN items is stock handed
-        -- back; any other ADD is what it produced.
-        (SELECT ROUND(SUM(ABS(tx.Weight_Kg_)), 2) FROM ${TXN_TABLE} tx
-         WHERE tx.Production_Job = j.id AND tx.Transaction_Type = 'LESS') AS job_collected_kg,
+        jt.collected_kg AS job_collected_kg,
         -- The roll the machine will cut, and whether it is signed out yet.
         -- Counting the items rather than the transactions catches both halves of
         -- it: one booked but not signed for, and one never booked at all. Until
-        -- the incharge signs, the books show the stock still on the shelf whatever
-        -- the floor has in its hands.
+        -- the incharge signs, the books show the stock still on the shelf
+        -- whatever the floor has in its hands.
         --
         -- Roll only. Ready-made stock never goes on the machine -- it is fetched
-        -- and walked to the printing area -- so whether it has been signed out has
-        -- no bearing on whether the operator can start cutting.
+        -- and walked to the printing area -- so whether it has been signed out
+        -- has no bearing on whether the operator can start cutting.
         (SELECT COUNT(*)
-         FROM json_each(CASE WHEN json_valid(j.Inventory_Items) THEN j.Inventory_Items ELSE '[]' END) ji
-         LEFT JOIN Inventory_Items ri ON ri.id = ji.value
+         FROM json_each(CASE WHEN json_valid(bj.Inventory_Items) THEN bj.Inventory_Items ELSE '[]' END) ji
+         LEFT JOIN ${ITEMS_TABLE} ri ON ri.id = ji.value
          LEFT JOIN Inventory_Item_Codes rc ON rc.id = ri.Item_Code
+         LEFT JOIN item_tx itx ON itx.job_id = bj.job_id AND itx.item_id = ji.value
          WHERE ji.value != 'L' AND UPPER(COALESCE(rc.Type, '')) = 'ROLL'
-           AND NOT EXISTS (
-               SELECT 1 FROM ${TXN_TABLE} tx
-               WHERE tx.Production_Job = j.id AND tx.Item_ID = ji.value
-                 AND tx.Transaction_Type = 'LESS' AND COALESCE(tx.Incharge_Ack, 0) = 1)
-        ) AS job_raw_unacked,
-        -- Of those, the ones with no collection entry at all. Never booked and
-        -- booked-but-unsigned both stop the machine, but they are fixed by
-        -- different people -- one by the floor, one by the incharge -- so the two
-        -- are counted apart and the card says which it is.
+           AND COALESCE(itx.less_acked, 0) = 0) AS job_raw_unacked,
+        -- Of those, the ones with no collection entry at all.
         (SELECT COUNT(*)
-         FROM json_each(CASE WHEN json_valid(j.Inventory_Items) THEN j.Inventory_Items ELSE '[]' END) ji
-         LEFT JOIN Inventory_Items ui ON ui.id = ji.value
+         FROM json_each(CASE WHEN json_valid(bj.Inventory_Items) THEN bj.Inventory_Items ELSE '[]' END) ji
+         LEFT JOIN ${ITEMS_TABLE} ui ON ui.id = ji.value
          LEFT JOIN Inventory_Item_Codes uc ON uc.id = ui.Item_Code
+         LEFT JOIN item_tx itx ON itx.job_id = bj.job_id AND itx.item_id = ji.value
          WHERE ji.value != 'L' AND UPPER(COALESCE(uc.Type, '')) = 'ROLL'
-           AND NOT EXISTS (
-               SELECT 1 FROM ${TXN_TABLE} tx
-               WHERE tx.Production_Job = j.id AND tx.Item_ID = ji.value
-                 AND tx.Transaction_Type = 'LESS')
-        ) AS job_raw_uncollected,
-        -- The same test for ready-made stock. It does not hold the machine up, but
-        -- the operator is told, since the job is not finished without it.
+           AND COALESCE(itx.less_rows, 0) = 0) AS job_raw_uncollected,
+        -- The same test for ready-made stock. It does not hold the machine up,
+        -- but the operator is told, since the job is not finished without it.
         (SELECT COUNT(*)
-         FROM json_each(CASE WHEN json_valid(j.Inventory_Items) THEN j.Inventory_Items ELSE '[]' END) ji
-         LEFT JOIN Inventory_Items fi ON fi.id = ji.value
+         FROM json_each(CASE WHEN json_valid(bj.Inventory_Items) THEN bj.Inventory_Items ELSE '[]' END) ji
+         LEFT JOIN ${ITEMS_TABLE} fi ON fi.id = ji.value
          LEFT JOIN Inventory_Item_Codes fc ON fc.id = fi.Item_Code
+         LEFT JOIN item_tx itx ON itx.job_id = bj.job_id AND itx.item_id = ji.value
          WHERE ji.value != 'L' AND UPPER(COALESCE(fc.Type, '')) != 'ROLL'
-           AND NOT EXISTS (
-               SELECT 1 FROM ${TXN_TABLE} tx
-               WHERE tx.Production_Job = j.id AND tx.Item_ID = ji.value
-                 AND tx.Transaction_Type = 'LESS' AND COALESCE(tx.Incharge_Ack, 0) = 1)
-        ) AS job_finished_unacked,
-        (SELECT ROUND(SUM(tx.Weight_Kg_), 2) FROM ${TXN_TABLE} tx
-         WHERE tx.Production_Job = j.id AND tx.Transaction_Type = 'ADD'
-           AND tx.Item_ID IN (SELECT value FROM json_each(
-               CASE WHEN json_valid(j.Inventory_Items) THEN j.Inventory_Items ELSE '[]' END))
-        ) AS job_returned_kg,
-        (SELECT ROUND(SUM(tx.Weight_Kg_), 2) FROM ${TXN_TABLE} tx
-         WHERE tx.Production_Job = j.id AND tx.Transaction_Type = 'ADD'
-           AND tx.Item_ID NOT IN (SELECT value FROM json_each(
-               CASE WHEN json_valid(j.Inventory_Items) THEN j.Inventory_Items ELSE '[]' END))
-        ) AS job_produced_kg,
-        -- Every produced line, one object per transaction. Not aggregated here:
-        -- SQLite cannot group inside a correlated subquery, and the rows are few
-        -- enough that adding them up on arrival is simpler than working around it.
-        -- The article's size rides on its item code, so this is the breakdown for
-        -- whatever the job type happens to divide by, with no per-type rule.
-        (SELECT json_group_array(json_object(
-            'item', it4.Item_ID, 'code', ic4.Item_Code, 'type', ic4.Type,
-            'w', ic4.Width_Inches_, 'h', ic4.Height_Inches_, 'gsm', ic4.GSM,
-            'kg', tx.Weight_Kg_, 'cnt', tx.Count_Bundles_, 'loc', tx.Location))
-         FROM ${TXN_TABLE} tx
-         LEFT JOIN Inventory_Items it4 ON it4.id = tx.Item_ID
-         LEFT JOIN Inventory_Item_Codes ic4 ON ic4.id = it4.Item_Code
-         WHERE tx.Production_Job = j.id AND tx.Transaction_Type = 'ADD'
-           AND tx.Item_ID NOT IN (SELECT value FROM json_each(
-               CASE WHEN json_valid(j.Inventory_Items) THEN j.Inventory_Items ELSE '[]' END))
-        ) AS job_output_lines,
-        -- Movements this job has written that nobody has signed for yet. Counted
-        -- from the rows themselves, not from what the job was assigned: before
-        -- anything is collected there is nothing to sign, and a batch that has not
-        -- started should not be flagged as waiting.
-        (SELECT COUNT(*) FROM ${TXN_TABLE} tx
-         WHERE tx.Production_Job = j.id AND COALESCE(tx.Incharge_Ack, 0) = 0
-        ) AS job_unacked_txns,
-        -- Of what it took out, how much was ready-made stock rather than raw roll.
-        -- The item's own code says which it is, so the planned figure on the job
-        -- row can be checked against what was actually drawn.
-        (SELECT ROUND(SUM(ABS(tx.Weight_Kg_)), 2) FROM ${TXN_TABLE} tx
-         LEFT JOIN Inventory_Items ti ON ti.id = tx.Item_ID
-         LEFT JOIN Inventory_Item_Codes tc ON tc.id = ti.Item_Code
-         WHERE tx.Production_Job = j.id AND tx.Transaction_Type = 'LESS'
-           AND UPPER(COALESCE(tc.Type, '')) != 'ROLL') AS job_finished_taken_kg,
+           AND COALESCE(itx.less_acked, 0) = 0) AS job_finished_unacked,
+        jt.returned_kg AS job_returned_kg,
+        jt.produced_kg AS job_produced_kg,
+        COALESCE(jo.lines, '[]') AS job_output_lines,
+        COALESCE(jt.unacked, 0) AS job_unacked_txns,
+        jt.finished_taken_kg AS job_finished_taken_kg,
 
-        j.Production_Started AS job_started, j.Production_Started_At AS job_started_at,
-        j.Production_Completed AS job_completed, j.Production_Completed_At AS job_completed_at,
-        j.From_Date AS job_from_date, j.To_Date AS job_to_date,
+        bj.Production_Started AS job_started, bj.Production_Started_At AS job_started_at,
+        bj.Production_Completed AS job_completed, bj.Production_Completed_At AS job_completed_at,
+        bj.From_Date AS job_from_date, bj.To_Date AS job_to_date
+    FROM bj
+    JOIN batch b ON b.id = bj.batch_id
+    LEFT JOIN job_tx jt ON jt.job_id = bj.job_id
+    LEFT JOIN job_out jo ON jo.job_id = bj.job_id
+    ORDER BY b.Date DESC, b.id DESC, bj.job_id
+`;
 
+// The other half: one row per sub-order, carrying only what is read off the order
+// itself. Walking the job's own list of sub-orders and looking each one up by id
+// beats scanning every sub-order ever taken for the ones this job names.
+const subOrderSql = (scope, page) => `
+    SELECT
+        b.id AS batch_id,
+        j.id AS job_id,
         so.id AS so_id,
         so.Quantity AS so_qty, so.Quantity_Type AS so_qty_type,
         so.Order_Form_Date AS so_order_form_date,
@@ -336,22 +450,17 @@ const treeSql = (scope) => `
         so.Handle_Colour AS so_handle_colour, so.Print AS so_print,
         o.Order_ID AS so_order_id, o.Order_Form AS so_order_form,
         c.Shop_Name AS so_shop, c.City AS so_city, ag.Area_Group AS so_area_group
-    FROM Factory_Production_Job_Batches b
-    LEFT JOIN Factory_Production_Jobs j ON j.id IN (SELECT value FROM json_each(b.Jobs))
-    LEFT JOIN Sub_Orders so ON so.id IN (SELECT value FROM json_each(j.Sub_Orders))
+    FROM ${BATCHES_TABLE} b
+    JOIN json_each(CASE WHEN json_valid(b.Jobs) THEN b.Jobs ELSE '[]' END) bj
+    JOIN ${JOBS_TABLE} j ON j.id = bj.value
+    JOIN json_each(CASE WHEN json_valid(j.Sub_Orders) THEN j.Sub_Orders ELSE '[]' END) sj
+    JOIN Sub_Orders so ON so.id = sj.value
     LEFT JOIN Orders o ON o.id = so."Order"
     LEFT JOIN Customers c ON c.id = so.Customer
     LEFT JOIN Area_Groups ag ON ag.id = so.Area_Group
-    -- Completing the last job is not the end of the batch: the rolls are still on
-    -- the floor until somebody walks them back. A batch stays open until they
-    -- have, and only then moves into the history.
-    WHERE ${scope === 'closed' ? CLOSED_BATCHES : OPEN_BATCHES}
+    WHERE ${scopeFilter(scope, page)}
     ORDER BY b.Date DESC, b.id DESC, j.id, so.id
 `;
-
-// History grows without limit, and the whole tree is fetched in one flat join, so
-// it is capped at the most recent batches rather than every batch ever run.
-export const HISTORY_LIMIT = 40;
 
 // Format an epoch-seconds value as a date (YYYY-MM-DD).
 const formatDate = (val) => {
@@ -1016,6 +1125,10 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     // Which half of the world is on screen: batches still being worked, or the
     // ones that have been closed out.
     const [scope, setScope] = useState('open');
+    // How many closed batches there are in all, against the pages read so far, so
+    // the history can say how much of itself is still unread.
+    const [closedTotal, setClosedTotal] = useState(null);
+    const [loadingMore, setLoadingMore] = useState(false);
     const [selectedBatchId, setSelectedBatchId] = useState(null);
     const [selectedJobId, setSelectedJobId] = useState(null);
     const [updatingJobId, setUpdatingJobId] = useState(null);
@@ -1230,23 +1343,48 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
         }
     };
 
+    const askSql = async (sql) => {
+        const headers = await getHeaders();
+        const response = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sql, args: [] })
+        });
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Query failed: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return (await response.json()).records || [];
+    };
+
+    // Read one set of batches and build the tree for it. Two halves of the same
+    // tree, asked for together: the jobs come first so a batch and its jobs are
+    // built from the rows that carry their figures, and the sub-order rows then
+    // only fill in underneath.
+    const readTree = async (forScope, page) => {
+        const [jobRows, subRows] = await Promise.all([
+            askSql(jobTreeSql(forScope, page)),
+            askSql(subOrderSql(forScope, page))
+        ]);
+        return groupRows([...jobRows, ...subRows]);
+    };
+
     const fetchData = async (silent = false, forScope = scope) => {
         if (!silent) setLoading(true);
         setError(null);
         try {
-            const headers = await getHeaders();
-            const url = getUrl(`/api/docs/${DOC_ID}/sql`);
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { ...headers, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sql: treeSql(forScope), args: [] })
-            });
-            if (!response.ok) {
-                const text = await response.text().catch(() => '');
-                throw new Error(`Query failed: ${response.statusText}${text ? ` - ${text}` : ''}`);
-            }
-            const data = await response.json();
-            setBatches(groupRows(data.records || []));
+            // Refreshing the history redraws the pages already read, not the
+            // first one: somebody who has read back three pages and then signs
+            // for a roll should not be thrown back to the top.
+            const onScreen = forScope === 'closed' && forScope === scope
+                ? batches.map((b) => b.id) : null;
+            const page = onScreen?.length ? { ids: onScreen } : undefined;
+            const [tree, counted] = await Promise.all([
+                readTree(forScope, page),
+                forScope === 'closed' ? askSql(closedCountSql()) : Promise.resolve(null)
+            ]);
+            setBatches(tree);
+            if (counted) setClosedTotal(num(counted[0]?.fields?.total));
         } catch (err) {
             const message = err.message || String(err) || 'Unknown error occurred';
             console.error('Production Jobs Error:', message);
@@ -1254,6 +1392,29 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
             if (!silent) setBatches([]);
         } finally {
             if (!silent) setLoading(false);
+        }
+    };
+
+    // The next page of the history, from below the oldest batch on screen.
+    const loadMoreHistory = async () => {
+        const oldest = batches[batches.length - 1];
+        if (!oldest || loadingMore) return;
+        setLoadingMore(true);
+        setError(null);
+        try {
+            const older = await readTree('closed', { after: { date: oldest.date, id: oldest.id } });
+            // Keyed by id rather than appended blind: a batch closing between the
+            // two reads could otherwise arrive twice.
+            setBatches((prev) => {
+                const seen = new Set(prev.map((b) => b.id));
+                return [...prev, ...older.filter((b) => !seen.has(b.id))];
+            });
+        } catch (err) {
+            const message = err.message || String(err) || 'Unknown error occurred';
+            console.error('Production Jobs Error:', message);
+            setError(message);
+        } finally {
+            setLoadingMore(false);
         }
     };
 
@@ -1268,6 +1429,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
         if (next === scope) return;
         setSelectedJobId(null);
         setSelectedBatchId(null);
+        setBatches([]);
         setScope(next);
     };
 
@@ -2015,8 +2177,8 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
 
                                     <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 px-1">
                                         {filteredBatches.length} {scope === 'closed' ? 'closed ' : ''}batch{filteredBatches.length !== 1 ? 'es' : ''}
-                                        {scope === 'closed' && filteredBatches.length >= HISTORY_LIMIT
-                                            ? ` · most recent ${HISTORY_LIMIT}` : ''}
+                                        {scope === 'closed' && closedTotal !== null && !selectedType
+                                            ? ` · ${closedTotal} in all` : ''}
                                     </p>
 
                                     {filteredBatches.length === 0 ? (
@@ -2096,6 +2258,28 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                                 </button>
                                             );
                                             })}
+                                        </div>
+                                    )}
+
+                                    {/* The history is read a page at a time, so
+                                        the rest of it is a button away rather
+                                        than silently missing. */}
+                                    {scope === 'closed' && batches.length > 0
+                                        && closedTotal !== null && batches.length < closedTotal && (
+                                        <div className="mt-3 flex flex-col items-center gap-1.5">
+                                            <Button
+                                                variant="secondary"
+                                                onClick={loadMoreHistory}
+                                                disabled={loadingMore}
+                                            >
+                                                {loadingMore
+                                                    ? <><Loader2 size={16} className="animate-spin" /> Loading…</>
+                                                    : <><History size={16} /> Load older batches</>}
+                                            </Button>
+                                            <p className="text-xs text-slate-400">
+                                                {closedTotal - batches.length} older batch
+                                                {closedTotal - batches.length !== 1 ? 'es' : ''} not read yet
+                                            </p>
                                         </div>
                                     )}
                                 </>
