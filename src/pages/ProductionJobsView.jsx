@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
     ArrowLeft, Boxes, AlertCircle, Loader2, RefreshCw, Package,
     PlayCircle, CheckCircle2, Circle, Clock, ChevronRight, Layers, FileText, ArrowRight, Plus, X, Warehouse,
-    AlertTriangle, Trash2, Lock, History, Printer, Zap, ChevronDown
+    AlertTriangle, Trash2, Lock, History, Printer, Zap, ChevronDown, CalendarRange
 } from 'lucide-react';
 import Card from '../components/Card';
 import Button from '../components/Button';
@@ -515,6 +515,52 @@ const planShape = (so) => ({
     Sidepatty_Width: so.sidepattyWidth,
     Handle_Colour: so.handleColour
 });
+
+// A day said short -- "31 Aug" -- for the two ends of a span, which are read as a
+// pair: spelling the year out on both spends the line on what they share.
+const formatDay = (val, withYear = false) => {
+    if (val === null || val === undefined || val === '' || val === 0 || typeof val === 'object') return null;
+    const date = new Date(Number(val) * 1000);
+    if (isNaN(date.getTime())) return null;
+    return date.toLocaleDateString('en-IN', {
+        day: 'numeric', month: 'short', ...(withYear ? { year: 'numeric' } : {})
+    });
+};
+
+// The stretch of order paperwork a batch covers. Grist works each job's From_Date
+// and To_Date out from the Factory_Updated dates of the sub-orders under it, so
+// the batch's stretch is the earliest of one and the latest of the other. It is
+// the first thing the office asks of a batch -- which days' orders is this? --
+// and until now the only way to answer was to open every job in it.
+//
+// Jobs answered from stock count too: they carry orders like any other, and the
+// question is about the paperwork, not about what runs on a machine.
+const batchOrderSpan = (jobs = []) => {
+    let from = null;
+    let to = null;
+    for (const job of jobs) {
+        const f = num(job?.fromDate);
+        const t = num(job?.toDate);
+        if (f > 0 && (from === null || f < from)) from = f;
+        if (t > 0 && (to === null || t > to)) to = t;
+    }
+    if (from === null && to === null) return null;
+    // A batch with a date at only one end still has something to say.
+    return { from: from ?? to, to: to ?? from };
+};
+
+// That stretch as one line: collapsed to a single date when it is all one day,
+// and with the year given once when both ends share it.
+const orderSpanText = (span) => {
+    if (!span) return null;
+    const { from, to } = span;
+    if (sameDay(from, to)) return formatDay(from, true);
+    const fromYear = new Date(from * 1000).getFullYear();
+    const toYear = new Date(to * 1000).getFullYear();
+    return fromYear === toYear
+        ? `${formatDay(from)} – ${formatDay(to)} ${toYear}`
+        : `${formatDay(from, true)} – ${formatDay(to, true)}`;
+};
 
 // Grist's Job_Batch_ID, which is what the batch is called on paper. Only falls
 // back to a constructed label when the column has not computed yet.
@@ -2207,6 +2253,8 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                                     unit: totals.unit || t.unit
                                                 };
                                             }, { count: 0, kg: 0, fromStock: 0, unit: '' });
+                                            // Which days' orders the batch is answering.
+                                            const orderSpan = orderSpanText(batchOrderSpan(batch.jobs));
                                             return (
                                                 <button
                                                     key={batch.id}
@@ -2220,9 +2268,22 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                                     <div className="flex items-start justify-between gap-2">
                                                         <div className="min-w-0">
                                                             <p className="font-semibold text-slate-800 break-words">{batch.type || 'Batch'}</p>
-                                                            <span className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-md text-xs font-semibold text-amber-800 bg-amber-100 ring-1 ring-amber-200">
-                                                                <Clock size={12} /> {formatDate(batch.date)}
-                                                            </span>
+                                                            <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold text-amber-800 bg-amber-100 ring-1 ring-amber-200">
+                                                                    <Clock size={12} /> {formatDate(batch.date)}
+                                                                </span>
+                                                                {/* The batch's own date says when it was drawn
+                                                                    up; this says which days' orders went into
+                                                                    it, which is the one the office asks for. */}
+                                                                {orderSpan && (
+                                                                    <span
+                                                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium text-slate-600 bg-slate-100 ring-1 ring-slate-200"
+                                                                        title="Orders updated to factory over this stretch"
+                                                                    >
+                                                                        <CalendarRange size={12} /> Orders {orderSpan}
+                                                                    </span>
+                                                                )}
+                                                            </div>
                                                         </div>
                                                         <ChevronRight size={20} className="shrink-0 mt-0.5 text-slate-300" />
                                                     </div>
