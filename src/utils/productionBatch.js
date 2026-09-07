@@ -119,6 +119,20 @@ const norm = (v) => String(v ?? '').trim().toUpperCase();
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const isSet = (v) => v !== null && v !== undefined && String(v).trim() !== '';
 
+// Every helper here speaks Sub_Orders column names, but the pages that call them
+// carry the same rows in camelCase. One mapper, kept beside the helpers it feeds,
+// so no caller is ever tempted to hand a helper half a sub-order.
+export const planShape = (so) => ({
+    id: so.id,
+    Model: so.model, Material: so.material, Print: so.print,
+    Roll_Material: so.rollMaterial, Quantity: so.qty, Quantity_Type: so.qtyType,
+    Bag_Colour: so.bagColour, Bag_GSM: so.bagGsm, Bag_Width: so.bagW, Bag_Height: so.bagH,
+    Sheet_Size: so.sheetSize,
+    Sidepatty_Colour: so.sidepattyColour, Sidepatty_GSM: so.sidepattyGsm,
+    Sidepatty_Width: so.sidepattyWidth,
+    Handle_Colour: so.handleColour
+});
+
 // --- What one finished bag needs -------------------------------------------
 // The factory's bill of materials, in one editable place. Each rule pairs a
 // `combination` — filters matched against the sub-order — with `requirements`:

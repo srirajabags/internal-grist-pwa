@@ -17,7 +17,7 @@ import { itemForm, FORM_LABEL, splitJobType } from '../utils/itemForms';
 import {
     outputTypeFor, ROLL_WIDTH_TYPES, effectiveQty, outputSizeLabel,
     groupOutputCount, outputCount, pattyDims, bottomSheetDims, outputDims,
-    OUTPUT_COUNT_UNIT, outputColour, isFastMovingArticle, rollsPerRun
+    OUTPUT_COUNT_UNIT, outputColour, isFastMovingArticle, rollsPerRun, planShape
 } from '../utils/productionBatch';
 import { choiceText } from '../utils/gristValues';
 import { parseAttachmentId } from '../utils/attachments';
@@ -29,7 +29,7 @@ import { newJournal } from '../utils/writeJournal';
 import { jobLedger, batchLedger, outputBreakdown } from '../utils/jobLedger';
 import { downloadCsv } from '../utils/csvFile';
 import {
-    isPrintingListType, PRINTING_LIST_HEADERS, printingListRows, printingListName
+    isPrintingListType, printingListHeaders, printingListRows, printingListName
 } from '../utils/printingList';
 import { godownOf, godownForJob, splitStock, splitJobs, isLatentJob, PRINTING_AREA, BAGS_GODOWN } from '../utils/godown';
 
@@ -448,6 +448,10 @@ const subOrderSql = (scope, page) => `
         so.Bag_Width AS so_bag_w, so.Bag_Height AS so_bag_h,
         so.Sidepatty_Width AS so_sidepatty_width,
         so.Handle_Colour AS so_handle_colour, so.Print AS so_print,
+        -- The print setup, for the printing list. Neither of these is implied by
+        -- Print: a double-colour job can still be one plate, and the ink colour is
+        -- named separately again.
+        so.Plate_Count AS so_plate_count, so.Printing_Colour AS so_printing_colour,
         o.Order_ID AS so_order_id, o.Order_Form AS so_order_form,
         c.Shop_Name AS so_shop, c.City AS so_city, ag.Area_Group AS so_area_group
     FROM ${BATCHES_TABLE} b
@@ -502,19 +506,6 @@ const orderedText = (so) => {
     const unit = String(so.qtyType ?? '').trim().toUpperCase() === 'PIECES' ? 'pcs' : 'kg';
     return `${qty} ${unit}`;
 };
-
-// The planning helpers all speak Sub_Orders column names; this page carries the
-// same rows in camelCase. One mapper, so a helper is never fed half a sub-order.
-const planShape = (so) => ({
-    id: so.id,
-    Model: so.model, Material: so.material, Print: so.print,
-    Roll_Material: so.rollMaterial, Quantity: so.qty, Quantity_Type: so.qtyType,
-    Bag_Colour: so.bagColour, Bag_GSM: so.bagGsm, Bag_Width: so.bagW, Bag_Height: so.bagH,
-    Sheet_Size: so.sheetSize,
-    Sidepatty_Colour: so.sidepattyColour, Sidepatty_GSM: so.sidepattyGsm,
-    Sidepatty_Width: so.sidepattyWidth,
-    Handle_Colour: so.handleColour
-});
 
 // A day said short -- "31 Aug" -- for the two ends of a span, which are read as a
 // pair: spelling the year out on both spends the line on what they share.
@@ -691,6 +682,8 @@ const groupRows = (rows) => {
                     sidepattyWidth: f.so_sidepatty_width,
                     handleColour: f.so_handle_colour,
                     print: f.so_print,
+                    plateCount: f.so_plate_count,
+                    printingColour: f.so_printing_colour,
                     orderId: f.so_order_id,
                     orderForm: f.so_order_form
                 });
@@ -2358,9 +2351,9 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                     />
 
                                     {/* The printing floor's own list: one row per
-                                        sub-order, in bags rather than kilos. Sheets
-                                        only -- a DCUT run turns out finished bags and
-                                        has no sheet to print. */}
+                                        sub-order, in bags rather than kilos. Only
+                                        the batches that print get one -- sheets,
+                                        and the d-cut runs whose blank is the bag. */}
                                     {isPrintingListType(selectedBatch.type) && (
                                         <Button
                                             variant="secondary"
@@ -2368,7 +2361,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                             icon={Printer}
                                             onClick={() => downloadCsv(
                                                 printingListName(selectedBatch),
-                                                PRINTING_LIST_HEADERS,
+                                                printingListHeaders(selectedBatch),
                                                 printingListRows(selectedBatch)
                                             )}
                                         >
