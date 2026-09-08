@@ -26,7 +26,7 @@ import {
 } from '../utils/txnDisplay';
 import { writableRecords } from '../utils/gristWrites';
 import { newJournal } from '../utils/writeJournal';
-import { jobLedger, batchLedger, outputBreakdown } from '../utils/jobLedger';
+import { jobLedger, batchLedger, outputBreakdown, drawnKg } from '../utils/jobLedger';
 import { downloadCsv } from '../utils/csvFile';
 import {
     isPrintingListType, printingListHeaders, printingListRows, printingListName
@@ -224,8 +224,8 @@ const jobScopeCtes = (scope, page) => `
         LEFT JOIN batch_job bjb ON bjb.batch_id = b.id
         LEFT JOIN ${JOBS_TABLE} j ON j.id = bjb.job_id
     ),
-    -- The stock each job was assigned, one row per item, so the movements below
-    -- can tell a job's own roll going back on the shelf from what it produced.
+    -- The stock each job was assigned, one row per item, so the collection sheet
+    -- can say what is still on the shelf and which godown to walk to for it.
     job_item AS (
         SELECT DISTINCT bj.job_id, ji.value AS item_id
         FROM bj
@@ -243,11 +243,7 @@ const jobScopeCtes = (scope, page) => `
                COALESCE(t.Incharge_Ack, 0) AS ack,
                UPPER(COALESCE(ic.Type, '')) AS kind,
                it.Item_ID AS item_name, ic.Item_Code AS code_name, ic.Type AS code_type,
-               ic.Width_Inches_ AS w, ic.Height_Inches_ AS h, ic.GSM AS gsm,
-               -- An ADD against the job's own stock is roll going back; any other
-               -- ADD is what the job made.
-               EXISTS (SELECT 1 FROM job_item ji
-                       WHERE ji.job_id = t.Production_Job AND ji.item_id = t.Item_ID) AS own_item
+               ic.Width_Inches_ AS w, ic.Height_Inches_ AS h, ic.GSM AS gsm
         FROM ${TXN_TABLE} t
         LEFT JOIN ${ITEMS_TABLE} it ON it.id = t.Item_ID
         LEFT JOIN Inventory_Item_Codes ic ON ic.id = it.Item_Code
@@ -272,11 +268,36 @@ const jobScopeCtes = (scope, page) => `
     ),
     -- What the job moved in total, cross-referenced from the transactions that
     -- carry its reference rather than mirrored into columns on the job.
+    --
+    -- What a movement MEANS is read off the form of the item and the direction,
+    -- never off whether the item is one the job was assigned. Roll goes out of
+    -- the rolls godown and comes back to it; everything else is an article, and
+    -- an article moving is either one the job made or one it drew ready-made off
+    -- the bags-godown shelf:
+    --
+    --   ROLL     LESS                 the roll this job cut
+    --   ROLL     ADD                  that roll going back on the shelf
+    --   article  ADD  BAGS GODOWN     made, surplus to the shelf
+    --   article  ADD  PRINTING AREA   made for the run -- OR ready stock walked over
+    --   article  LESS BAGS GODOWN     ready stock taken off the shelf
+    --
+    -- The fourth line is the only ambiguous one, and it does not need resolving:
+    -- a stock trip writes both its legs at once (collectFinishedStock), so the
+    -- LESS cancels the ADD it came in with and only what was really made is left.
+    -- Hence production is netted, not summed.
+    --
+    -- Identity cannot do this job. Finished goods keep one item row per output
+    -- code, so a job part-answered from ready stock produces into the very row
+    -- that stock sits on: 2026-09-04 - ROLLS TO SHEETS - 21 - 170 cut 15,140
+    -- sheets and reported nothing, because both output rows named an item on its
+    -- own assigned list and were read as roll going back.
     job_tx AS (
         SELECT job_id,
-               ROUND(SUM(CASE WHEN type = 'LESS' THEN ABS(kg) END), 2) AS collected_kg,
-               ROUND(SUM(CASE WHEN type = 'ADD' AND own_item THEN kg END), 2) AS returned_kg,
-               ROUND(SUM(CASE WHEN type = 'ADD' AND NOT own_item THEN kg END), 2) AS produced_kg,
+               ROUND(SUM(CASE WHEN type = 'LESS' AND kind = 'ROLL' THEN ABS(kg) END), 2) AS collected_kg,
+               ROUND(SUM(CASE WHEN type = 'ADD' AND kind = 'ROLL' THEN ABS(kg) END), 2) AS returned_kg,
+               ROUND(SUM(CASE WHEN kind != 'ROLL'
+                              THEN CASE WHEN type = 'ADD' THEN ABS(kg) ELSE -ABS(kg) END
+                         END), 2) AS produced_kg,
                -- Counted from the rows themselves, not from what the job was
                -- assigned: before anything is collected there is nothing to sign,
                -- and a batch that has not started should not be flagged as
@@ -284,20 +305,27 @@ const jobScopeCtes = (scope, page) => `
                SUM(CASE WHEN ack = 0 THEN 1 ELSE 0 END) AS unacked,
                -- Of what it took out, how much was ready-made stock rather than
                -- raw roll, so the planned figure on the job row can be checked
-               -- against what was actually drawn.
+               -- against what was actually drawn. Weight only, so it is 0 for the
+               -- counted forms; the caller re-derives it from the lines below.
                ROUND(SUM(CASE WHEN type = 'LESS' AND kind != 'ROLL' THEN ABS(kg) END), 2) AS finished_taken_kg
         FROM tx GROUP BY job_id
     ),
-    -- Every produced line, one object per transaction. Not summed here: the rows
-    -- are few enough that adding them up on arrival is simpler, and the article's
-    -- size rides on its item code, so this is the breakdown for whatever the job
-    -- type happens to divide by, with no per-type rule.
+    -- Every article line, one object per transaction, carrying a direction: +1
+    -- for one the job put down, -1 for ready stock it drew. Both are here
+    -- because the drawn ones are what the added ones have to be netted against,
+    -- and because the counted forms book 0 kg -- their weight only exists once
+    -- the line's own geometry is applied to its count, which the caller does.
+    -- Not summed here: the rows are few enough that adding them up on arrival is
+    -- simpler, and the article's size rides on its item code, so this is the
+    -- breakdown for whatever the job type happens to divide by, with no per-type
+    -- rule.
     job_out AS (
         SELECT job_id, json_group_array(json_object(
                    'item', item_name, 'code', code_name, 'type', code_type,
                    'w', w, 'h', h, 'gsm', gsm,
-                   'kg', kg, 'cnt', cnt, 'loc', loc)) AS lines
-        FROM tx WHERE type = 'ADD' AND NOT own_item GROUP BY job_id
+                   'kg', ABS(kg), 'cnt', ABS(cnt), 'loc', loc,
+                   'dir', CASE WHEN type = 'ADD' THEN 1 ELSE -1 END)) AS lines
+        FROM tx WHERE kind != 'ROLL' GROUP BY job_id
     ),
     -- What the godown still shows against the assigned stock, and which godown to
     -- walk to for it. Narrowed to the items actually in scope: aggregating the
@@ -615,6 +643,7 @@ const groupRows = (rows) => {
                 // model number where the colour goes. A job with no roll at all
                 // still has to say something, so it falls back to what it has.
                 const assigned = splitStock(invItemOptions).raw[0] || invItemOptions[0] || {};
+                const outputLines = parseJson(f.job_output_lines);
                 job = {
                     id: f.job_id,
                     // Grist's Job_ID formula. Everything the floor and the office
@@ -647,11 +676,19 @@ const groupRows = (rows) => {
                     finishedUnacked: num(f.job_finished_unacked),
                     returnedKg: num(f.job_returned_kg),
                     producedKg: num(f.job_produced_kg),
-                    // One entry per produced transaction; summed per article where
-                    // the breakdown is shown.
-                    outputLines: parseJson(f.job_output_lines),
+                    // One entry per article this job moved -- what it put down and
+                    // the ready stock it drew, told apart by `dir`. Summed per
+                    // article where the breakdown is shown.
+                    outputLines,
                     unackedTxns: num(f.job_unacked_txns),
-                    finishedTakenKg: num(f.job_finished_taken_kg),
+                    // Off the lines' own geometry, because the column behind it
+                    // sums a weight field that sheets, patty and handles book as
+                    // zero -- so on the jobs that actually draw ready stock it
+                    // reports none. The column is the fallback for a job whose
+                    // lines did not come through.
+                    finishedTakenKg: outputLines.length > 0
+                        ? drawnKg({ outputLines })
+                        : num(f.job_finished_taken_kg),
                     fromDate: f.job_from_date,
                     toDate: f.job_to_date,
                     _subs: new Map()
@@ -2661,10 +2698,13 @@ const BatchInventory = ({ batch, updating, onCollect, onCollectFinished, onRetur
     // The two trips are to different godowns and are made by different people, in
     // whichever order the floor manages. Neither waits on the other.
     //
-    // Nothing is lost by letting them run independently: a job still cannot START
-    // until every item assigned to it has an acknowledged collection, finished
-    // stock included -- see startBlocker. That gate is where the real protection
-    // is, and it does not care which trip was made first.
+    // Only the roll trip is a precondition for running, though: startBlocker gates
+    // a start on the roll being signed out and no longer on the ready stock, so
+    // this trip can be missed outright and the batch will still run to completion.
+    // 2026-09-04 - ROLLS TO SHEETS - 21 did exactly that -- the sheets it was
+    // allocated had been collected by an earlier batch in the meantime, so there
+    // was nothing left to pull and nobody was told. The job's own card still says
+    // how many ready items are outstanding; nothing stops on it.
 
     return (
         <Card className="p-4 mb-3">
@@ -3032,10 +3072,11 @@ const TagGroup = ({ label, tags }) => {
 // Once collected the item's available weight is 0, so the shelf figure stops
 // being the thing the operator is holding.
 const collectedKgOf = (job) => {
-    // Raw stock only. The job's total LESS also covers ready-made stock pulled
-    // straight to the printing area, which was never cut from and must not count
-    // towards the roll the run has to account for.
-    if (num(job.collectedKg) > 0) return roundWeight(num(job.collectedKg) - num(job.finishedTakenKg));
+    // Raw stock only, and already so: the query counts a LESS towards this figure
+    // when the item is a roll, so ready-made stock pulled straight to the printing
+    // area -- never cut from, and no part of what the run has to account for --
+    // was never in it to be taken back out.
+    if (num(job.collectedKg) > 0) return roundWeight(num(job.collectedKg));
     const items = splitStock(job.invItemOptions).raw.filter((it) => it.collectedKg != null);
     if (items.length === 0) return null;
     return items.reduce((t, it) => t + num(it.collectedKg), 0);

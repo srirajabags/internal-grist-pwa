@@ -6,6 +6,7 @@
 // the job page and in the batch summary because both call this.
 
 import { countToKg, countUnitFor } from './txnDisplay';
+import { PRINTING_AREA } from './godown';
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const round = (v) => Math.round(num(v) * 100) / 100;
@@ -26,18 +27,38 @@ export const lineKg = (line) => {
     });
 };
 
+// Which way a line moved: +1 for an article the job put down, -1 for ready stock
+// it drew off the bags-godown shelf. Lines from before the column existed are
+// all output, which is what they were selected as.
+export const lineDir = (line) => (num(line?.dir) < 0 ? -1 : 1);
+
+// The ready-made stock a job pulled instead of cutting. Read from the lines
+// rather than from the job's own column, because that column sums the weight
+// field and sheets, patty and handles are booked by count against a weight of
+// zero -- so on exactly the jobs where it matters it reports nothing.
+export const drawnKg = (job) =>
+    round((job?.outputLines || [])
+        .filter((l) => lineDir(l) < 0)
+        .reduce((t, l) => t + lineKg(l), 0));
+
 // Roll taken out, less what came back, less what was made from it. Whatever is
 // unaccounted for was consumed by the run.
 //
 // `collected` counts raw roll only: ready-made stock a job pulled off the shelf
 // was never cut from, so charging it to wastage would invent a loss.
 export const jobLedger = (job) => {
-    const collected = round(num(job?.collectedKg) - num(job?.finishedTakenKg));
-    // From the lines, so counted output is weighed rather than read as zero. The
-    // column total is the fallback for a job whose lines did not come through.
+    // Roll only, and already so: the query counts a LESS towards this one when
+    // the item is a roll, so ready-made stock the job drew is not in it and has
+    // nothing to be taken back out.
+    const collected = round(job?.collectedKg);
+    // From the lines, so counted output is weighed rather than read as zero, and
+    // netted, so ready stock walked to the printing area does not read as having
+    // been made -- the trip books an ADD there that is otherwise indistinguishable
+    // from output. The column total is the fallback for a job whose lines did not
+    // come through.
     const lines = job?.outputLines || [];
     const produced = round(lines.length > 0
-        ? lines.reduce((t, l) => t + lineKg(l), 0)
+        ? lines.reduce((t, l) => t + lineKg(l) * lineDir(l), 0)
         : num(job?.producedKg));
     const returned = round(job?.returnedKg);
     return {
@@ -100,14 +121,29 @@ export const outputBreakdown = (job, plan = null) => {
                 size: lineSize(line),
                 kg: 0,
                 count: 0,
+                drawnKg: 0,
+                drawnCount: 0,
+                counted: false,
                 byLocation: {}
             });
         }
         const row = byItem.get(key);
-        row.kg += lineKg(line);
-        row.count += num(line.cnt);
-        const loc = line.loc || 'UNKNOWN';
-        row.byLocation[loc] = round((row.byLocation[loc] || 0) + lineKg(line));
+        const dir = lineDir(line);
+        const kg = lineKg(line);
+        row.kg += kg * dir;
+        row.count += num(line.cnt) * dir;
+        row.counted = row.counted || num(line.cnt) > 0;
+        if (dir < 0) {
+            row.drawnKg += kg;
+            row.drawnCount += num(line.cnt);
+        }
+        // A drawn line is booked out of the bags godown, but the trip that books
+        // it puts the goods in the printing area (collectFinishedStock sends them
+        // nowhere else), so that is the share it has to come off. Netting it at
+        // its own location instead would show the shelf as having been handed
+        // stock it never saw.
+        const loc = dir < 0 ? PRINTING_AREA : (line.loc || 'UNKNOWN');
+        row.byLocation[loc] = round((row.byLocation[loc] || 0) + kg * dir);
     }
     // What the plan asked of each size, keyed the same way.
     const wanted = new Map();
@@ -126,9 +162,15 @@ export const outputBreakdown = (job, plan = null) => {
             const want = wanted.get(sizeKey(r.w, r.h)) || null;
             // Compare in whatever unit the article is actually counted in: a sheet
             // job is short by sheets, a bag job by kilos.
-            const byCount = r.count > 0 && num(want?.count) > 0;
+            const byCount = r.counted && num(want?.count) > 0;
             const made = byCount ? r.count : round(r.kg);
-            const asked = want ? (byCount ? want.count : round(want.kg)) : null;
+            // The plan covers the whole requirement, ready stock included, but
+            // `made` is only what came off the machine. Charging the machine with
+            // the part that was answered off the shelf would report a job that
+            // filled its order exactly as short by whatever it did not have to cut.
+            const asked = want
+                ? Math.max(0, byCount ? want.count - r.drawnCount : round(want.kg - r.drawnKg))
+                : null;
             return {
                 ...r,
                 kg: round(r.kg),
@@ -143,6 +185,12 @@ export const outputBreakdown = (job, plan = null) => {
                     ? round(asked - made) : 0
             };
         })
+        // An article the job was handed off the shelf and made none of has nothing
+        // to report: "0 / 0" in a list of what the run produced reads as a failure
+        // rather than as a size that never needed cutting. Keyed on the shortfall
+        // rather than on what was asked, so a size the plan wanted and the run
+        // missed survives -- there `short` is what is left over the drawn stock.
+        .filter((r) => !(r.made === 0 && r.short === 0 && (r.drawnCount > 0 || r.drawnKg > 0)))
         .sort((a, b) => b.short - a.short || b.kg - a.kg || String(a.size).localeCompare(String(b.size)));
 };
 
