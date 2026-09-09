@@ -17,7 +17,8 @@ import { itemForm, FORM_LABEL, splitJobType } from '../utils/itemForms';
 import {
     outputTypeFor, ROLL_WIDTH_TYPES, effectiveQty, outputSizeLabel,
     groupOutputCount, outputCount, pattyDims, bottomSheetDims, outputDims,
-    OUTPUT_COUNT_UNIT, outputColour, isFastMovingArticle, rollsPerRun, planShape
+    OUTPUT_COUNT_UNIT, outputColour, isFastMovingArticle, rollsPerRun, planShape,
+    modelSheetRuns
 } from '../utils/productionBatch';
 import { choiceText } from '../utils/gristValues';
 import { parseAttachmentId } from '../utils/attachments';
@@ -1898,7 +1899,9 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     const finishedCollectionPlan = (batch) => (batch?.jobs || []).flatMap((job) => {
         const pending = splitStock(job.invItemOptions).finished.filter((it) => it.collectedKg == null);
         if (pending.length === 0) return [];
-        let remaining = jobWorkPlan(job).totals.kg;
+        // Drawn against the orders, not against the run: ready stock answers an
+        // order, and a plate minimum is not one -- it is cut, never pulled.
+        let remaining = jobWorkPlan(job).totals.orderKg;
         return pending.map((item) => {
             const take = roundWeight(Math.min(num(item.kg), Math.max(remaining, 0)));
             remaining -= take;
@@ -3279,7 +3282,7 @@ const jobWorkPlan = (job) => {
         const key = sizeKeyFor(so);
         if (!map.has(key)) {
             map.set(key, {
-                key, label: sizeLabelFor(so), qty: 0, made: 0, count: 0,
+                key, label: sizeLabelFor(so), qty: 0, made: 0, count: 0, rows: [],
                 // Constant within a line: DCUT splits DCUT BAG from HANDLE BAG on
                 // model, and model is part of the key, so a line never mixes them.
                 outputType: outputTypeFor(job.type, planShape(so)),
@@ -3294,6 +3297,26 @@ const jobWorkPlan = (job) => {
         g.qty += soQty(so);
         g.made += soOutput(so);
         g.count += 1;
+        g.rows.push(so);
+    }
+    // A model number is printed onto plain white stock off a plate made for that
+    // customer, and the plate is only worth setting up for a round run -- so the
+    // job was given roll for the minimum, not for the orders. The line total is
+    // what the machine cuts, floor included, because that is what the operator is
+    // being asked for; a line reading 2,640 against a job carrying roll for 4,400
+    // is read as the answer and the rest of the run never happens.
+    //
+    // The orders' own share is kept beside it. That is the part that goes to the
+    // printing area when the job is closed -- the surplus is nobody's order yet,
+    // and goes to the shelf.
+    for (const g of map.values()) {
+        g.minRuns = modelSheetRuns(g.rows.map(planShape), rate);
+        g.orderQty = g.qty;
+        g.orderMade = g.made;
+        for (const r of g.minRuns) {
+            g.qty += r.extraKg;
+            g.made += r.extraSheets;
+        }
     }
     // A fast-moving size is one the floor runs often. Where the machine carries
     // several rolls at once, the job is also given extra roll on purpose so the
@@ -3322,6 +3345,12 @@ const jobWorkPlan = (job) => {
     const totals = {
         count: sizeGroups.reduce((t, g) => t + (g.made > 0 ? Math.ceil(g.made - 1e-9) : 0), 0),
         kg: sizeGroups.reduce((t, g) => t + g.qty, 0),
+        // What the orders themselves came to, before any plate minimum. The two
+        // differ only on a model-number sheet job, and where the question is what
+        // the orders are owed -- how much ready stock may answer them -- it is this
+        // figure and not the run that answers it.
+        orderCount: sizeGroups.reduce((t, g) => t + (g.orderMade > 0 ? Math.ceil(g.orderMade - 1e-9) : 0), 0),
+        orderKg: sizeGroups.reduce((t, g) => t + num(g.orderQty), 0),
         unit: countUnit,
         exact: rollup.exact,
         unknown: rollup.unknown
@@ -3507,11 +3536,35 @@ const JobDetail = ({ job, updating, onStart, onComplete, onViewForm, startBlock 
                                                 sizeDim === 'suborder' ? null : `${g.count} sub-order${g.count !== 1 ? 's' : ''}`
                                             ].filter(Boolean).join(' · ')}
                                         </span>
+                                        {/* Why the line asks for more than the orders
+                                            do, model by model: the plate's own run,
+                                            and how it divides. Without this the total
+                                            above reads as a mistake. */}
+                                        {(g.minRuns || []).map((r) => (
+                                            <span key={r.model} className="block text-[11px] font-medium text-violet-700">
+                                                includes {r.runSheets.toLocaleString('en-IN')} for the {r.model} plate
+                                                {r.orderSheets > 0
+                                                    ? ` — ${r.orderSheets.toLocaleString('en-IN')} for the orders,`
+                                                    : ' —'}
+                                                {' '}{r.extraSheets.toLocaleString('en-IN')} to stock
+                                            </span>
+                                        ))}
                                     </span>
                                 </label>
                             );
                         })}
                     </div>
+
+                    {sizeGroups.some((g) => (g.minRuns || []).length > 0) && (
+                        <p className="mt-3 text-[11px] text-violet-900 bg-violet-50 border border-violet-200 rounded-lg px-2.5 py-2">
+                            A model number is printed from a plate made for that customer, so the run is
+                            lifted to the fewest sheets worth setting the plate up for — which is why the
+                            line above asks for more than the orders do.
+                            <span className="font-semibold"> Cut the whole line total.</span> The orders take
+                            their share and the rest is booked into the bags godown, ready for that
+                            customer&apos;s next order.
+                        </p>
+                    )}
 
                     {fillsMachine && sizeGroups.some((g) => g.fastMoving) && (
                         <p className="mt-3 text-[11px] text-indigo-900 bg-indigo-50 border border-indigo-200 rounded-lg px-2.5 py-2">
@@ -3722,8 +3775,11 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
     // of them cannot say how many of each -- so each size is entered on its own and
     // is booked on its own.
     const outputs = sizeGroups.map((g) => {
-        const planned = roundWeight(num(g.qty) * outRatio);
-        const plannedCount = Math.ceil(num(g.made) * outRatio - 1e-9);
+        // The orders' share, not the whole run: what a model-number floor added is
+        // stock for next month, and outputSplit sends everything above `planned`
+        // to the bags godown, which is exactly where it belongs.
+        const planned = roundWeight(num(g.orderQty ?? g.qty) * outRatio);
+        const plannedCount = Math.ceil(num(g.orderMade ?? g.made) * outRatio - 1e-9);
         return {
             key: g.key,
             label: g.label,
@@ -3732,7 +3788,9 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
             dims: g.dims,
             sizeTag: g.sizeTag,
             colour: g.colour,
-            required: roundWeight(num(g.qty)),
+            // The orders' figure too: the gap between this and `planned` is named
+            // "from stock" in the form, and a floor run is not stock pulled.
+            required: roundWeight(num(g.orderQty ?? g.qty)),
             planned,
             plannedCount,
             // The operator counts items; the godown books kg. One item's share of

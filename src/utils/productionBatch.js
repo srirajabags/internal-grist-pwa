@@ -56,8 +56,8 @@ export const OUTPUT_TYPE = {
 // 24x17 sheet and a 17x24 one are the same sheet.
 export const MODEL_SHEET_MINIMUMS = {
     '17x24': 1000,   // a 12x16 bag: two 12x17 sheets printed side by side
-    '16x19': 2000,   // a 16x18 bag
-    '16x21': 2000    // a 16x19 stick bag
+    '16x19': 1000,   // a 16x18 bag
+    '16x21': 1000    // a 16x19 stick bag
 };
 
 // The floor for a group, in kg, or 0 where there is none. Read from the sheet size
@@ -92,15 +92,66 @@ export const modelSheetMinimum = (subOrders, only) => {
     return sheets;
 };
 
-export const modelSheetFloorKg = (subOrders, rate, only) => {
-    let kg = 0;
+// The floor each model carries, in kg, keyed by model. Kept per model rather than
+// as one total because the floor is charged against that model's own orders and
+// nothing else's -- see the note on floorExtraKg in allocateStock.
+export const modelSheetFloorKgByModel = (subOrders, rate, only) => {
+    const out = new Map();
     for (const [model, m] of modelSheetMinimums(subOrders)) {
         if (only && !only.has(model)) continue;
         if (!(m.gsm > 0)) continue;
         // The same overage the orders themselves carry, so a floor of 1000 sheets
         // asks the machine for 1100 exactly as a 1000-sheet order would.
-        kg += withOverage('ROLLS TO SHEETS', m.sheets * (m.w * m.h * m.gsm) / PIECE_TO_KG_DIVISOR, rate);
+        out.set(model, withOverage('ROLLS TO SHEETS', m.sheets * (m.w * m.h * m.gsm) / PIECE_TO_KG_DIVISOR, rate));
     }
+    return out;
+};
+
+// The minimum runs a set of sub-orders carries: one entry per model with a floor,
+// saying what its orders ask for and what the press is worth setting up for.
+//
+// The floor is planned into the roll at batch creation, but it is the operator at
+// the machine who has to cut it -- a tick list saying 440 sheets against a job
+// carrying roll for 2,200 reads as a mistake, and the run gets cut to the orders.
+// So the same table is read again on the job card, off the job's own sub-orders.
+//
+// Every figure here carries the production overage, because every other figure the
+// operator is given does: a 2,000-sheet floor is 2,200 sheets on the machine, the
+// same way a 400-sheet order is 440. The table itself is quoted before overage --
+// 2,000 is the number of good sheets the plate is worth setting up for, and the
+// extra 200 is the wastage allowance that gets it there.
+export const modelSheetRuns = (subOrders, rate) => {
+    const runs = [];
+    for (const [model, m] of modelSheetMinimums(subOrders)) {
+        const lines = (subOrders || []).filter((so) =>
+            isModelNumberSheet(so) && norm(firstChoice(so.Bag_Colour)) === model);
+        const ordered = groupOutputCount('ROLLS TO SHEETS', lines, rate);
+        const orderSheets = Math.ceil(num(ordered.count) - 1e-9);
+        const orderKg = lines.reduce((s, so) => s + effectiveQty('ROLLS TO SHEETS', so, rate), 0);
+        const runSheets = Math.ceil(withOverage('ROLLS TO SHEETS', m.sheets, rate) - 1e-9);
+        // The same kilos the planner put on the roll for this model, worked out the
+        // same way -- the card and the plan must not name two different runs.
+        const runKg = m.gsm > 0
+            ? withOverage('ROLLS TO SHEETS', m.sheets * (m.w * m.h * m.gsm) / PIECE_TO_KG_DIVISOR, rate)
+            : 0;
+        runs.push({
+            model,
+            sheetSize: `${Math.min(m.w, m.h)}x${Math.max(m.w, m.h)}`,
+            minSheets: m.sheets,
+            runSheets,
+            orderSheets,
+            extraSheets: Math.max(runSheets - orderSheets, 0),
+            runKg,
+            orderKg,
+            extraKg: Math.max(runKg - orderKg, 0)
+        });
+    }
+    return runs;
+};
+
+export const modelSheetFloorKg = (subOrders, rate, only) => {
+    let kg = 0;
+    for (const v of modelSheetFloorKgByModel(subOrders, rate, only).values()) kg += v;
     return kg;
 };
 
@@ -1560,9 +1611,9 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
         const m = norm(r.colour);
         printedByModel.set(m, (printedByModel.get(m) || 0) + r.avail);
     }
+    const demandByModel = new Map();
     const needsRun = new Set();
     if (isModelSheets) {
-        const demandByModel = new Map();
         for (const so of subOrders) {
             if (!isModelNumberSheet(so)) continue;
             const m = norm(firstChoice(so.Bag_Colour));
@@ -1572,12 +1623,40 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
             if (want - (printedByModel.get(m) || 0) > 1e-9) needsRun.add(m);
         }
     }
-    const floorKg = isModelSheets ? modelSheetFloorKg(subOrders, rate, needsRun) : 0;
+    const floorByModel = isModelSheets
+        ? modelSheetFloorKgByModel(subOrders, rate, needsRun)
+        : new Map();
+    let floorKg = 0;
+    // What the floor adds to the roll, over and above what the group already owes.
+    //
+    // A plate is amortised by its own model's sheets and by nothing else. A model
+    // number sharing a job with plain white orders -- same roll, same setup -- must
+    // not have those orders counted towards its minimum: the roll has to cover the
+    // plain orders AND a full run of the model. So the floor is charged per model
+    // against that model's own open demand, and only the difference is added on
+    // top. Treating it as a floor on the group total let a job of three plain
+    // orders swallow the minimum whole and cut nothing extra at all.
+    //
+    // Open demand is what still has to go through the press: sheets already printed
+    // with the model answer their orders off the shelf and were never going to be
+    // run. The rest of the floor is surplus, and goes to the shelf for next time.
+    let floorExtraKg = 0;
+    for (const [m, kg] of floorByModel) {
+        floorKg += kg;
+        const open = Math.max((demandByModel.get(m) || 0) - (printedByModel.get(m) || 0), 0);
+        floorExtraKg += Math.max(kg - open, 0);
+    }
     // Carried onto the group so the review can name the run rather than leaving a
     // planner to wonder why the machine is asked for more than the orders.
     const floorInfo = {
         floorKg,
-        floorSheets: isModelSheets ? modelSheetMinimum(subOrders, needsRun) : 0,
+        floorExtraKg,
+        // With the overage, because that is the run the machine is asked for and
+        // the figure the job card gives the operator -- the review naming 2,000
+        // where the tick list says 2,200 is two numbers for one run.
+        floorSheets: isModelSheets
+            ? Math.ceil(withOverage('ROLLS TO SHEETS', modelSheetMinimum(subOrders, needsRun), rate) - 1e-9)
+            : 0,
         floorModels: needsRun.size
     };
 
@@ -1585,8 +1664,9 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
     // itself is untouched. A job still owes what it owed -- it is just given
     // enough fabric behind that figure to actually reach it.
     const rollNeed = (kg) => withCoreAllowance(kg);
-    // Once a roll is going on the machine, it runs for at least the floor.
-    const rollTarget = (kg) => rollNeed(Math.max(kg, floorKg));
+    // Once a roll is going on the machine for a model number, it runs the model's
+    // full minimum on top of whatever else the group asked the roll for.
+    const rollTarget = (kg) => rollNeed(kg + floorExtraKg);
     // How many rolls make one pass of the machine, for a group that is worth
     // filling it for. Zero everywhere else, which turns the top-up off.
     // Two conditions, both required: the job makes something worth running the
@@ -1626,11 +1706,15 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
             shortfall -= fromBlanks.covered;
             // Only the roll share carries the core allowance: a printed sheet on
             // the shelf is already the article and weighs what it weighs.
-            // Once a roll goes on for a model number, it runs for at least the
-            // floor: the plate is set up either way. No shortfall, no roll, no
-            // floor -- the shelf answered it and nothing was printed.
-            const fromRolls = shortfall > 0
-                ? takeRolls(rolls, rollTarget(shortfall), 'roll')
+            // Once a roll goes on for a model number, it runs the floor on top of
+            // what the orders owe: the plate is set up either way. A model whose
+            // orders the shelf answered with sheets already printed needs no setup
+            // and is not in needsRun, so it adds nothing here -- but a model
+            // answered out of blanks is still going through the press, and the
+            // roll is cut for its run even though the orders themselves owe the
+            // machine nothing.
+            const fromRolls = shortfall > 0 || floorExtraKg > 0
+                ? takeRolls(rolls, rollTarget(Math.max(shortfall, 0)), 'roll')
                 : { picks: [], covered: 0 };
             const rollCover = Math.min(fromRolls.covered, Math.max(shortfall, 0));
             return {
@@ -1898,11 +1982,19 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, override
             // (the planned output) vs. what is pulled ready from finished godown
             // stock — finished stock is netted off the output to produce.
             const rollTaken = alloc.picks.reduce((s, p) => s + (p.source === 'roll' ? p.take : 0), 0);
-            // What comes off the machine, which for a model-number run is the floor
-            // rather than the orders -- the surplus goes to the shelf for the next
-            // order of that model.
-            const outputQty = Math.min(rollTaken, Math.max(alloc.fulfilledQty, num(alloc.floorKg)));
-            const finishedQty = Math.max(alloc.fulfilledQty - outputQty, 0);
+            // Everything the shelf answered -- printed sheets and blanks alike.
+            // Neither comes off this machine, so neither is output.
+            const godownTaken = alloc.picks.reduce((s, p) => s + (p.source !== 'roll' ? p.take : 0), 0);
+            // What the orders still need cut, once the shelf has answered what it
+            // can. Read from the picks rather than from the requirement, or a job
+            // that met half its orders off the shelf would book the whole
+            // requirement as production.
+            const ordersFromRoll = Math.max(alloc.fulfilledQty - godownTaken, 0);
+            // What comes off the machine: the orders' share of the roll plus the
+            // model-number floor, which is run whether the orders need it or not --
+            // the surplus goes to the shelf for the next order of that model.
+            const outputQty = Math.min(rollTaken, ordersFromRoll + num(alloc.floorExtraKg));
+            const finishedQty = Math.max(alloc.fulfilledQty - Math.min(outputQty, ordersFromRoll), 0);
             const fulfilled = mergeLines(alloc.fulfilled);
             const fulfilledIds = new Set(fulfilled.map((so) => so.id));
             return {
@@ -1926,9 +2018,10 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, override
                 // reads as a fault unless the review says why, so both travel with
                 // the group. Zero everywhere a run was cut to its orders.
                 floorKg: num(alloc.floorKg),
+                floorExtraKg: num(alloc.floorExtraKg),
                 floorSheets: num(alloc.floorSheets),
                 floorModels: num(alloc.floorModels),
-                floorSurplus: Math.max(outputQty - (alloc.fulfilledQty - finishedQty), 0),
+                floorSurplus: Math.max(outputQty - ordersFromRoll, 0),
                 // What was assigned by hand, and which of those the plan did not
                 // need after all -- a roll quietly left out would otherwise look
                 // like the assignment had failed.
