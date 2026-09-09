@@ -585,6 +585,15 @@ const orderSpanText = (span) => {
 // back to a constructed label when the column has not computed yet.
 const batchLabel = (batch) => batch?.name || `${formatDate(batch?.date)} · ${batch?.type || 'Batch'}`;
 
+// The batch's own number -- the "24" in "2026-09-09 - ROLLS TO SHEETS - 24" --
+// which is how a batch is asked for out loud once the date and the type are
+// already on the card. Only the trailing number, and only when Job_Batch_ID has
+// actually computed: nothing else on the row is a number the floor would know.
+const batchNumber = (batch) => {
+    const last = String(batch?.name ?? '').split(' - ').map((p) => p.trim()).filter(Boolean).pop();
+    return /^\d+$/.test(last || '') ? last : null;
+};
+
 // Likewise for a job: its Job_ID, never a row number dressed up as a name.
 const jobLabel = (job) => job?.name || `${job?.type || 'Job'} #${job?.id}`;
 
@@ -2297,7 +2306,20 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                                     </div>
                                                     <div className="flex items-start justify-between gap-2">
                                                         <div className="min-w-0">
-                                                            <p className="font-semibold text-slate-800 break-words">{batch.type || 'Batch'}</p>
+                                                            <div className="flex items-center gap-2 min-w-0">
+                                                                <p className="font-semibold text-slate-800 break-words">{batch.type || 'Batch'}</p>
+                                                                {/* The number the floor calls the batch by. The
+                                                                    date and the type are shared by half the list;
+                                                                    this is the part that picks one out. */}
+                                                                {batchNumber(batch) && (
+                                                                    <span
+                                                                        className="shrink-0 inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold text-white bg-amber-600 tabular-nums"
+                                                                        title={batchLabel(batch)}
+                                                                    >
+                                                                        #{batchNumber(batch)}
+                                                                    </span>
+                                                                )}
+                                                            </div>
                                                             <div className="flex flex-wrap items-center gap-1.5 mt-1">
                                                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold text-amber-800 bg-amber-100 ring-1 ring-amber-200">
                                                                     <Clock size={12} /> {formatDate(batch.date)}
