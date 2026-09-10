@@ -3323,7 +3323,7 @@ const jobWorkPlan = (job) => {
     // printing area when the job is closed -- the surplus is nobody's order yet,
     // and goes to the shelf.
     for (const g of map.values()) {
-        g.minRuns = modelSheetRuns(g.rows.map(planShape), rate);
+        g.minRuns = modelSheetRuns(jobType, g.rows.map(planShape), rate);
         g.orderQty = g.qty;
         g.orderMade = g.made;
         for (const r of g.minRuns) {

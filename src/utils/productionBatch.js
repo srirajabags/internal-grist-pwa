@@ -120,8 +120,14 @@ export const modelSheetFloorKgByModel = (subOrders, rate, only) => {
 // same way a 400-sheet order is 440. The table itself is quoted before overage --
 // 2,000 is the number of good sheets the plate is worth setting up for, and the
 // extra 200 is the wastage allowance that gets it there.
-export const modelSheetRuns = (subOrders, rate) => {
+//
+// Only a sheet job has a plate to amortise. The same stitching sub-order also
+// asks for a side patty and a handle, and it carries the model number wherever it
+// goes -- but those jobs cut the strip the orders need and nothing more, so the
+// batch type is asked first, exactly as the planner asks it.
+export const modelSheetRuns = (batchType, subOrders, rate) => {
     const runs = [];
+    if (!SHEET_TYPES.has(batchType)) return runs;
     for (const [model, m] of modelSheetMinimums(subOrders)) {
         const lines = (subOrders || []).filter((so) =>
             isModelNumberSheet(so) && norm(firstChoice(so.Bag_Colour)) === model);
