@@ -3002,7 +3002,7 @@ const OutputHeadline = ({ totals }) => {
 // roll and part ready-made stock off the shelf, and those are different errands:
 // one gets cut, the other gets carried. The item's own code says which it is, so
 // no extra column is needed to tell them apart.
-const StockGroup = ({ title, items, tone, foldable = false }) => {
+const StockGroup = ({ title, meta, items, tone, foldable = false }) => {
     // Ready stock is not this operator's errand: it never reaches the machine, and
     // a long list of it pushes the rolls -- the thing they are about to cut -- off
     // the screen. Folded away, still one tap from anyone who wants it.
@@ -3019,9 +3019,13 @@ const StockGroup = ({ title, items, tone, foldable = false }) => {
                 >
                     <ChevronDown size={12} className={'transition-transform ' + (open ? '' : '-rotate-90')} />
                     {title}
+                    {meta && <span className="ml-auto tabular-nums">{meta}</span>}
                 </button>
             ) : (
-                <p className={`text-[10px] font-semibold uppercase tracking-wider mb-1.5 ${tone}`}>{title}</p>
+                <p className={`flex items-baseline gap-2 text-[10px] font-semibold uppercase tracking-wider mb-1.5 ${tone}`}>
+                    <span>{title}</span>
+                    {meta && <span className="ml-auto tabular-nums">{meta}</span>}
+                </p>
             )}
             {open && <div className="space-y-1.5">
                 {items.map((item) => (
@@ -3058,9 +3062,18 @@ const JobStock = ({ job }) => {
     const isRoll = (it) => String(it.type ?? '').trim().toUpperCase() === 'ROLL';
     const rolls = items.filter(isRoll);
     const finished = items.filter((it) => !isRoll(it));
+    // What the whole errand weighs. The operator carries these rolls to the
+    // machine one by one, and the sum is the figure they check the trolley
+    // against -- it is not on the card anywhere else, only the per-roll weights.
+    const rollsKg = rolls.reduce((t, it) => t + num(it.collectedKg ?? it.kg), 0);
     return (
         <div className="space-y-2.5">
-            <StockGroup title={rolls.length === 1 ? 'Roll to cut' : `${rolls.length} rolls to cut`} items={rolls} tone="text-amber-600" />
+            <StockGroup
+                title={rolls.length === 1 ? 'Roll to cut' : `${rolls.length} rolls to cut`}
+                meta={rollsKg > 0 ? `${fmtKg(rollsKg)} kg total` : null}
+                items={rolls}
+                tone="text-amber-600"
+            />
             <StockGroup
                 title={finished.length === 1 ? 'Ready stock to pull' : `${finished.length} ready items to pull`}
                 items={finished}
