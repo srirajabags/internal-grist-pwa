@@ -1499,27 +1499,70 @@ const sizeOf = (r) => `${Math.min(num(r.width), num(r.height))}x${Math.max(num(r
 // always counts; for model sheets the model counts too, since a K8 sheet is no use
 // to an M11 order. `byModel` is off for blanks, which are plain white and become
 // whichever model is printed on them.
-const finishedBySize = (rows, subOrders, batchType, byModel = false) => {
-    const key = (size, colour) => (byModel ? `${norm(colour)}|${size}` : size);
+// ONE rule for which ready stock may answer which order, and for how much of it,
+// used by the planner when it reserves stock and by the floor when it pulls it.
+// It lived in two places once. They agreed on the day they were written and had
+// drifted by the time anyone looked: the planner knew a model number is stocked
+// as the printed HALF sheet, the floor thought it was the run size, and a job
+// that mixed the two would have gone to a shelf asking for the wrong article.
+//
+// `mode` says what is being matched:
+//   'finished'  what answers an order outright and comes back as it is -- so the
+//               article's own type, its own size, and for a model-number sheet
+//               the model printed on it, since a K9 sheet is no use to an M11
+//               order however alike the two look on a shelf.
+//   'blank'     what can still be MADE into the order -- a plain white sheet a
+//               model number is printed onto. Those are matched on the run size
+//               and carry no model of their own yet, so neither is part of the key.
+const READY_KEY = { FINISHED: 'finished', BLANK: 'blank' };
+
+// The article one sub-order wants off the shelf. Null when its geometry cannot be
+// worked out, which the caller must read as "cannot say", never as "anything".
+export const readyKeyForSubOrder = (batchType, so, mode = READY_KEY.FINISHED) => {
+    if (mode === READY_KEY.BLANK) return outputSizeKey(batchType, so);
+    const model = SHEET_TYPES.has(batchType) && isModelNumberSheet(so);
+    const size = model ? sizeKey(finishedSheetDims(so)) : outputSizeKey(batchType, so);
+    if (!size) return null;
+    const type = model ? 'MODEL NUMBER SHEET' : outputTypeFor(batchType, so);
+    return `${norm(type)}|${model ? norm(firstChoice(so.Bag_Colour)) : ''}|${size}`;
+};
+
+// The same article, named from a physical thing on a shelf. Takes the shape the
+// planner's stock rows use; the floor's item options are mapped onto it.
+export const readyKeyForStock = (row, mode = READY_KEY.FINISHED) => {
+    const size = sizeOf(row);
+    if (mode === READY_KEY.BLANK) return size;
+    const type = norm(row?.type);
+    // Only a model-number sheet is identified by what is printed on it. Every
+    // other article's colour is a colour, and keying on it would stop a white
+    // sheet answering the line that asked for a white sheet.
+    return `${type}|${type === 'MODEL NUMBER SHEET' ? norm(row?.colour) : ''}|${size}`;
+};
+
+// How much each article the orders want may be drawn from the shelf. Null when no
+// sub-order has a size to go on at all -- the caller decides what to do with that,
+// because "cannot say" is not the same answer for a planner as for a floor.
+export const readyDemand = (batchType, subOrders, mode = READY_KEY.FINISHED, rate = null) => {
     const demand = new Map();
     let sized = false;
-    for (const so of subOrders) {
-        // What the shelf holds for this order. For a model number that is the
-        // printed half-sheet; the plain white blanks it is printed on are matched
-        // on the run size, which is why only the finished leg passes byModel.
-        const k = byModel && isModelNumberSheet(so)
-            ? sizeKey(finishedSheetDims(so))
-            : outputSizeKey(batchType, so);
+    for (const so of subOrders || []) {
+        const k = readyKeyForSubOrder(batchType, so, mode);
         if (!k) continue;
         sized = true;
-        const d = key(k, firstChoice(so.Bag_Colour));
-        demand.set(d, (demand.get(d) || 0) + effectiveQty(batchType, so));
+        demand.set(k, (demand.get(k) || 0) + effectiveQty(batchType, so, rate));
     }
-    if (!sized) return rows;
-    const left = new Map(demand);
+    return sized ? demand : null;
+};
+
+// Cut each stock row down to what its own article is actually wanted for, so ready
+// stock can only ever answer the sub-orders it fits. Rows of an article nobody
+// ordered drop out entirely.
+const finishedBySize = (rows, subOrders, batchType, mode = READY_KEY.FINISHED) => {
+    const left = readyDemand(batchType, subOrders, mode);
+    if (!left) return rows;
     const capped = [];
     for (const r of rows) {
-        const k = key(sizeOf(r), r.colour);
+        const k = readyKeyForStock(r, mode);
         const remaining = left.get(k) ?? 0;
         if (remaining <= 0) continue;
         const use = Math.min(r.avail, remaining);
@@ -1601,8 +1644,8 @@ export const allocateStock = (attrs, subOrders, inventory, batchType, outputType
     // A model-number group, wherever it was planned. Every sub-order in a group
     // agrees, because the group key separates them.
     const isModelSheets = SHEET_TYPES.has(batchType) && subOrders.some(isModelNumberSheet);
-    const finished = finishedBySize(stockLists.finished, subOrders, batchType, isModelSheets);
-    const alternates = finishedBySize(stockLists.alternates, subOrders, batchType);
+    const finished = finishedBySize(stockLists.finished, subOrders, batchType, READY_KEY.FINISHED);
+    const alternates = finishedBySize(stockLists.alternates, subOrders, batchType, READY_KEY.BLANK);
     const finishedTotal = finished.reduce((s, r) => s + r.avail, 0);
     const rollsTotal = rolls.reduce((s, r) => s + r.avail, 0);
 
