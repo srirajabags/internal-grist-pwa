@@ -2,7 +2,7 @@ import React from 'react';
 import { X, Trash2, AlertTriangle, Loader2, Lock, Layers } from 'lucide-react';
 import Button from './Button';
 import HoldToAct, { DESTRUCTIVE_HOLD_MS } from './HoldToAct';
-import { deleteBlockers } from '../utils/batchDelete';
+import { deleteBlockers } from '../domain/production/batchDelete';
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 

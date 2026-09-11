@@ -2,8 +2,8 @@ import React, { useState, useMemo } from 'react';
 import { X, Search, AlertTriangle, Check, Wrench } from 'lucide-react';
 import Button from './Button';
 import { ItemVisual } from './itemVisuals';
-import { num, fmtKg, attrText } from '../utils/txnDisplay';
-import { canForceRoll, forcedRollColour } from '../utils/productionBatch';
+import { num, fmtKg, attrText } from '../domain/inventory/txnDisplay';
+import { canForceRoll, forcedRollColour } from '../domain/production/productionBatch';
 
 // How a roll on the shelf differs from what the group asked for. This is the whole
 // reason the group had no stock, so it is spelled out rather than implied: the

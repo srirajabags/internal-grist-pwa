@@ -5,7 +5,7 @@ import Button from './Button';
 import {
     RUNNING_BUILD, fetchDeployedBuild, isDifferentBuild, applyUpdate,
     updateAttempts, noteUpdateAttempt, MAX_FORCED_ATTEMPTS
-} from '../utils/appUpdate';
+} from '../services/appUpdate';
 
 // How often an open app looks for a newer deploy. Long enough that it is not a
 // background chatter problem, short enough that a mid-shift fix reaches the floor

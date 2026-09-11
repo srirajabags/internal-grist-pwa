@@ -13,26 +13,27 @@ import DeleteBatchModal from '../components/DeleteBatchModal';
 import WriteFailureModal from '../components/WriteFailureModal';
 import ImagePreviewModal from '../components/ImagePreviewModal';
 import { ItemVisual, Dim } from '../components/itemVisuals';
-import { itemForm, FORM_LABEL, splitJobType } from '../utils/itemForms';
+import { itemForm, FORM_LABEL, splitJobType } from '../domain/inventory/itemForms';
 import {
     outputTypeFor, ROLL_WIDTH_TYPES, effectiveQty, outputSizeLabel,
     groupOutputCount, outputCount, pattyDims, bottomSheetDims, outputDims,
     OUTPUT_COUNT_UNIT, outputColour, isFastMovingArticle, rollsPerRun, planShape,
-    modelSheetRuns, readyDemand, readyKeyForStock, readyKeyForSubOrder
-} from '../utils/productionBatch';
-import { choiceText } from '../utils/gristValues';
-import { parseAttachmentId } from '../utils/attachments';
+    modelSheetRuns, readyKeyForSubOrder
+} from '../domain/production/productionBatch';
+import { choiceText } from '../grist/gristValues';
+import { parseAttachmentId } from '../grist/attachments';
 import {
     attrText, PIECES_PER_BUNDLE, countToKg, primaryUnitFor, SHEET_FORMS, countUnitFor, truthy
-} from '../utils/txnDisplay';
-import { writableRecords } from '../utils/gristWrites';
-import { newJournal } from '../utils/writeJournal';
-import { jobLedger, batchLedger, outputBreakdown, drawnKg } from '../utils/jobLedger';
+} from '../domain/inventory/txnDisplay';
+import { readyDraw, takeUpTo } from '../domain/production/readyStock';
+import { writableRecords } from '../grist/gristWrites';
+import { newJournal } from '../grist/writeJournal';
+import { jobLedger, batchLedger, outputBreakdown, drawnKg } from '../domain/production/jobLedger';
 import { downloadCsv } from '../utils/csvFile';
 import {
     isPrintingListType, printingListHeaders, printingListRows, printingListName
-} from '../utils/printingList';
-import { godownOf, godownForJob, splitStock, splitJobs, isLatentJob, PRINTING_AREA, BAGS_GODOWN } from '../utils/godown';
+} from '../domain/production/printingList';
+import { godownOf, godownForJob, splitStock, splitJobs, isLatentJob, PRINTING_AREA, BAGS_GODOWN } from '../domain/inventory/godown';
 
 // Grist document holding the factory production tables
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
@@ -48,13 +49,6 @@ const ITEMS_TABLE = 'Inventory_Items';
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const roundWeight = (v) => Math.round(num(v) * 1000) / 1000;
-
-// How much of `available` to take when `want` is wanted. Rounded for the books,
-// but never rounded UP past what is actually there: rounding to the gram lifted a
-// 250-sheet holding of 5.393548 kg to 5.394, and dividing that back by the weight
-// of one sheet asked the floor to fetch 251 of the 250 sheets on the shelf.
-const takeUpTo = (available, want) =>
-    Math.min(roundWeight(Math.min(num(available), Math.max(num(want), 0))), num(available));
 
 // Which output dimension a job type is ticked by when marking it complete, plus
 // the heading shown for that dimension's summary table.
@@ -3334,42 +3328,6 @@ const startBlocker = ({ batch, job, runningJob }) => {
 // on: how the work splits into lines, what each line produces, and the totals.
 // Computed once, here, because the two screens showing different numbers for the
 // same job is worse than either number being wrong.
-// What ready stock will answer this job's orders, article by article, whether it
-// has been carried over yet or not. Two readers need the same answer and must not
-// each work it out: the collection sheet, which says what to fetch, and the tick
-// list, which says what is left to cut. A bundle counted in one and not the other
-// is a bundle cut twice or not at all.
-//
-// Stock already collected counts first, because it is a fact rather than a plan,
-// and it comes off the requirement before anything still on the shelf is reckoned
-// against what remains. Returns the draw per item (what to fetch) and per article
-// (what not to cut), or null when the plan cannot name the articles -- which the
-// callers read as "cannot say", never as "nothing".
-const readyDraw = (job) => {
-    const items = splitStock(job.invItemOptions).finished;
-    if (items.length === 0) return { byItem: new Map(), byArticle: new Map() };
-    const jobType = (job.type || '').trim().toUpperCase();
-    const rate = num(job.overage) > 0 ? num(job.overage) : null;
-    const left = readyDemand(jobType, (job.subOrders || []).map(planShape), 'finished', rate);
-    if (!left) return null;
-    const keyOf = (it) => readyKeyForStock({ width: it.w, height: it.h, colour: it.colour, type: it.type });
-    if (!items.every((it) => left.has(keyOf(it)))) return null;
-    const byItem = new Map();
-    const byArticle = new Map();
-    const draw = (item, kg) => {
-        const k = keyOf(item);
-        left.set(k, num(left.get(k)) - kg);
-        byItem.set(item.id, kg);
-        byArticle.set(k, num(byArticle.get(k)) + kg);
-    };
-    for (const it of items) if (it.collectedKg != null) draw(it, num(it.collectedKg));
-    for (const it of items) {
-        if (it.collectedKg != null) continue;
-        draw(it, takeUpTo(it.kg, left.get(keyOf(it))));
-    }
-    return { byItem, byArticle };
-};
-
 const jobWorkPlan = (job) => {
     const jobType = (job.type || '').trim().toUpperCase();
     // ROLLS TO SHEETS groups by sheet size, side patty by the strip it cuts, DCUT

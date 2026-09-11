@@ -5,8 +5,8 @@
 // does there is no way to tell which is lying. The same three numbers appear on
 // the job page and in the batch summary because both call this.
 
-import { countToKg, countUnitFor } from './txnDisplay';
-import { PRINTING_AREA } from './godown';
+import { countToKg, countUnitFor } from '../inventory/txnDisplay';
+import { PRINTING_AREA } from '../inventory/godown';
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const round = (v) => Math.round(num(v) * 100) / 100;

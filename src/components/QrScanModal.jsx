@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { X, Loader2, AlertCircle, Camera, Keyboard, ScanLine } from 'lucide-react';
 import Button from './Button';
-import { readItemLabel } from '../utils/itemLabel';
+import { readItemLabel } from '../domain/inventory/itemLabel';
 
 // Camera QR scanning. Chrome on Android has BarcodeDetector natively, which is
 // faster and needs no download; everywhere else (notably iOS Safari) falls back

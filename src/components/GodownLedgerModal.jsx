@@ -6,12 +6,12 @@ import {
 import Button from './Button';
 import ChipRow from './FilterChips';
 import { ItemVisual } from './itemVisuals';
-import { attrText } from '../utils/txnDisplay';
+import { attrText } from '../domain/inventory/txnDisplay';
 import { downloadCsv } from '../utils/csvFile';
 import {
     LEDGER_SQL, OPENING_SQL, withBalances, optionsFrom, applyFilters, ledgerTotals,
     defaultWindow, dayStart, dayAfter, csvName, LEDGER_CSV_HEADERS, ledgerCsvRows
-} from '../utils/godownLedger';
+} from '../domain/inventory/godownLedger';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 

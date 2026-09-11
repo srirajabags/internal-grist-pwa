@@ -14,11 +14,11 @@ import NewRollStockModal from '../components/NewRollStockModal';
 import RollMovementsModal from '../components/RollMovementsModal';
 import GodownLedgerModal from '../components/GodownLedgerModal';
 import ItemLabelModal from '../components/ItemLabelModal';
-import { makeItemLabelPng, itemLabelLines, makeLabelsZip } from '../utils/itemLabel';
+import { makeItemLabelPng, itemLabelLines, makeLabelsZip } from '../domain/inventory/itemLabel';
 import Button from '../components/Button';
 import { ItemVisual, Dim } from '../components/itemVisuals';
-import { colourToCss, itemForm, typeName, FORM_LABEL } from '../utils/itemForms';
-import { SHEET_FORMS, PIECES_PER_BUNDLE, pieceKg, countToKg, primaryUnitFor } from '../utils/txnDisplay';
+import { colourToCss, itemForm, typeName, FORM_LABEL } from '../domain/inventory/itemForms';
+import { SHEET_FORMS, PIECES_PER_BUNDLE, pieceKg, countToKg, primaryUnitFor } from '../domain/inventory/txnDisplay';
 import { downloadCsv } from '../utils/csvFile';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
@@ -133,7 +133,7 @@ const DERIVED_COL = {
 // Forms booked one sheet at a time need no bundle multiplier (SHEET_FORMS, shared
 // with the transaction views): bottom-patty and model-number sheets belong there,
 // not with the patties they are cut into — booking them per bundle would
-// overstate stock 50-fold. The conversion itself lives in utils/txnDisplay, so the
+// overstate stock 50-fold. The conversion itself lives in domain/inventory/txnDisplay, so the
 // stock views and the production allocator read counted stock the same way.
 const rowCountToKg = (r) => countToKg({ w: r.w, h: r.h, gsm: r.gsm, type: r.itype, name: r.name, count: r.bundles });
 

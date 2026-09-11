@@ -17,7 +17,7 @@
 //
 // Nothing else prints, so nothing else gets a list.
 
-import { choiceText } from './gristValues';
+import { choiceText } from '../../grist/gristValues';
 import { withOverage, outputCount, planShape } from './productionBatch';
 
 // The city the shop is in, as a name. The order carries a City too, but it is a

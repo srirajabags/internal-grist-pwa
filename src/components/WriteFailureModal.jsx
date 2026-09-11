@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { X, AlertOctagon, Check, XCircle, MinusCircle, Copy, ShieldAlert } from 'lucide-react';
 import Button from './Button';
-import { isPermissionFailure, journalToText } from '../utils/writeJournal';
+import { isPermissionFailure, journalToText } from '../grist/writeJournal';
 
 const STATUS = {
     done: { icon: Check, cls: 'text-emerald-600', label: 'Saved' },

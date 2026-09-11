@@ -8,12 +8,12 @@ import Button from './Button';
 import WriteFailureModal from './WriteFailureModal';
 import ImagePreviewModal from './ImagePreviewModal';
 import AssignRollModal from './AssignRollModal';
-import { parseAttachmentId } from '../utils/attachments';
-import { countToKg } from '../utils/txnDisplay';
-import { choiceText } from '../utils/gristValues';
-import { writableRecords } from '../utils/gristWrites';
-import { intakeOrder } from '../utils/stockAge';
-import { newJournal } from '../utils/writeJournal';
+import { parseAttachmentId } from '../grist/attachments';
+import { countToKg } from '../domain/inventory/txnDisplay';
+import { choiceText } from '../grist/gristValues';
+import { writableRecords } from '../grist/gristWrites';
+import { intakeOrder } from '../domain/inventory/stockAge';
+import { newJournal } from '../grist/writeJournal';
 import { downloadCsv } from '../utils/csvFile';
 import {
     BATCH_TYPES, HARD_START_DATE, OUTPUT_TYPE, PRIORITY_LABEL, buildPlan, COMPONENT_TYPES,
@@ -24,7 +24,7 @@ import {
     ROLL_CORE_ALLOWANCE, withCoreAllowance,
     ROLLS_PER_JOB_NOTICE,
     bagPieceCount
-} from '../utils/productionBatch';
+} from '../domain/production/productionBatch';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 const BATCHES_TABLE = 'Factory_Production_Job_Batches';

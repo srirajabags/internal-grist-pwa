@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { LayoutDashboard, Plus, Trash2, ArrowRight, ArrowLeft, Code, Users } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { fetchPwaDataSql, savePwaData, deletePwaData } from '../utils/gristDataSync';
+import { fetchPwaDataSql, savePwaData, deletePwaData } from '../grist/gristDataSync';
 import { canAccessPage } from '../utils/pageAccess';
 import ShareQueryModal from './ShareQueryModal';
 

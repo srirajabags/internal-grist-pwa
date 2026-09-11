@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { X, Loader2, AlertCircle, ArrowDownLeft, ArrowUpRight, Sparkles, Clock, Factory } from 'lucide-react';
 import { ItemVisual } from './itemVisuals';
-import { typeName } from '../utils/itemForms';
-import { attrText } from '../utils/txnDisplay';
+import { typeName } from '../domain/inventory/itemForms';
+import { attrText } from '../domain/inventory/txnDisplay';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 

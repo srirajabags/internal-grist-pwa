@@ -169,8 +169,8 @@ export const MATERIAL_MAP = {
     'NW BOPP': 'NW BOPP'
 };
 
-import { parseChoiceList, firstChoice } from './gristValues';
-import { sameVintage } from './stockAge';
+import { parseChoiceList, firstChoice } from '../../grist/gristValues';
+import { sameVintage } from '../inventory/stockAge';
 
 const norm = (v) => String(v ?? '').trim().toUpperCase();
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);

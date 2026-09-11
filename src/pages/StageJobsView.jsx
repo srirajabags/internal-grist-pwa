@@ -6,8 +6,8 @@ import {
 import Card from '../components/Card';
 import Button from '../components/Button';
 import { ItemVisual } from '../components/itemVisuals';
-import { STAGES, treeSql, queueSql, needsStitching, FINISHED_LOCATION } from '../utils/stageJobs';
-import { firstChoice } from '../utils/gristValues';
+import { STAGES, treeSql, queueSql, needsStitching, FINISHED_LOCATION } from '../domain/production/stageJobs';
+import { firstChoice } from '../grist/gristValues';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 const TXN_TABLE = 'Inventory_Transactions';

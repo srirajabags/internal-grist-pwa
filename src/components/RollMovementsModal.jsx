@@ -5,13 +5,13 @@ import {
 } from 'lucide-react';
 import Button from './Button';
 import { ItemVisual } from './itemVisuals';
-import { makeLabelsZip, itemLabelLines, makeItemLabelPng } from '../utils/itemLabel';
-import { num, fmtKg, attrText } from '../utils/txnDisplay';
+import { makeLabelsZip, itemLabelLines, makeItemLabelPng } from '../domain/inventory/itemLabel';
+import { num, fmtKg, attrText } from '../domain/inventory/txnDisplay';
 import {
     MOVEMENT_SQL, UNACKED_SQL, movementArgs, dayStart, dayAfter,
     defaultWindow, withClosing, byImpact, totals, zipName,
     movementsCsv, csvName
-} from '../utils/rollMovements';
+} from '../domain/production/rollMovements';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 

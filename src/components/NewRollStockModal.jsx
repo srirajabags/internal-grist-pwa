@@ -2,8 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { X, Loader2, AlertCircle, Sparkles, Check, Download, Plus } from 'lucide-react';
 import Button from './Button';
 import { ItemVisual } from './itemVisuals';
-import { typeName } from '../utils/itemForms';
-import { makeItemLabelPng, itemLabelLines } from '../utils/itemLabel';
+import { typeName } from '../domain/inventory/itemForms';
+import { makeItemLabelPng, itemLabelLines } from '../domain/inventory/itemLabel';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 const ITEMS_TABLE = 'Inventory_Items';

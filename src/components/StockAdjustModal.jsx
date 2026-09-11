@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { X, Loader2, AlertCircle, Plus, Minus, Clock, ClipboardList } from 'lucide-react';
 import Button from './Button';
 import { ItemVisual } from './itemVisuals';
-import { typeName } from '../utils/itemForms';
-import { attrText, countUnitFor, primaryUnitFor } from '../utils/txnDisplay';
+import { typeName } from '../domain/inventory/itemForms';
+import { attrText, countUnitFor, primaryUnitFor } from '../domain/inventory/txnDisplay';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 const TXN_TABLE = 'Inventory_Transactions';

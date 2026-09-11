@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import { X, Compass } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import LocationService from '../utils/locationService';
+import LocationService from '../services/locationService';
 
 // Fix for default marker icons in Leaflet with Webpack
 delete L.Icon.Default.prototype._getIconUrl;

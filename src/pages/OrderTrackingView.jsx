@@ -4,8 +4,8 @@ import {
     Copy, Check, ChevronDown, ChevronRight, ChevronLeft, ShieldCheck, FileText, X,
     Image as ImageIcon
 } from 'lucide-react';
-import { buildTimeline, summarise } from '../utils/orderStages';
-import { choiceText } from '../utils/gristValues';
+import { buildTimeline, summarise } from '../domain/orders/orderStages';
+import { choiceText } from '../grist/gristValues';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 const PROXY_URL = import.meta.env.VITE_GRIST_SERVER_URL;

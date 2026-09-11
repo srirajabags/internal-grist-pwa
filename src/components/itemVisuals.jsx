@@ -1,9 +1,9 @@
 import React from 'react';
-import { colourToCss, shade, itemForm } from '../utils/itemForms';
+import { colourToCss, shade, itemForm } from '../domain/inventory/itemForms';
 
 // Visual components for representing factory item forms (roll, sheet, bags,
 // gussets, handle) tinted with the item colour. Pure helpers/constants live in
-// ../utils/itemForms so this file only exports components (fast-refresh safe).
+// ../domain/inventory/itemForms so this file only exports components (fast-refresh safe).
 
 const HEIGHT_CLASS = { xs: 'h-6', sm: 'h-10', md: 'h-16', lg: 'h-20' };
 

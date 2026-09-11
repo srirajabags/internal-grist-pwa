@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { X, Search, Plus, Minus } from 'lucide-react';
 import Button from './Button';
 import { ItemVisual } from './itemVisuals';
-import { num, fmtKg, attrText } from '../utils/txnDisplay';
+import { num, fmtKg, attrText } from '../domain/inventory/txnDisplay';
 
 // One item code covers many physical rolls, so booking stock against a code is
 // not a question the system can answer -- only the person holding the roll knows

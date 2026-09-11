@@ -4,8 +4,8 @@ import { ItemVisual } from './itemVisuals';
 import HoldToAct, { DESTRUCTIVE_HOLD_MS } from './HoldToAct';
 import ChipRow from './FilterChips';
 import { passes, toggleIn, optionsOf } from '../utils/chipFilters';
-import { typeName } from '../utils/itemForms';
-import { num, dayKey, changeText, isOutward, toneFor, attrText, countUnitFor } from '../utils/txnDisplay';
+import { typeName } from '../domain/inventory/itemForms';
+import { num, dayKey, changeText, isOutward, toneFor, attrText, countUnitFor } from '../domain/inventory/txnDisplay';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 const TXN_TABLE = 'Inventory_Transactions';

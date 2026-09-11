@@ -2,8 +2,8 @@ import React, { useMemo, useState } from 'react';
 import { X, Warehouse, CheckCircle2, Circle, Loader2, AlertTriangle, Boxes, ChevronDown } from 'lucide-react';
 import Button from './Button';
 import { ItemVisual } from './itemVisuals';
-import { attrText } from '../utils/txnDisplay';
-import { ROLLS_GODOWN, BAGS_GODOWN, godownOf, godownForJob, splitStock } from '../utils/godown';
+import { attrText } from '../domain/inventory/txnDisplay';
+import { ROLLS_GODOWN, BAGS_GODOWN, godownOf, godownForJob, splitStock } from '../domain/inventory/godown';
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const fmtKg = (v) => num(v).toFixed(2);

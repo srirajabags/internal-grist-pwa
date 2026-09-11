@@ -16,10 +16,10 @@ const GRIST_SERVER_URL = import.meta.env.VITE_GRIST_SERVER_URL;
 import { APP_VERSION, BUILD_TIMESTAMP_IST_READABLE } from './version.js';
 
 // Import diagnostic service
-import { generateAndDownloadDiagnosticReport } from './utils/diagnosticService';
+import { generateAndDownloadDiagnosticReport } from './services/diagnosticService';
 
 // Deployed-build check, shared with the update gate that wraps the whole app
-import { fetchDeployedBuild, isDifferentBuild, applyUpdate } from './utils/appUpdate';
+import { fetchDeployedBuild, isDifferentBuild, applyUpdate } from './services/appUpdate';
 
 // Import role-based page access control
 import { canAccessPage, hasGodRole, PAGE_ROLE_REQUIREMENTS } from './utils/pageAccess';
@@ -1423,7 +1423,7 @@ const CustomTableViewer = ({ onBack, user, onLogout, getHeaders, getUrl, imperso
 };
 
 // SQL Analysis View Component
-import { fetchPwaData, savePwaData, deletePwaData, fetchPwaDataSql } from './utils/gristDataSync';
+import { fetchPwaData, savePwaData, deletePwaData, fetchPwaDataSql } from './grist/gristDataSync';
 import ShareQueryModal from './components/ShareQueryModal';
 
 const PWA_DATA_DOC_ID = '8vRFY3UUf4spJroktByH4u';

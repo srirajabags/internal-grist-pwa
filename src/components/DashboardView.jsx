@@ -61,7 +61,7 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
         // Load Dashboard from Grist
         const loadDashboard = async () => {
             try {
-                const { fetchPwaDataSql } = await import('../utils/gristDataSync');
+                const { fetchPwaDataSql } = await import('../grist/gristDataSync');
                 const PWA_DATA_DOC_ID = '8vRFY3UUf4spJroktByH4u';
                 const gristRecords = await fetchPwaDataSql(PWA_DATA_DOC_ID, 'DASHBOARD', teamId, getHeaders, getUrl);
 
@@ -120,7 +120,7 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
 
     const fetchSavedQueries = async () => {
         try {
-            const { fetchPwaDataSql } = await import('../utils/gristDataSync');
+            const { fetchPwaDataSql } = await import('../grist/gristDataSync');
             const PWA_DATA_DOC_ID = '8vRFY3UUf4spJroktByH4u';
             const gristRecords = await fetchPwaDataSql(PWA_DATA_DOC_ID, 'SQL_QUERY', teamId, getHeaders, getUrl);
 
@@ -156,7 +156,7 @@ const DashboardView = ({ dashboardId, onBack, getHeaders, getUrl, teamId }) => {
 
     const saveDashboardToGrist = async (dashboardData) => {
         try {
-            const { savePwaData } = await import('../utils/gristDataSync');
+            const { savePwaData } = await import('../grist/gristDataSync');
             const PWA_DATA_DOC_ID = '8vRFY3UUf4spJroktByH4u';
             await savePwaData(PWA_DATA_DOC_ID, [dashboardData], 'DASHBOARD', getHeaders, getUrl);
         } catch (err) {

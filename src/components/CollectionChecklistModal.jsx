@@ -5,9 +5,9 @@ import {
 } from 'lucide-react';
 import Button from './Button';
 import { ItemVisual } from './itemVisuals';
-import { attrText, primaryUnitFor, countUnitFor } from '../utils/txnDisplay';
-import { makeLabelsZip, itemLabelLines } from '../utils/itemLabel';
-import { ROLLS_GODOWN, BAGS_GODOWN, godownOf, godownForJob, splitStock } from '../utils/godown';
+import { attrText, primaryUnitFor, countUnitFor } from '../domain/inventory/txnDisplay';
+import { makeLabelsZip, itemLabelLines } from '../domain/inventory/itemLabel';
+import { ROLLS_GODOWN, BAGS_GODOWN, godownOf, godownForJob, splitStock } from '../domain/inventory/godown';
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const fmtKg = (v) => num(v).toFixed(2);
