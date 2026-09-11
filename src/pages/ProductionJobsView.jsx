@@ -18,7 +18,7 @@ import {
     outputTypeFor, ROLL_WIDTH_TYPES, effectiveQty, outputSizeLabel,
     groupOutputCount, outputCount, pattyDims, bottomSheetDims, outputDims,
     OUTPUT_COUNT_UNIT, outputColour, isFastMovingArticle, rollsPerRun, planShape,
-    modelSheetRuns
+    modelSheetRuns, readyDemand, readyKeyForStock, readyKeyForSubOrder
 } from '../utils/productionBatch';
 import { choiceText } from '../utils/gristValues';
 import { parseAttachmentId } from '../utils/attachments';
@@ -48,6 +48,13 @@ const ITEMS_TABLE = 'Inventory_Items';
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const roundWeight = (v) => Math.round(num(v) * 1000) / 1000;
+
+// How much of `available` to take when `want` is wanted. Rounded for the books,
+// but never rounded UP past what is actually there: rounding to the gram lifted a
+// 250-sheet holding of 5.393548 kg to 5.394, and dividing that back by the weight
+// of one sheet asked the floor to fetch 251 of the 250 sheets on the shelf.
+const takeUpTo = (available, want) =>
+    Math.min(roundWeight(Math.min(num(available), Math.max(num(want), 0))), num(available));
 
 // Which output dimension a job type is ticked by when marking it complete, plus
 // the heading shown for that dimension's summary table.
@@ -824,9 +831,14 @@ const JobLedgerRow = ({ job, open, onToggle }) => {
     // and still miss a size.
     const plan = jobWorkPlan(job);
     const rows = outputBreakdown(job, plan);
-    // What the job was asked to make, with the overage it was planned with. Beside
-    // what it made, the pair is the whole question a finished job raises.
-    const required = plan.totals.kg;
+    // What the job was asked to CUT, with the overage it was planned with -- the
+    // orders less the part of them answered off the shelf. Beside what it made,
+    // the pair is the whole question a finished job raises, and it is only a fair
+    // pair if both sides mean the machine: quoting the whole order here reported a
+    // job that cut exactly what it was given as having missed by whatever it never
+    // had to cut. The sizes this row opens into have always been netted that way;
+    // the total above them had not.
+    const required = plan.totals.cutKg;
     const shortRows = rows.filter((r) => r.short > 0);
     const ran = elapsedText(job.startedAt, job.completedAt);
     const from = formatDateTime(job.startedAt);
@@ -985,7 +997,7 @@ const BatchProgress = ({ batch }) => {
     const moved = splitJobs(jobs).real.filter((j) => j.started || j.completed);
     // What the batch set out to make, so the total line answers the same question
     // as the rows above it.
-    const plannedTotal = moved.reduce((sum, j) => sum + num(jobWorkPlan(j).totals.kg), 0);
+    const plannedTotal = moved.reduce((sum, j) => sum + num(jobWorkPlan(j).totals.cutKg), 0);
     const t = batchLedger(moved);
 
     return (
@@ -1218,9 +1230,12 @@ const QtyBar = ({ output, finished, required }) => {
 };
 
 // Small badge flagging that some quantity is met from finished godown stock.
-const StockPill = ({ kg }) => num(kg) > 0 ? (
+// In the unit that stock is handled in where there is one -- patty and sheets
+// leave the shelf by the bundle and the sheet, and a figure in kilos is one more
+// conversion between the reader and what is on the trolley.
+const StockPill = ({ kg, count, unit }) => num(kg) > 0 ? (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium text-sky-700 bg-sky-50 ring-1 ring-sky-200">
-        <Warehouse size={12} /> {fmtKg(kg)} kg from stock
+        <Warehouse size={12} /> {num(count) > 0 && unit ? `${num(count).toLocaleString('en-IN')} ${unit}` : `${fmtKg(kg)} kg`} from stock
     </span>
 ) : null;
 
@@ -1921,18 +1936,38 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     const finishedCollectionPlan = (batch) => (batch?.jobs || []).flatMap((job) => {
         const pending = splitStock(job.invItemOptions).finished.filter((it) => it.collectedKg == null);
         if (pending.length === 0) return [];
-        // Drawn against the orders, not against the run: ready stock answers an
-        // order, and a plate minimum is not one -- it is cut, never pulled.
-        let remaining = jobWorkPlan(job).totals.orderKg;
+        // Each size draws against its OWN line, not against one pooled figure for
+        // the job. A job's requirement is not fungible: 25 bundles of 6x54 side
+        // patty and 7 of 6x46 are different articles answering different orders,
+        // and a strip cut for one bag does not fit another. Pooling them let the
+        // first item the job happened to list soak up the whole requirement and
+        // empty its shelf -- 2026-09-10 - ROLLS TO SIDEPATTY - 25 - 216 asked for
+        // 7 bundles of 6x46 and walked off with 26 of them, while the 6x54 it
+        // wanted 25 of took the 7 that were there and went short by eighteen.
+        //
+        // The same figures the tick list cuts against, from the same function, so
+        // what is fetched and what is cut always add up to the order.
+        const drawn = readyDraw(job);
+        // A job carrying an item the plan cannot name keeps the old pooled
+        // behaviour: guessing which line such an item belongs to is how stock
+        // leaves a shelf it should not have left, and being wrong in a known way
+        // beats being wrong in a new one.
+        let pooled = num(jobWorkPlan(job).totals.orderKg);
         return pending.map((item) => {
-            const take = roundWeight(Math.min(num(item.kg), Math.max(remaining, 0)));
-            remaining -= take;
+            const take = drawn
+                ? num(drawn.byItem.get(item.id))
+                : takeUpTo(item.kg, pooled);
+            pooled -= take;
             // Ready stock is picked off the shelf by count, so say how many, not
-            // just how heavy. Derived from the item's own kg-per-count.
+            // just how heavy. Derived from the item's own kg-per-count, and capped
+            // at the count itself -- a part of a sheet still has to be fetched as a
+            // whole one, but never as more of them than the shelf is holding.
             const perCount = num(item.count) > 0 ? num(item.kg) / num(item.count) : 0;
             return {
                 key: `${job.id}:${item.id}`, job, item, godown: godownOf(item), take,
-                takeCount: perCount > 0 ? Math.ceil(take / perCount - 1e-9) : null
+                takeCount: perCount > 0
+                    ? Math.min(Math.ceil(take / perCount - 1e-9), num(item.count))
+                    : null
             };
         }).filter((l) => l.take > 0);
     });
@@ -2311,12 +2346,22 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                             const batchTotals = batchReal.reduce((t, j) => {
                                                 const { totals } = jobWorkPlan(j);
                                                 return {
-                                                    count: t.count + totals.count,
-                                                    kg: t.kg + totals.kg,
-                                                    fromStock: t.fromStock + num(j.finishedTakenKg),
+                                                    // What the batch has to CUT, as the job
+                                                    // pages say -- the part already on the
+                                                    // shelf is not output this batch owes.
+                                                    count: t.count + totals.cutCount,
+                                                    kg: t.kg + totals.cutKg,
+                                                    // Read off the plan rather than off
+                                                    // Finished_Taken_Kg, which sums a weight
+                                                    // column that patty and sheets book
+                                                    // nothing into -- so on exactly the
+                                                    // batches that draw most stock it said
+                                                    // none was drawn at all.
+                                                    fromStock: t.fromStock + num(totals.readyKg),
+                                                    fromStockCount: t.fromStockCount + num(totals.readyCount),
                                                     unit: totals.unit || t.unit
                                                 };
-                                            }, { count: 0, kg: 0, fromStock: 0, unit: '' });
+                                            }, { count: 0, kg: 0, fromStock: 0, fromStockCount: 0, unit: '' });
                                             // Which days' orders the batch is answering.
                                             const orderSpan = orderSpanText(batchOrderSpan(batch.jobs));
                                             return (
@@ -2386,7 +2431,13 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                                                 <Boxes size={13} /> {batchLatent.length} from stock
                                                             </span>
                                                         )}
-                                                        {batchTotals.fromStock > 0 && <StockPill kg={batchTotals.fromStock} />}
+                                                        {batchTotals.fromStock > 0 && (
+                                                            <StockPill
+                                                                kg={batchTotals.fromStock}
+                                                                count={batchTotals.fromStockCount}
+                                                                unit={batchTotals.unit}
+                                                            />
+                                                        )}
                                                     </div>
                                                     {batch.startedAt && (
                                                         <div className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full">
@@ -2501,15 +2552,16 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                                             {plan.totals.count > 0 ? (
                                                                 <>
                                                                     <span className="text-lg font-bold text-slate-800 tabular-nums">
-                                                                        {plan.totals.count.toLocaleString('en-IN')}
+                                                                        {plan.totals.cutCount.toLocaleString('en-IN')}
                                                                     </span>
                                                                     <span className="text-xs font-medium text-slate-500">{plan.totals.unit}</span>
-                                                                    <span className="text-xs text-slate-400">≈ {fmtKg(plan.totals.kg)} kg</span>
+                                                                    <span className="text-xs text-slate-400">≈ {fmtKg(plan.totals.cutKg)} kg</span>
                                                                 </>
                                                             ) : (
-                                                                <span className="text-lg font-bold text-slate-800 tabular-nums">{fmtKg(plan.totals.kg)} kg</span>
+                                                                <span className="text-lg font-bold text-slate-800 tabular-nums">{fmtKg(plan.totals.cutKg)} kg</span>
                                                             )}
                                                         </div>
+
                                                         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1 text-xs text-slate-500">
                                                             <span className="flex items-center gap-1"><Layers size={13} /> {plan.subOrderCount} sub-order{plan.subOrderCount !== 1 ? 's' : ''}</span>
                                                             {plan.orderCount > 0 && <span>{plan.orderCount} order{plan.orderCount !== 1 ? 's' : ''}</span>}
@@ -2517,7 +2569,13 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                                                 <span>{plan.sizeGroups.length} {plan.sizeGroups.length === 1 ? plan.sizeNoun : `${plan.sizeNoun}s`}</span>
                                                             )}
                                                             {collectedKgOf(job) != null && <span>{fmtKg(collectedKgOf(job))} kg collected</span>}
-                                                            {num(job.finishedTakenKg) > 0 && <StockPill kg={job.finishedTakenKg} />}
+                                                            {num(plan.totals.readyKg) > 0 && (
+                                                                <StockPill
+                                                                    kg={plan.totals.readyKg}
+                                                                    count={plan.totals.readyCount}
+                                                                    unit={plan.totals.unit}
+                                                                />
+                                                            )}
                                                         </div>
                                                     </button>
 
@@ -2993,13 +3051,19 @@ const elapsedText = (fromEpoch, toEpoch) => {
 // handles come off the roll as pieces, side patty is bundled, sheets are sheets.
 // The kg is what leaves the godown, and stays alongside because the roll is
 // issued by weight whatever the output is counted in.
+//
+// What is left to CUT, not what the orders came to. The figure sits directly above
+// the tick list and is read as its total, so quoting the orders here while the
+// lines quote the cutting makes one of the two look wrong -- and the one that
+// would be believed is the big number at the top. What the shelf covers is said
+// underneath in the same unit, so the order can still be seen whole.
 const OutputHeadline = ({ totals }) => {
-    const { count, kg, unit } = totals;
+    const { cutCount: count, cutKg: kg, unit, readyCount, readyKg } = totals;
     return (
         <div className="rounded-xl bg-slate-900 text-white px-4 py-3">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">To produce</p>
             <div className="flex items-baseline gap-2 flex-wrap mt-0.5">
-                {count > 0 ? (
+                {totals.count > 0 ? (
                     <>
                         <span className="text-2xl font-bold tabular-nums">{count.toLocaleString('en-IN')}</span>
                         <span className="text-sm font-medium text-slate-300">{unit}</span>
@@ -3007,8 +3071,15 @@ const OutputHeadline = ({ totals }) => {
                 ) : (
                     <span className="text-2xl font-bold tabular-nums">{fmtKg(kg)} kg</span>
                 )}
-                {count > 0 && kg > 0 && <span className="text-sm text-slate-400">≈ {fmtKg(kg)} kg</span>}
+                {totals.count > 0 && kg > 0 && <span className="text-sm text-slate-400">≈ {fmtKg(kg)} kg</span>}
             </div>
+            {num(readyKg) > 0 && (
+                <p className="text-[11px] text-sky-300 mt-1">
+                    + {readyCount > 0
+                        ? `${readyCount.toLocaleString('en-IN')} ${unit}`
+                        : `${fmtKg(readyKg)} kg`} of the order collected ready from the godown
+                </p>
+            )}
             {(!totals.exact || totals.unknown > 0) && (
                 <p className="text-[10px] text-amber-300/90 mt-1">
                     {totals.unknown > 0
@@ -3263,6 +3334,42 @@ const startBlocker = ({ batch, job, runningJob }) => {
 // on: how the work splits into lines, what each line produces, and the totals.
 // Computed once, here, because the two screens showing different numbers for the
 // same job is worse than either number being wrong.
+// What ready stock will answer this job's orders, article by article, whether it
+// has been carried over yet or not. Two readers need the same answer and must not
+// each work it out: the collection sheet, which says what to fetch, and the tick
+// list, which says what is left to cut. A bundle counted in one and not the other
+// is a bundle cut twice or not at all.
+//
+// Stock already collected counts first, because it is a fact rather than a plan,
+// and it comes off the requirement before anything still on the shelf is reckoned
+// against what remains. Returns the draw per item (what to fetch) and per article
+// (what not to cut), or null when the plan cannot name the articles -- which the
+// callers read as "cannot say", never as "nothing".
+const readyDraw = (job) => {
+    const items = splitStock(job.invItemOptions).finished;
+    if (items.length === 0) return { byItem: new Map(), byArticle: new Map() };
+    const jobType = (job.type || '').trim().toUpperCase();
+    const rate = num(job.overage) > 0 ? num(job.overage) : null;
+    const left = readyDemand(jobType, (job.subOrders || []).map(planShape), 'finished', rate);
+    if (!left) return null;
+    const keyOf = (it) => readyKeyForStock({ width: it.w, height: it.h, colour: it.colour, type: it.type });
+    if (!items.every((it) => left.has(keyOf(it)))) return null;
+    const byItem = new Map();
+    const byArticle = new Map();
+    const draw = (item, kg) => {
+        const k = keyOf(item);
+        left.set(k, num(left.get(k)) - kg);
+        byItem.set(item.id, kg);
+        byArticle.set(k, num(byArticle.get(k)) + kg);
+    };
+    for (const it of items) if (it.collectedKg != null) draw(it, num(it.collectedKg));
+    for (const it of items) {
+        if (it.collectedKg != null) continue;
+        draw(it, takeUpTo(it.kg, left.get(keyOf(it))));
+    }
+    return { byItem, byArticle };
+};
+
 const jobWorkPlan = (job) => {
     const jobType = (job.type || '').trim().toUpperCase();
     // ROLLS TO SHEETS groups by sheet size, side patty by the strip it cuts, DCUT
@@ -3375,8 +3482,46 @@ const jobWorkPlan = (job) => {
     // machine that takes one roll at a time no extra is given, so the mark is
     // only a mark and the note below stays away.
     const fillsMachine = rollsPerRun(jobType, num(job.width)) > 1;
+    // What the machine is actually being asked for, which is the orders less the
+    // part of them already answered off the shelf. A line whose whole requirement
+    // came ready is nothing to cut at all, and telling an operator to cut 25
+    // bundles of a strip when 7 are arriving on a trolley -- from a roll that
+    // holds 17 -- is how a job runs out of fabric half way down its own tick list.
+    //
+    // Taken a sub-order at a time, because one size line can hold more than one
+    // article: a 16x19 sheet line carries plain orders and model-number ones, and
+    // a printed M3 sheet answers only the second kind.
+    //
+    // The plate's own minimum is never answered from stock -- it is cut, by
+    // definition -- so only the orders' share is reduced and the extra rides
+    // through untouched.
+    const drawn = readyDraw(job);
+    const drawLeft = new Map(drawn ? drawn.byArticle : []);
+    const cutOf = (g) => {
+        let ready = 0;
+        for (const so of g.rows) {
+            const k = readyKeyForSubOrder(jobType, planShape(so));
+            if (!k) continue;
+            const take = Math.min(num(drawLeft.get(k)), num(soQty(so)) - 0);
+            if (!(take > 0)) continue;
+            drawLeft.set(k, num(drawLeft.get(k)) - take);
+            ready += take;
+        }
+        const orderQty = num(g.orderQty);
+        const cutOrderQty = Math.max(orderQty - ready, 0);
+        const share = orderQty > 0 ? cutOrderQty / orderQty : 0;
+        return {
+            readyQty: roundWeight(ready),
+            cutQty: roundWeight(cutOrderQty + (num(g.qty) - orderQty)),
+            cutMade: num(g.orderMade) * share + (num(g.made) - num(g.orderMade)),
+            // The orders' own share of the cutting, with no plate minimum in it --
+            // what the completion form books against the orders.
+            cutOrderQty: roundWeight(cutOrderQty),
+            cutOrderMade: num(g.orderMade) * share
+        };
+    };
     const sizeGroups = [...map.values()]
-        .map((g) => ({ ...g, fastMoving: isFastMovingArticle(job.material, g.outputType, g.dims) }))
+        .map((g) => ({ ...g, ...cutOf(g), fastMoving: isFastMovingArticle(job.material, g.outputType, g.dims) }))
         .sort((a, b) => b.made - a.made || b.qty - a.qty);
 
     // The line items follow the tick list exactly: an operator working down one
@@ -3395,6 +3540,19 @@ const jobWorkPlan = (job) => {
     const totals = {
         count: sizeGroups.reduce((t, g) => t + (g.made > 0 ? Math.ceil(g.made - 1e-9) : 0), 0),
         kg: sizeGroups.reduce((t, g) => t + g.qty, 0),
+        // The same sum over what is left to cut. The headline on the job card and
+        // the lines beneath it are read together, and a card quoting the orders
+        // over a list quoting the cutting reads as one of them being wrong.
+        cutCount: sizeGroups.reduce((t, g) => t + (g.cutMade > 0 ? Math.ceil(g.cutMade - 1e-9) : 0), 0),
+        cutKg: sizeGroups.reduce((t, g) => t + num(g.cutQty), 0),
+        readyKg: sizeGroups.reduce((t, g) => t + num(g.readyQty), 0),
+        // What the shelf covers is the difference between the two, never a third
+        // figure rounded on its own: rounding each half up put 18 to cut beside 8
+        // off the shelf against a line of 25, and an operator reading that has
+        // found a bug whether or not there is one.
+        readyCount: sizeGroups.reduce((t, g) =>
+            t + (g.made > 0 ? Math.ceil(g.made - 1e-9) : 0)
+              - (g.cutMade > 0 ? Math.ceil(g.cutMade - 1e-9) : 0), 0),
         // What the orders themselves came to, before any plate minimum. The two
         // differ only on a model-number sheet job, and where the question is what
         // the orders are owed -- how much ready stock may answer them -- it is this
@@ -3434,8 +3592,17 @@ const JobDetail = ({ job, updating, onStart, onComplete, onViewForm, startBlock 
 
     const [checked, setChecked] = useState({});
     const toggle = (key) => setChecked((prev) => ({ ...prev, [key]: !prev[key] }));
-    const total = sizeGroups.length;
-    const doneCount = sizeGroups.filter((g) => checked[g.key]).length;
+    // Only the lines with something to cut. A size answered entirely off the shelf
+    // is not work, and a tick box against it is a question the operator cannot
+    // answer: there is nothing to do and nothing to have done. Worse, it holds the
+    // job open -- completion waits on every box being ticked, and a line that can
+    // never honestly be ticked is a job that can never honestly be finished.
+    const cutGroups = sizeGroups.filter((g) => num(g.cutQty) > 0 || num(g.cutMade) > 0);
+    // Still shown, just not as work: the operator should be able to see that a
+    // size was ordered and where it went, or a line vanishing reads as a mistake.
+    const stockedGroups = sizeGroups.filter((g) => !cutGroups.includes(g));
+    const total = cutGroups.length;
+    const doneCount = cutGroups.filter((g) => checked[g.key]).length;
     const allChecked = total === 0 || doneCount === total;
 
     return (
@@ -3538,9 +3705,19 @@ const JobDetail = ({ job, updating, onStart, onComplete, onViewForm, startBlock 
                         <span className="ml-auto font-normal text-slate-400 normal-case tracking-normal">{doneCount}/{total} done</span>
                     </h2>
                     <div className="divide-y divide-slate-100">
-                        {sizeGroups.map((g) => {
+                        {cutGroups.map((g) => {
                             const on = !!checked[g.key];
-                            const made = g.made > 0 ? Math.ceil(g.made - 1e-9) : null;
+                            // What is left to cut, not what the orders came to: the
+                            // part already on a trolley is not this operator's work.
+                            const made = g.cutMade > 0 ? Math.ceil(g.cutMade - 1e-9) : null;
+                            const fromStock = num(g.readyQty) > 0;
+                            // Both halves in the unit the line is worked in, so the
+                            // part pulled and the part cut can be read against each
+                            // other without converting anything in your head. The
+                            // shelf's share is what the order has over the cutting,
+                            // so the two always add up to the line above them.
+                            const ordered = g.made > 0 ? Math.ceil(g.made - 1e-9) : null;
+                            const ready = ordered != null ? ordered - (made ?? 0) : null;
                             return (
                                 <label
                                     key={g.key}
@@ -3581,11 +3758,23 @@ const JobDetail = ({ job, updating, onStart, onComplete, onViewForm, startBlock 
                                         </span>
                                         <span className="block text-[11px] text-slate-500">
                                             {[
-                                                made != null ? `${made.toLocaleString('en-IN')} ${countUnit}` : null,
-                                                `${fmtKg(g.qty)} kg`,
+                                                made != null ? `${made.toLocaleString('en-IN')} ${countUnit} to cut` : 'nothing to cut',
+                                                made != null ? `${fmtKg(g.cutQty)} kg` : null,
                                                 sizeDim === 'suborder' ? null : `${g.count} sub-order${g.count !== 1 ? 's' : ''}`
                                             ].filter(Boolean).join(' · ')}
                                         </span>
+                                        {/* Where the rest of the line went. Without
+                                            this the figure above looks short against
+                                            the orders the job was made for. */}
+                                        {fromStock && (
+                                            <span className="block text-[11px] font-medium text-sky-700">
+                                                {made != null ? '' : 'the whole line — '}
+                                                {ready != null
+                                                    ? `${ready.toLocaleString('en-IN')} of the ${ordered.toLocaleString('en-IN')} ${countUnit} ordered`
+                                                    : `${fmtKg(g.readyQty)} kg of the ${fmtKg(g.qty)} kg ordered`}
+                                                {' '}comes ready off the shelf
+                                            </span>
+                                        )}
                                         {/* Why the line asks for more than the orders
                                             do, model by model: the plate's own run,
                                             and how it divides. Without this the total
@@ -3604,6 +3793,19 @@ const JobDetail = ({ job, updating, onStart, onComplete, onViewForm, startBlock 
                             );
                         })}
                     </div>
+
+                    {/* Ordered, but nothing to cut for: named so the operator can
+                        see the whole order and where each part of it comes from,
+                        and deliberately not a tick box -- see cutGroups above. */}
+                    {stockedGroups.length > 0 && (
+                        <p className="mt-3 text-[11px] text-sky-900 bg-sky-50 border border-sky-200 rounded-lg px-2.5 py-2">
+                            <span className="font-semibold">
+                                {stockedGroups.map((g) => g.label).join(', ')}
+                            </span>
+                            {stockedGroups.length === 1 ? ' is' : ' are'} answered in full from stock already on
+                            the shelf — collected with the batch, nothing to cut.
+                        </p>
+                    )}
 
                     {sizeGroups.some((g) => (g.minRuns || []).length > 0) && (
                         <p className="mt-3 text-[11px] text-violet-900 bg-violet-50 border border-violet-200 rounded-lg px-2.5 py-2">
@@ -3806,30 +4008,31 @@ const RollRow = ({ item, value, onChange, children }) => (
 );
 
 const OutputModal = ({ job, updating, onClose, onSubmit }) => {
-    const { jobType, countUnit, soQty, sizeGroups, sizeTitle, sizeNoun } = jobWorkPlan(job);
+    const { jobType, countUnit, sizeGroups, sizeTitle, sizeNoun } = jobWorkPlan(job);
     // A pressing handle is pressed straight onto the bag, so it is never shelved:
     // everything produced belongs to the run, with no surplus to the bags godown.
     // It is counted and entered like any other output.
     const neverStocked = jobType === 'ROLLS TO PRESSING HANDLES';
 
-    // How much of the requirement still has to be PRODUCED, rather than having
-    // been pulled ready-made off the shelf. Taken from the ready stock the job
-    // actually drew (a LESS against a non-roll item), which is more truthful than
-    // the plan: pull less than planned and you have to make more.
-    const requiredKg = (job.subOrders || []).reduce((t, so) => t + soQty(so), 0);
-    const outRatio = requiredKg > 0
-        ? Math.max(requiredKg - num(job.finishedTakenKg), 0) / requiredKg
-        : 1;
-    // One line per size, exactly the lines the job page ticks off. A job that cuts
-    // three sheet sizes made three different articles, and a single total for all
-    // of them cannot say how many of each -- so each size is entered on its own and
-    // is booked on its own.
-    const outputs = sizeGroups.map((g) => {
+    // One line per size, exactly the lines the job page ticks off -- the same
+    // filter, so a size the operator was never asked to cut is not then asked
+    // about. A job that cuts three sheet sizes made three different articles, and
+    // a single total for all of them cannot say how many of each, so each size is
+    // entered on its own and is booked on its own.
+    //
+    // How much still has to be PRODUCED rather than pulled ready-made off the
+    // shelf is worked out per size, by the same function the tick list and the
+    // collection sheet use. It used to be one ratio for the whole job, scaled off
+    // the weight of ready stock drawn -- which shrank every size by the same
+    // proportion whatever the shelf actually covered, and did nothing at all for
+    // patty and sheets, whose movements book a count and carry no weight to scale
+    // by.
+    const outputs = sizeGroups.filter((g) => num(g.cutQty) > 0 || num(g.cutMade) > 0).map((g) => {
         // The orders' share, not the whole run: what a model-number floor added is
         // stock for next month, and outputSplit sends everything above `planned`
         // to the bags godown, which is exactly where it belongs.
-        const planned = roundWeight(num(g.orderQty ?? g.qty) * outRatio);
-        const plannedCount = Math.ceil(num(g.orderMade ?? g.made) * outRatio - 1e-9);
+        const planned = roundWeight(num(g.cutOrderQty));
+        const plannedCount = Math.ceil(num(g.cutOrderMade) - 1e-9);
         return {
             key: g.key,
             label: g.label,
