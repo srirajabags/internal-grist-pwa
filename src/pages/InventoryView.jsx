@@ -19,6 +19,7 @@ import Button from '../components/Button';
 import { ItemVisual, Dim } from '../components/itemVisuals';
 import { colourToCss, itemForm, typeName, FORM_LABEL } from '../utils/itemForms';
 import { SHEET_FORMS, PIECES_PER_BUNDLE, pieceKg, countToKg } from '../utils/txnDisplay';
+import { downloadCsv } from '../utils/csvFile';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 
@@ -147,6 +148,42 @@ const rowCount = (r) => {
 };
 const fmtCount = (v) => Math.round(v).toLocaleString();
 
+// CSV of exactly what the list is showing — the rows left after the search, the
+// type chips and the column filters, in the order they appear on screen. Size
+// goes out as two numeric columns so a spreadsheet can sort and filter on width,
+// and kg leads as it does everywhere else, with the native count beside it for
+// the forms booked by count.
+const CSV_SHARED = [
+    ['Item', (r) => typeName(r.mat, r.itype, r.name)],
+    ['Item Code', (r) => r.name ?? ''],
+    ['Material', (r) => r.mat ?? ''],
+    ['Colour / Model', (r) => r.col ?? ''],
+    ['GSM', (r) => r.gsm ?? ''],
+    ['Location', (r) => r.location ?? ''],
+    ['Width (in)', (r) => r.w ?? ''],
+    ['Height (in)', (r) => r.h ?? ''],
+    ['Available (kg)', (r) => fmtKg(rowQty(r).kg)]
+];
+const CSV_COLUMNS = {
+    code: [
+        ...CSV_SHARED,
+        ['Count', (r) => (rowQty(r).hasCount ? rowQty(r).count : '')],
+        ['Count unit', (r) => (rowQty(r).hasCount ? rowQty(r).countUnit : '')],
+        ['Txns', (r) => num(r.cnt)]
+    ],
+    id: [
+        ['Roll #', (r) => r.iid ?? ''],
+        ...CSV_SHARED,
+        ['Initial (kg)', (r) => fmtKg(r.initial)],
+        ['Txns', (r) => num(r.cnt)]
+    ]
+};
+const csvName = (tab) => `inventory-${tab === 'id' ? 'rolls' : 'by-item-code'}_${new Date().toLocaleDateString('en-CA')}.csv`;
+const downloadRowsCsv = (tab, rows) => {
+    const cols = CSV_COLUMNS[tab] || CSV_COLUMNS.code;
+    downloadCsv(csvName(tab), cols.map(([h]) => h), rows.map((r) => cols.map(([, get]) => get(r))));
+};
+
 const Chip = ({ children }) => (
     <span className="inline-flex px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-600">{children}</span>
 );
@@ -267,6 +304,11 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
     const th = 'py-2 px-2.5 font-semibold align-top';
     const td = 'py-1.5 px-2.5';
     const tdNum = `${td} whitespace-nowrap tabular-nums`;
+    // Heading labels wrap at some column widths and not others — "Colour / Model"
+    // takes two lines in the narrower rolls table where "GSM" takes one. Giving
+    // every label a two-line box puts all the filter dropdowns on one line,
+    // whichever headings happen to wrap.
+    const thLabel = 'block leading-tight min-h-[1.75rem]';
     const filter = (key) => (
         <ColFilter
             values={colFilters[key] || []}
@@ -274,6 +316,13 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
             onToggle={(v) => onColToggle(key, v)}
             onClear={() => onColClear(key)}
         />
+    );
+    // A heading cell: its label, and under it the column's filter where it has one.
+    const head = (label, key, extra = '') => (
+        <th className={`${th} ${extra}`}>
+            <span className={thLabel}>{label}</span>
+            {key && filter(key)}
+        </th>
     );
     return (
         <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
@@ -283,18 +332,18 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
                 </colgroup>
                 <thead>
                     <tr className="text-left text-[11px] uppercase tracking-wider text-slate-500 bg-slate-50 border-b border-slate-200">
-                        {isRolls && <th className={th}>Roll #</th>}
-                        <th className={th}></th>
-                        <th className={th}>Item{filter('item')}</th>
-                        <th className={th}>Material{filter('mat')}</th>
-                        <th className={th}>Colour / Model{filter('col')}</th>
-                        <th className={`${th} text-right whitespace-nowrap`}>GSM{filter('gsm')}</th>
-                        <th className={th}>Location{filter('location')}</th>
-                        <th className={`${th} text-right`}>Size&nbsp;(W×H){filter('size')}</th>
-                        <th className={`${th} text-right`}>Available</th>
-                        {isRolls && <th className={`${th} text-right`}>Initial</th>}
-                        <th className={`${th} text-right`}>Txns</th>
-                        <th className={`${th} text-center`}>Stock</th>
+                        {isRolls && head('Roll #')}
+                        {head('')}
+                        {head('Item', 'item')}
+                        {head('Material', 'mat')}
+                        {head('Colour / Model', 'col')}
+                        {head('GSM', 'gsm', 'text-right')}
+                        {head('Location', 'location')}
+                        {head(<>Size&nbsp;(W×H)</>, 'size', 'text-right')}
+                        {head('Available', null, 'text-right')}
+                        {isRolls && head('Initial', null, 'text-right')}
+                        {head('Txns', null, 'text-right')}
+                        {head('Stock', null, 'text-center')}
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -985,6 +1034,14 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                         {bulk
                                             ? <><Loader2 size={12} className="animate-spin" /> {bulk.done}/{bulk.total} labels…</>
                                             : <><Download size={12} /> QR labels (zip)</>}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => downloadRowsCsv(tab, filtered)}
+                                        title="Download the listed items as a CSV, filters and all"
+                                        className="ml-3 inline-flex items-center gap-1 normal-case tracking-normal font-medium text-teal-700 hover:text-teal-900"
+                                    >
+                                        <Download size={12} /> CSV
                                     </button>
                                 </p>
                                 <p className="text-xs text-slate-500">
