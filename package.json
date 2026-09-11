@@ -7,6 +7,8 @@
     "dev": "node get-version.js && vite",
     "build": "node get-version.js && vite build",
     "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "preview": "vite preview",
     "update-version": "node get-version.js"
   },
@@ -39,6 +41,7 @@
     "globals": "^16.5.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.17",
-    "vite": "^7.2.2"
+    "vite": "^7.2.2",
+    "vitest": "^4.1.11"
   }
 }
