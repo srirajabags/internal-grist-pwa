@@ -145,6 +145,100 @@ const getTokenExpiration = (token: string): number | null => {
     }
 };
 
+// ───────────────────────── RESPONSE ENCODING ─────────────────────────
+// Worth compressing only when the caller said it can read it, the body is text,
+// and there is enough of it to pay for the work. A few hundred bytes of JSON
+// gzips to about the same few hundred bytes plus a header.
+const COMPRESS_OVER_BYTES = 1024;
+// Above this the whole reply is not worth holding in memory to shrink. Nothing
+// this app asks for comes close; a bulk export might.
+const COMPRESS_UNDER_BYTES = 8 * 1024 * 1024;
+const COMPRESSIBLE = /^(application\/(json|javascript|xml)|text\/)/i;
+
+// Whatever this runtime can gzip with, or null if it cannot.
+//
+// CompressionStream is the standard answer and would let the body stream through
+// untouched, but Railway's function-bun:1.3.0 does not have it -- the first deploy
+// of this reported exactly that on x-proxy-encoding, having quietly served every
+// reply whole. Bun.gzipSync is there instead, and node:zlib behind that, so the
+// order below is "stream if we can, buffer if we must, give up last".
+let gzipImpl: ((bytes: Uint8Array) => Uint8Array) | null | undefined;
+
+const findGzip = async (): Promise<((bytes: Uint8Array) => Uint8Array) | null> => {
+    if (gzipImpl !== undefined) return gzipImpl;
+    const bun = (globalThis as any).Bun;
+    if (bun && typeof bun.gzipSync === "function") {
+        gzipImpl = (bytes) => bun.gzipSync(bytes);
+        return gzipImpl;
+    }
+    try {
+        const zlib: any = await import("node:zlib");
+        if (typeof zlib.gzipSync === "function") {
+            gzipImpl = (bytes) => new Uint8Array(zlib.gzipSync(bytes));
+            return gzipImpl;
+        }
+    } catch {
+        // No zlib either. Serve the page slowly rather than not at all.
+    }
+    gzipImpl = null;
+    return gzipImpl;
+};
+
+export const compressibleBody = async (
+    request: Request,
+    upstream: Response,
+): Promise<{ body: BodyInit | null; encoding: string | null; reason: string }> => {
+    // `reason` is carried out on x-proxy-encoding. Every way of declining here is
+    // silent and none of them are distinguishable from a byte count, so without it
+    // "this runtime cannot gzip" and "something past us is unwrapping it" look
+    // identical from outside -- and they want completely different fixes.
+    const plain = (reason: string) => ({ body: upstream.body, encoding: null, reason });
+    if (!upstream.body) return plain("no-body");
+    // 204 and 304 carry no body, and compressing one produces a malformed reply.
+    if (upstream.status === 204 || upstream.status === 304) return plain("bodiless-status");
+    if (request.method === "HEAD") return plain("head");
+
+    const accepts = (request.headers.get("accept-encoding") || "").toLowerCase();
+    if (!accepts.split(",").some((e) => e.trim().split(";")[0] === "gzip")) return plain("client-declined");
+
+    if (!COMPRESSIBLE.test(upstream.headers.get("content-type") || "")) return plain("not-text");
+
+    const len = Number(upstream.headers.get("content-length"));
+    const known = Number.isFinite(len) && len > 0;
+    if (known && len < COMPRESS_OVER_BYTES) return plain("too-small");
+    if (known && len > COMPRESS_UNDER_BYTES) return plain("too-big");
+
+    // Streaming first, so a big reply never has to be held whole.
+    if (typeof CompressionStream !== "undefined") {
+        try {
+            return {
+                body: upstream.body.pipeThrough(new CompressionStream("gzip")),
+                encoding: "gzip",
+                reason: "gzip-stream",
+            };
+        } catch (e: any) {
+            console.error("CompressionStream failed, trying buffered:", e?.message);
+        }
+    }
+
+    const gzip = await findGzip();
+    if (!gzip) return plain("no-gzip-available");
+
+    try {
+        const raw = new Uint8Array(await upstream.arrayBuffer());
+        // Now the length is known even when the header did not say, so the
+        // not-worth-it test gets its second chance here.
+        if (raw.byteLength < COMPRESS_OVER_BYTES) return { body: raw, encoding: null, reason: "too-small" };
+        if (raw.byteLength > COMPRESS_UNDER_BYTES) return { body: raw, encoding: null, reason: "too-big" };
+        return { body: gzip(raw), encoding: "gzip", reason: "gzip-buffered" };
+    } catch (e: any) {
+        // The body is spent either way once arrayBuffer() has been called, so
+        // there is nothing to fall back to but an empty reply and a loud log.
+        console.error("gzip failed after reading body:", e?.message);
+        return { body: null, encoding: null, reason: "gzip-threw" };
+    }
+};
+
 // ─────────────────────────── MAIN HANDLER ───────────────────────────
 export default {
     async fetch(request: Request): Promise<Response> {
@@ -448,6 +542,15 @@ export default {
         headers.delete("host");
         headers.delete("origin");
         headers.delete("user-agent");
+        // Ask Grist for plain bytes and do the compressing here.
+        //
+        // Passing the browser's accept-encoding through left it to the runtime
+        // whether fetch handed back a compressed body or a decompressed one, and
+        // the answer decided whether the content-encoding header below was a fact
+        // or a lie. Grist and this proxy are neighbours on the same platform, so
+        // the hop between them is cheap uncompressed; the hop that matters is the
+        // one to a phone on a factory floor.
+        headers.delete("accept-encoding");
 
         // Determine which API key to use
         // Use SQL_KEY for SQL endpoints if available, otherwise use user's regular key
@@ -465,13 +568,33 @@ export default {
                 redirect: "follow",
             });
 
-            // 6. Return Response with CORS
-            const response = new Response(upstream.body, upstream);
+            // 6. Return Response with CORS, compressed if the caller can take it
+            //
+            // Nothing was compressing these. The browser asked for gzip, Grist was
+            // willing, and the header saying so was deleted here -- correctly, since
+            // fetch had already decompressed the body -- but nothing ever compressed
+            // it again, so every reply crossed the internet whole. The inventory
+            // list is a quarter of a megabyte of JSON and gzips to about a tenth of
+            // that; over a phone on the floor it is most of the wait.
+            const body = await compressibleBody(request, upstream);
+            const response = new Response(body.body, upstream);
             Object.entries(corsHeaders).forEach(([key, value]) => {
                 response.headers.set(key, value);
             });
-            response.headers.delete("content-encoding");
+            // Either way the length has changed or is unknown, and the encoding is
+            // whatever we just did rather than whatever Grist said.
             response.headers.delete("content-length");
+            if (body.encoding) {
+                response.headers.set("content-encoding", body.encoding);
+            } else {
+                response.headers.delete("content-encoding");
+            }
+            // Caches must not hand a gzipped body to a client that cannot read one.
+            response.headers.set("vary", "Accept-Encoding");
+            // What this proxy decided to do, so the answer does not have to be
+            // inferred from a byte count. If this says gzip and no content-encoding
+            // reaches the browser, something past us is unwrapping it.
+            response.headers.set("x-proxy-encoding", body.reason);
 
             return response;
         } catch (e: any) {
