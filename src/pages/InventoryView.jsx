@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
     ArrowLeft, Warehouse, AlertCircle, Loader2, RefreshCw, Search, X, Package,
     LayoutGrid, List, ChevronDown, ShieldAlert, Plus, Minus, ScanLine, PackagePlus, QrCode, Download,
-    CalendarRange, ScrollText
+    CalendarRange, ScrollText, Copy, Check
 } from 'lucide-react';
 import Card from '../components/Card';
 import InventoryTxnModal from '../components/InventoryTxnModal';
@@ -92,8 +92,34 @@ const defaultView = () => (window.matchMedia('(min-width: 1024px)').matches ? 'l
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const fmtKg = (v) => num(v).toFixed(2);
-// Size (W×H) shown in the table and used as the size filter's value.
-const sizeLabel = (r) => (r.w || r.h) ? `${r.w || '—'}″ × ${r.h || '—'}″` : '—';
+// Size shown in the table and used as the size filter's value. Bags carry both
+// dimensions; a roll is specified by its width alone, so a lone dimension prints
+// as itself rather than as a width against an empty height.
+const sizeLabel = (r) => {
+    if (r.w && r.h) return `${r.w}″ × ${r.h}″`;
+    if (r.w) return `W ${r.w}″`;
+    if (r.h) return `H ${r.h}″`;
+    return '—';
+};
+
+// A roll id — ROLL_22-08-2026_0074 — is the intake date the godown assigned plus
+// a serial. The table prints the serial the roll is called by with its intake
+// date under it; the id in full stays on the cell's tooltip, in search, and in
+// the CSV, so it still matches the printed label.
+// The serial is whatever follows the date — the godown writes plain numbers on
+// some intakes and a supplier prefix on others (SRB101, SRB-1-1234), so anything
+// after the date counts. An id that does not carry a date at all still renders:
+// it prints in full too, on as many lines as it needs. Nothing here is ever
+// shortened — a half-read roll number is worse than a tall row, and the column
+// is wide enough that wrapping is the rare case rather than the usual one.
+const ROLL_ID_PARTS = /^(?:ROLL[_-])?(\d{2})-(\d{2})-(\d{4})[_-](.+)$/i;
+const rollParts = (iid) => {
+    const m = ROLL_ID_PARTS.exec(String(iid || '').trim());
+    if (!m) return null;
+    const [, dd, mm, yyyy, serial] = m;
+    const date = new Date(Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd)));
+    return { serial, date: date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' }) };
+};
 // Columns whose filter value is computed rather than read straight off the row —
 // keyed so the filter always offers exactly what the cell displays.
 const DERIVED_COL = {
@@ -184,6 +210,50 @@ const downloadRowsCsv = (tab, rows) => {
     downloadCsv(csvName(tab), cols.map(([h]) => h), rows.map((r) => cols.map(([, get]) => get(r))));
 };
 
+// Copying a roll id. navigator.clipboard needs a secure context and can still be
+// refused, so the off-screen textarea covers the godown's tablets.
+const copyText = async (text) => {
+    const s = String(text || '');
+    if (!s) return false;
+    try {
+        await navigator.clipboard.writeText(s);
+        return true;
+    } catch { /* no clipboard API here; try the old way */ }
+    try {
+        const ta = document.createElement('textarea');
+        ta.value = s;
+        ta.style.cssText = 'position:fixed;opacity:0';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        ta.remove();
+        return ok;
+    } catch { return false; }
+};
+
+// The id in full, on one click. The table shows a roll by its short serial, but
+// the whole id is what gets pasted into a message, a sheet, or a search box.
+const CopyId = ({ value, className = '', children }) => {
+    const [done, setDone] = useState(false);
+    const timer = useRef(null);
+    useEffect(() => () => clearTimeout(timer.current), []);
+    const copy = async (e) => {
+        e.stopPropagation();
+        if (!await copyText(value)) return;
+        setDone(true);
+        clearTimeout(timer.current);
+        timer.current = setTimeout(() => setDone(false), 1200);
+    };
+    return (
+        <button type="button" onClick={copy} title={done ? 'Copied' : `Copy ${value}`} className={className}>
+            {children}
+            {done
+                ? <Check size={12} className="shrink-0 mt-0.5 text-emerald-600" />
+                : <Copy size={12} className="shrink-0 mt-0.5 opacity-50" />}
+        </button>
+    );
+};
+
 const Chip = ({ children }) => (
     <span className="inline-flex px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-600">{children}</span>
 );
@@ -226,6 +296,22 @@ const FormChip = ({ label, form, active, onClick }) => (
 // same `Colour` field — so model-number stock renders as a code badge rather than
 // a meaningless colour swatch.
 const isModelCode = (r) => itemForm(r.itype, r.name) === 'modelsheet';
+
+// The roll's own number, as the table's first column: the serial in the size the
+// floor reads it at, the intake date under it, and the id in full on hover for
+// anyone matching the table against a printed label.
+const RollIdCell = ({ iid, className }) => {
+    const parts = rollParts(iid);
+    if (!iid) return <td className={className}><span className="text-slate-400">—</span></td>;
+    return (
+        <td className={className}>
+            <CopyId value={iid} className="flex items-start gap-1 max-w-full text-left font-bold text-teal-800 hover:text-teal-900">
+                <span className="break-words leading-tight">#{parts ? parts.serial : iid}</span>
+            </CopyId>
+            {parts && <div className="text-[11px] font-normal text-slate-400">{parts.date}</div>}
+        </td>
+    );
+};
 
 // `flex` (not inline-flex) so the cell's width bounds it — an inline box sizes to
 // its content and a long colour name then prints straight over the next column.
@@ -290,13 +376,19 @@ const ColFilter = ({ values, options, onToggle, onClear }) => {
 // min-width it scrolls horizontally instead of squashing.
 // Widths are in table-column order and are only a ratio — the browser scales them
 // to the available width.
+// The rolls table drops three columns the by-code table needs, because in it they
+// all say the same thing on every row: the type drawing and the item name (every
+// row is a roll, and the name is only its material restated — "NW BOPP" reads as
+// "Non-Woven Roll"), and the location (the query is pinned to ROLLS GODOWN).
+// Losing them, and printing the roll id as a serial and a date rather than one
+// long string, is what lets the columns that do differ breathe.
 const COL_WIDTHS = {
     code: ['40px', '15%', '11%', '14%', '6%', '12%', '10%', '13%', '6%', '108px'],
-    id: ['210px', '40px', '8%', '6%', '8%', '5%', '8%', '6%', '10%', '7%', '5%', '108px']
+    id: ['170px', '15%', '14%', '7%', '10%', '13%', '12%', '5%', '104px']
 };
-// Below these the columns start wrapping, so the table scrolls instead. Desktop
-// containers are wider than both, so the fixed layout just fits.
-const MIN_TABLE_W = { code: 'min-w-[960px]', id: 'min-w-[1240px]' };
+// Below these the columns start wrapping, so the table scrolls instead. Both fit
+// inside the desktop container (max-w-6xl, 1152px), so on desktop neither scrolls.
+const MIN_TABLE_W = { code: 'min-w-[960px]', id: 'min-w-[860px]' };
 
 const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClear, onOpenTxns, onAdjust, onLabel, labelFor }) => {
     const isRolls = tab === 'id';
@@ -333,13 +425,13 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
                 <thead>
                     <tr className="text-left text-[11px] uppercase tracking-wider text-slate-500 bg-slate-50 border-b border-slate-200">
                         {isRolls && head('Roll #')}
-                        {head('')}
-                        {head('Item', 'item')}
+                        {!isRolls && head('')}
+                        {!isRolls && head('Item', 'item')}
                         {head('Material', 'mat')}
                         {head('Colour / Model', 'col')}
                         {head('GSM', 'gsm', 'text-right')}
-                        {head('Location', 'location')}
-                        {head(<>Size&nbsp;(W×H)</>, 'size', 'text-right')}
+                        {!isRolls && head('Location', 'location')}
+                        {head(isRolls ? 'Size' : <>Size&nbsp;(W×H)</>, 'size', 'text-right')}
                         {head('Available', null, 'text-right')}
                         {isRolls && head('Initial', null, 'text-right')}
                         {head('Txns', null, 'text-right')}
@@ -351,17 +443,17 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
                         const q = rowQty(r);
                         return (
                             <tr key={`${r.code_ref}-${r.iid ?? idx}`} className="hover:bg-slate-50">
-                                {isRolls && (
-                                    <td className={`${tdNum} font-bold text-teal-800`}>#{r.iid || '—'}</td>
+                                {isRolls && <RollIdCell iid={r.iid} className={`${td} tabular-nums align-top`} />}
+                                {!isRolls && (
+                                    <td className="py-1 px-1.5">
+                                        <div className="w-9"><ItemVisual colour={r.col} type={r.itype} name={r.name} size="sm" /></div>
+                                    </td>
                                 )}
-                                <td className="py-1 px-1.5">
-                                    <div className="w-9"><ItemVisual colour={r.col} type={r.itype} name={r.name} size="sm" /></div>
-                                </td>
-                                <td className={`${td} font-medium text-slate-800`}>{typeName(r.mat, r.itype, r.name)}</td>
-                                <td className={`${td} text-slate-600`}>{r.mat || '—'}</td>
+                                {!isRolls && <td className={`${td} font-medium text-slate-800`}>{typeName(r.mat, r.itype, r.name)}</td>}
+                                <td className={`${td} ${isRolls ? 'font-medium text-slate-800' : 'text-slate-600'}`}>{r.mat || '—'}</td>
                                 <td className={`${td} text-slate-600`}><ColourCell col={r.col} asModel={isModelCode(r)} /></td>
                                 <td className={`${tdNum} text-right text-slate-600`}>{r.gsm || '—'}</td>
-                                <td className={`${td} text-slate-600`}>{r.location || '—'}</td>
+                                {!isRolls && <td className={`${td} text-slate-600`}>{r.location || '—'}</td>}
                                 <td className={`${tdNum} text-right text-slate-600`}>
                                     {sizeLabel(r)}
                                 </td>
@@ -1146,9 +1238,12 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                         <Card key={`${r.code_ref}-${r.iid ?? idx}`} className="p-3 flex flex-col">
                                             {/* Roll Item ID highlighted */}
                                             <div className="flex justify-center mb-1.5">
-                                                <span className="inline-flex items-center gap-1 px-3 py-1 rounded-lg text-sm font-extrabold text-teal-800 bg-teal-100 ring-1 ring-teal-300">
-                                                    Roll #{r.iid || '—'}
-                                                </span>
+                                                <CopyId
+                                                    value={r.iid}
+                                                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-sm font-extrabold text-teal-800 bg-teal-100 ring-1 ring-teal-300 hover:bg-teal-200"
+                                                >
+                                                    <span className="truncate">Roll #{r.iid || '—'}</span>
+                                                </CopyId>
                                             </div>
 
                                             <ItemVisual colour={r.col} type={r.itype} name={r.name} />
