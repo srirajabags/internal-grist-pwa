@@ -105,29 +105,43 @@ const parseInventoryItemOptions = (v, fallbackIds = []) => {
     if (typeof v === 'string') { try { parsed = JSON.parse(v); } catch { parsed = []; } }
     const options = Array.isArray(parsed)
         ? parsed
-            .map((item) => ({
-                id: num(item?.id),
-                itemId: item?.itemId || `Item #${num(item?.id)}`,
-                code: item?.code || null,
-                codeId: num(item?.codeId),
-                type: item?.type || null,
-                material: item?.material || null,
-                colour: item?.colour || null,
-                gsm: item?.gsm || null,
-                w: item?.w || null,
-                h: item?.h || null,
-                // Weight leads; a count-only line converts from its geometry, or
-                // the godown's ready stock would look empty.
-                kg: num(item?.kg) > 0
-                    ? num(item.kg)
-                    : countToKg({ w: item?.w, h: item?.h, gsm: item?.gsm, type: item?.type, name: item?.code, count: num(item?.count) }),
-                count: num(item?.count),
-                collectedKg: item?.collectedKg == null ? null : num(item.collectedKg),
-                returnedKg: item?.returnedKg == null ? null : num(item.returnedKg),
-                swaps: parseSwaps(item?.swaps),
-                returnPending: num(item?.returnedAcked) > 0,
-                location: item?.location || null
-            }))
+            .map((item) => {
+                // A counted form books its movements by bundle and leaves the
+                // weight at 0, so a collection of it reads as 0.00 kg unless the
+                // count is converted the same way the shelf figure is. Only when
+                // the books really carry no weight: a weighed form that moved 0 kg
+                // moved nothing, and must not be talked up out of a stray count.
+                const movedKg = (kg, count) => {
+                    if (num(kg) > 0 || !(num(count) > 0)) return kg;
+                    return countToKg({ w: item?.w, h: item?.h, gsm: item?.gsm, type: item?.type, name: item?.code, count: num(count) })
+                        || kg;
+                };
+                return ({
+                    id: num(item?.id),
+                    itemId: item?.itemId || `Item #${num(item?.id)}`,
+                    code: item?.code || null,
+                    codeId: num(item?.codeId),
+                    type: item?.type || null,
+                    material: item?.material || null,
+                    colour: item?.colour || null,
+                    gsm: item?.gsm || null,
+                    w: item?.w || null,
+                    h: item?.h || null,
+                    // Weight leads; a count-only line converts from its geometry, or
+                    // the godown's ready stock would look empty.
+                    kg: num(item?.kg) > 0
+                        ? num(item.kg)
+                        : countToKg({ w: item?.w, h: item?.h, gsm: item?.gsm, type: item?.type, name: item?.code, count: num(item?.count) }),
+                    count: num(item?.count),
+                    collectedKg: item?.collectedKg == null ? null : movedKg(num(item.collectedKg), item?.collectedCount),
+                    collectedCount: item?.collectedCount == null ? null : num(item.collectedCount),
+                    returnedKg: item?.returnedKg == null ? null : movedKg(num(item.returnedKg), item?.returnedCount),
+                    returnedCount: item?.returnedCount == null ? null : num(item.returnedCount),
+                    swaps: parseSwaps(item?.swaps),
+                    returnPending: num(item?.returnedAcked) > 0,
+                    location: item?.location || null
+                });
+            })
             .filter((item) => Number.isInteger(item.id) && item.id > 0)
         : [];
     if (options.length > 0) return options;
@@ -259,6 +273,12 @@ const jobScopeCtes = (scope, page) => `
                -- this is.
                ROUND(SUM(CASE WHEN type = 'LESS' THEN ABS(kg) END), 2) AS collected_kg,
                ROUND(SUM(CASE WHEN type = 'ADD' THEN ABS(kg) END), 2) AS returned_kg,
+               -- And in counts, because that is the only unit a counted form is
+               -- booked in: quantityFields writes patty and sheets by bundle and
+               -- leaves the weight at 0, so a weight-only read of the collection
+               -- says a job that carried 25 bundles took nothing.
+               SUM(CASE WHEN type = 'LESS' THEN ABS(cnt) END) AS collected_cnt,
+               SUM(CASE WHEN type = 'ADD' THEN ABS(cnt) END) AS returned_cnt,
                SUM(CASE WHEN type = 'ADD' AND ack = 0 THEN 1 ELSE 0 END) AS returned_unacked,
                -- Booked but unsigned and never booked at all both stop the
                -- machine, but they are fixed by different people, so the two are
@@ -397,7 +417,9 @@ const jobTreeSql = (scope, page) => `
                 'codeId', it.Item_Code,
                 'location', lo.loc,
                 'collectedKg', itx.collected_kg,
+                'collectedCount', itx.collected_cnt,
                 'returnedKg', itx.returned_kg,
+                'returnedCount', itx.returned_cnt,
                 'returnedAcked', COALESCE(itx.returned_unacked, 0)))
             FROM json_each(CASE WHEN json_valid(bj.Inventory_Items) THEN bj.Inventory_Items ELSE '[]' END) ji
             LEFT JOIN ${ITEMS_TABLE} it ON it.id = ji.value
@@ -2998,6 +3020,21 @@ const OutputHeadline = ({ totals }) => {
     );
 };
 
+// How much of an item the row is talking about, in the unit that item is actually
+// handled in. A roll is weighed and a bundle of patty is counted, and the person
+// reading this is about to carry one or the other: telling them 0.55 kg of side
+// patty is no help when what they lift is 25 bundles. The weight still rides
+// along underneath, because the plan behind the pick is reckoned in kg.
+const stockQty = (item) => {
+    const where = item.collectedKg != null ? 'collected' : 'on the shelf';
+    const qty = item.collectedKg != null ? item.collectedCount : item.count;
+    const kg = `${fmtKg(item.collectedKg ?? item.kg)} kg`;
+    if (primaryUnitFor(item.type, item.code) === 'count' && num(qty) > 0) {
+        return { main: `${num(qty).toLocaleString('en-IN')} ${countUnitFor(item.type, item.code)}`, sub: `${where} · ${kg}` };
+    }
+    return { main: kg, sub: where };
+};
+
 // What the job draws on, split by where it comes from. A job can be part raw
 // roll and part ready-made stock off the shelf, and those are different errands:
 // one gets cut, the other gets carried. The item's own code says which it is, so
@@ -3042,10 +3079,10 @@ const StockGroup = ({ title, meta, items, tone, foldable = false }) => {
                         {(item.collectedKg != null || item.kg != null) && (
                             <span className="text-right shrink-0">
                                 <span className="block text-[11px] font-semibold text-slate-700 tabular-nums">
-                                    {fmtKg(item.collectedKg ?? item.kg)} kg
+                                    {stockQty(item).main}
                                 </span>
                                 <span className="block text-[9px] text-slate-400">
-                                    {item.collectedKg != null ? 'collected' : 'on the shelf'}
+                                    {stockQty(item).sub}
                                 </span>
                             </span>
                         )}
