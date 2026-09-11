@@ -43,6 +43,14 @@ const Total = ({ label, value, tone }) => (
 // godown, oldest first for the running balance, newest first on screen.
 const InventoryTxnModal = ({ row, qty, onClose, getHeaders, getUrl }) => {
     const countUnit = qty?.countUnit || 'bundles';
+    // Which unit the balance leads in: the one the godown books this form in, not
+    // whichever of the two happens to be non-zero. Reading it off the balance made
+    // an emptied shelf of side patty report "0.00 kg" -- true, and useless, since
+    // patty has never had a weight booked against it. Falls back to the old guess
+    // when the row arrived without a form to judge by.
+    const countsFirst = (t) => (qty?.primaryUnit
+        ? qty.primaryUnit === 'count'
+        : num(t.balanceKg) === 0 && num(t.balanceCount) !== 0);
     const [txns, setTxns] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -83,9 +91,17 @@ const InventoryTxnModal = ({ row, qty, onClose, getHeaders, getUrl }) => {
                 // Running balance in the order the godown actually moved, counting
                 // only acknowledged rows — the same ones the stock figure is built
                 // from, so the last balance matches the row's Available.
+                //
+                // Rounded at each step, not just on the way out: the godown books
+                // partial bundles from a recount (16.4, 24.4, 7.3), and a running
+                // sum over those drifts in binary -- 19 - 16.4 is 2.6000000000000014
+                // to a computer, and that is what the screen printed. Three places
+                // is finer than anything the floor counts in, and matches the
+                // godown ledger, which has always rounded here.
+                const tidy = (v) => Math.round(v * 1000) / 1000;
                 let kg = 0, count = 0;
                 const rows = (data.records || []).map((r) => r.fields).map((t) => {
-                    if (truthy(t.ack)) { kg += num(t.wkg); count += num(t.cbund); }
+                    if (truthy(t.ack)) { kg = tidy(kg + num(t.wkg)); count = tidy(count + num(t.cbund)); }
                     return { ...t, balanceKg: kg, balanceCount: count };
                 });
                 if (!cancelled) setTxns(rows.reverse());
@@ -198,12 +214,14 @@ const InventoryTxnModal = ({ row, qty, onClose, getHeaders, getUrl }) => {
                                                     ? <span className="inline-flex items-center gap-1 text-amber-700 font-medium"><Clock size={11} /> Pending ack</span>
                                                     : <span className="tabular-nums">Balance{' '}
                                                         <span className="font-semibold text-slate-700">
-                                                            {num(t.balanceKg) !== 0 || num(t.balanceCount) === 0
-                                                                ? `${fmtKg(t.balanceKg)} kg`
-                                                                : `${num(t.balanceCount)} ${countUnit}`}
+                                                            {countsFirst(t)
+                                                                ? `${num(t.balanceCount)} ${countUnit}`
+                                                                : `${fmtKg(t.balanceKg)} kg`}
                                                         </span>
-                                                        {num(t.balanceKg) !== 0 && num(t.balanceCount) !== 0 && (
-                                                            <span className="text-slate-400"> · {num(t.balanceCount)} {countUnit}</span>
+                                                        {(countsFirst(t) ? num(t.balanceKg) !== 0 : num(t.balanceCount) !== 0) && (
+                                                            <span className="text-slate-400"> · {countsFirst(t)
+                                                                ? `${fmtKg(t.balanceKg)} kg`
+                                                                : `${num(t.balanceCount)} ${countUnit}`}</span>
                                                         )}
                                                     </span>}
                                                 {showItemId && t.iid && <span className="font-medium text-slate-600">{t.iid}</span>}

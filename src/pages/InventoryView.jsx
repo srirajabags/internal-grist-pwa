@@ -18,7 +18,7 @@ import { makeItemLabelPng, itemLabelLines, makeLabelsZip } from '../utils/itemLa
 import Button from '../components/Button';
 import { ItemVisual, Dim } from '../components/itemVisuals';
 import { colourToCss, itemForm, typeName, FORM_LABEL } from '../utils/itemForms';
-import { SHEET_FORMS, PIECES_PER_BUNDLE, pieceKg, countToKg } from '../utils/txnDisplay';
+import { SHEET_FORMS, PIECES_PER_BUNDLE, pieceKg, countToKg, primaryUnitFor } from '../utils/txnDisplay';
 import { downloadCsv } from '../utils/csvFile';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
@@ -149,6 +149,9 @@ const rowQty = (r) => {
         kg,
         count,
         countUnit: SHEET_FORMS.has(form) ? 'sheets' : 'bundles',
+        // The unit the godown actually books this form in, so a reader can lead
+        // with it rather than inferring one from whichever figure is non-zero.
+        primaryUnit: primaryUnitFor(r.itype, r.name),
         derived: recorded <= 0 && kg > 0,
         hasCount: count > 0
     };
