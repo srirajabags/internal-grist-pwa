@@ -94,11 +94,10 @@ const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const fmtKg = (v) => num(v).toFixed(2);
 // Size shown in the table and used as the size filter's value. Bags carry both
 // dimensions; a roll is specified by its width alone, so a lone dimension prints
-// as itself rather than as a width against an empty height.
+// as the bare measurement rather than as one half of a pair.
 const sizeLabel = (r) => {
     if (r.w && r.h) return `${r.w}″ × ${r.h}″`;
-    if (r.w) return `W ${r.w}″`;
-    if (r.h) return `H ${r.h}″`;
+    if (r.w || r.h) return `${r.w || r.h}″`;
     return '—';
 };
 
@@ -370,6 +369,22 @@ const ColFilter = ({ values, options, onToggle, onClear }) => {
     );
 };
 
+// A column filter that is on or off rather than a list of values: the Available
+// column's switch for hiding rows with nothing left on them. Empty stock stays
+// listed by default, because a zero row is still where you go to book stock back
+// in — and a negative one is a discrepancy somebody needs to see.
+const ToggleFilter = ({ on, label, title, onToggle }) => (
+    <button
+        type="button"
+        onClick={onToggle}
+        title={title}
+        className={`mt-1 w-full text-[11px] rounded border px-1.5 py-1 flex items-center justify-center gap-1 cursor-pointer font-normal normal-case ${on ? 'border-teal-400 bg-teal-50 text-teal-700' : 'border-slate-200 bg-white text-slate-500'}`}
+    >
+        {on && <Check size={11} className="shrink-0" />}
+        <span className="truncate">{label}</span>
+    </button>
+);
+
 // Compact tabular view of the same rows shown as cards — handy on desktop for
 // scanning many items at once. The layout is fixed and column widths are
 // proportional, so the table always fits its container on desktop; below the
@@ -390,7 +405,7 @@ const COL_WIDTHS = {
 // inside the desktop container (max-w-6xl, 1152px), so on desktop neither scrolls.
 const MIN_TABLE_W = { code: 'min-w-[960px]', id: 'min-w-[860px]' };
 
-const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClear, onOpenTxns, onAdjust, onLabel, labelFor }) => {
+const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClear, inStockOnly, onToggleInStock, onOpenTxns, onAdjust, onLabel, labelFor }) => {
     const isRolls = tab === 'id';
     // Text columns wrap so they can give width back; only figures stay on one line.
     const th = 'py-2 px-2.5 font-semibold align-top';
@@ -410,10 +425,11 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
         />
     );
     // A heading cell: its label, and under it the column's filter where it has one.
-    const head = (label, key, extra = '') => (
+    const head = (label, key, extra = '', control = null) => (
         <th className={`${th} ${extra}`}>
             <span className={thLabel}>{label}</span>
             {key && filter(key)}
+            {control}
         </th>
     );
     return (
@@ -432,7 +448,14 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
                         {head('GSM', 'gsm', 'text-right')}
                         {!isRolls && head('Location', 'location')}
                         {head(isRolls ? 'Size' : <>Size&nbsp;(W×H)</>, 'size', 'text-right')}
-                        {head('Available', null, 'text-right')}
+                        {head('Available', null, 'text-right', (
+                            <ToggleFilter
+                                on={inStockOnly}
+                                label="In stock"
+                                title="Hide items with nothing left (zero or negative)"
+                                onToggle={onToggleInStock}
+                            />
+                        ))}
                         {isRolls && head('Initial', null, 'text-right')}
                         {head('Txns', null, 'text-right')}
                         {head('Stock', null, 'text-center')}
@@ -529,6 +552,8 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     const [view, setView] = useState(defaultView); // 'grid' (cards) | 'list' (table)
     // Per-column dropdown filters for the table view: { mat, col, gsm, location }.
     const [colFilters, setColFilters] = useState({});
+    // The Available column's own filter: drop rows with nothing left on them.
+    const [inStockOnly, setInStockOnly] = useState(false);
     // Row whose Inventory_Transactions history is open, or null.
     const [txnRow, setTxnRow] = useState(null);
     // Transactions the incharge has not signed off yet — they do not count towards
@@ -872,7 +897,9 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     // A row passes the current search/form and every active column filter — except,
     // optionally, one column (so that column's own dropdown can still offer all of
     // its values consistent with the *other* filters).
+    const stockOnly = view === 'list' && inStockOnly;
     const passes = (r, exceptKey) => matchForm(r) && matchTerm(r)
+        && (!stockOnly || rowQty(r).kg > 0)
         && activeColFilters.every(([k, vals]) => k === exceptKey || vals.includes(colValue(r, k)));
 
     const filtered = rows
@@ -1083,8 +1110,16 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
 
                     {/* Active column-filter chips — always visible in table view so a
                         zero-result filter combo can still be cleared. */}
-                    {!loading && activeColFilters.length > 0 && (
+                    {!loading && (activeColFilters.length > 0 || stockOnly) && (
                         <div className="flex flex-wrap items-center gap-1.5 mb-3">
+                            {stockOnly && (
+                                <button
+                                    onClick={() => setInStockOnly(false)}
+                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium bg-teal-50 text-teal-700 border border-teal-200 hover:bg-teal-100"
+                                >
+                                    In stock only <X size={11} />
+                                </button>
+                            )}
                             {activeColFilters.flatMap(([k, vals]) => vals.map((v) => (
                                 <button
                                     key={`${k}:${v}`}
@@ -1094,7 +1129,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                     {v} <X size={11} />
                                 </button>
                             )))}
-                            <button onClick={() => setColFilters({})} className="text-[11px] text-slate-500 hover:text-slate-700 underline px-1">
+                            <button onClick={() => { setColFilters({}); setInStockOnly(false); }} className="text-[11px] text-slate-500 hover:text-slate-700 underline px-1">
                                 Clear all
                             </button>
                         </div>
@@ -1158,6 +1193,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                     rows={filtered} tab={tab}
                                     colFilters={colFilters} options={colOptions}
                                     onColToggle={toggleColFilter} onColClear={clearColFilter}
+                                    inStockOnly={inStockOnly} onToggleInStock={() => setInStockOnly((v) => !v)}
                                     onOpenTxns={setTxnRow}
                                     onAdjust={adjustRow}
                                     onLabel={downloadLabel}
