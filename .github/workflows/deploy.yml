@@ -6,7 +6,38 @@ on:
   workflow_dispatch:
 
 jobs:
+  # The gate. Until this existed a red test could not fail a deploy: the workflow
+  # built and published on every push to main, and a build only catches syntax and
+  # an import that does not resolve. Every bug the tests were written for would
+  # have gone to the floor through a green build.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      # Scoped to the directories that are clean today, so what is clean cannot
+      # quietly stop being clean. Deliberately NOT the whole app: components,
+      # pages and App.jsx carry 31 errors that pre-date this job, and gating on
+      # them would block every commit for something the committer did not break.
+      # Clearing those is a cleanup of its own; widen this line when it is done.
+      - name: Lint the domain
+        run: npx eslint src/domain src/grist src/services src/utils src/hooks
+
   build-and-deploy:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "preview": "vite preview",
-    "update-version": "node get-version.js"
+    "update-version": "node get-version.js",
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "dependencies": {
     "@auth0/auth0-react": "^2.9.0",

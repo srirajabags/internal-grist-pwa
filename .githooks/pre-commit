@@ -1,0 +1,17 @@
+#!/bin/sh
+# Fast feedback before a commit is made. The real gate is CI -- this hook is not
+# version-controlled into .git/hooks by git itself (it is reached through
+# core.hooksPath, set by the `prepare` script on npm install) and it can be
+# skipped with --no-verify. It exists to catch a broken rule in the second it
+# takes, not to be the last line of defence.
+#
+# Tests only. `npm run lint` still reports errors that pre-date this hook, in
+# App.jsx and the two telecaller/salesman views, so it would block every commit
+# for something the committer did not break. CI lints what is clean instead.
+echo "pre-commit: running tests…"
+if ! npm test --silent; then
+    echo
+    echo "pre-commit: tests failed — commit refused."
+    echo "Fix them, or use 'git commit --no-verify' if you know why this is wrong."
+    exit 1
+fi
