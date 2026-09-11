@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import Button from './Button';
 import { ItemVisual } from './itemVisuals';
-import { attrText } from '../utils/txnDisplay';
+import { attrText, primaryUnitFor, countUnitFor } from '../utils/txnDisplay';
 import { makeLabelsZip, itemLabelLines } from '../utils/itemLabel';
 import { ROLLS_GODOWN, BAGS_GODOWN, godownOf, godownForJob, splitStock } from '../utils/godown';
 
@@ -126,7 +126,29 @@ const CollectionChecklistModal = ({
     const rollKg = lines
         .filter((l) => l.godown === ROLLS && l.take == null && l.item?.kg != null)
         .reduce((s, l) => s + num(l.item.kg), 0);
-    const takeKg = lines.reduce((s, l) => s + num(l.take), 0);
+    // What the trip comes to, in the units the godown actually hands things over
+    // in. Patty and sheets leave the shelf by the bundle and the sheet; saying the
+    // trip is 12.79 kg tells the person carrying it nothing they can count against
+    // what is in their hands. A weighed article still totals in kilos, and a trip
+    // that mixes the two says both.
+    const takeSummary = useMemo(() => {
+        const byUnit = new Map();
+        let kg = 0;
+        for (const l of lines) {
+            if (l.take == null) continue;
+            const counted = l.takeCount != null && l.item
+                && primaryUnitFor(l.item.type, l.item.code) === 'count';
+            if (counted) {
+                const unit = countUnitFor(l.item.type, l.item.code);
+                byUnit.set(unit, (byUnit.get(unit) || 0) + num(l.takeCount));
+            } else {
+                kg += num(l.take);
+            }
+        }
+        const parts = [...byUnit].map(([unit, n]) => `${n.toLocaleString('en-IN')} ${unit}`);
+        if (kg > 0) parts.push(`${fmtKg(kg)} kg`);
+        return parts.join(' · ');
+    }, [lines]);
 
     return (
         <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 sm:p-4" onClick={onClose}>
@@ -145,7 +167,7 @@ const CollectionChecklistModal = ({
                                 {lines.length} item{lines.length === 1 ? '' : 's'}
                                 {sections.length > 1 ? ` · ${sections.length} godowns` : ''}
                                 {rollKg > 0 ? ` · ${fmtKg(rollKg)} kg of roll` : ''}
-                                {takeKg > 0 ? ` · ${fmtKg(takeKg)} kg to pull` : ''}
+                                {takeSummary ? ` · ${takeSummary} to pull` : ''}
                             </p>
                         </div>
                     </div>
