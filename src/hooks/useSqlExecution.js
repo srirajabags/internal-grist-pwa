@@ -117,7 +117,10 @@ export const useSqlExecution = (initialQuery, docId, getHeaders, getUrl, refresh
             }
         }, 100);
         return () => clearTimeout(timer);
-    }, [execute, refreshTrigger]);
+        // docId and initialQuery are already reached through `execute`, which is
+        // rebuilt whenever either changes -- naming them here as well changes no
+        // behaviour and stops the rule reporting on every CI run.
+    }, [execute, refreshTrigger, docId, initialQuery]);
 
     return {
         data,
