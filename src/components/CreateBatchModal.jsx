@@ -1311,7 +1311,19 @@ const qtyLabel = (batchType, so, unit) => {
             : `${qty}${unit} · ${planned.toFixed(2)}${unit}`;
     }
     if (cannotConvertQty(batchType, so)) return `${qty} pcs · ? kg`;
-    return `${qty} pcs · ${effectiveQty(batchType, so).toFixed(2)} kg`;
+    // The bags ordered, the articles those bags come to, and the roll weight that
+    // takes. The middle figure is the one the line was missing and the one the
+    // floor is actually given: a bag is not a sheet, and a thousand of them is
+    // two thousand sheets before the overage and two thousand two hundred after.
+    // Worked out by the same function as the group's own total above, so a line
+    // can never quote a different arithmetic from the heading it sits under.
+    const counted = outputCount(batchType, so);
+    const made = counted ? Math.ceil(counted.count - 1e-9) : null;
+    return [
+        `${qty.toLocaleString('en-IN')} pcs`,
+        made == null ? null : `${made.toLocaleString('en-IN')} ${OUTPUT_COUNT_UNIT[batchType] || 'pieces'}`,
+        `${effectiveQty(batchType, so).toFixed(2)} kg`
+    ].filter(Boolean).join(' · ');
 };
 
 // --- CSV export of the review (one row per sub-order, with its group, job and
