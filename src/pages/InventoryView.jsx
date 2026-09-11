@@ -579,8 +579,27 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     const [bulk, setBulk] = useState(null);     // { done, total }
     const [scanError, setScanError] = useState(null);
 
+    // The rows each tab last saw, so coming back to one is not another wait.
+    //
+    // A round trip to the proxy costs about two-thirds of a second before a single
+    // row is read -- a bare SELECT 1 measures the same as a query returning one --
+    // and this list is a quarter of a megabyte, which adds a second more. Switching
+    // tabs paid all of that again to show figures the page had already had.
+    //
+    // Shown at once and refreshed underneath, never shown and left: this is a stock
+    // list, and a figure that is quietly ten minutes old is worse than a wait. The
+    // cached rows go up immediately, the request goes out anyway, and the screen
+    // corrects itself when it lands.
+    const cache = useRef({});
+    // Which tab the operator is on now, so a reply that arrives after they have
+    // moved on is dropped rather than painted over the tab they are looking at.
+    const showing = useRef(tab);
+
     const fetchData = async (activeTab) => {
-        setLoading(true);
+        showing.current = activeTab;
+        const cached = cache.current[activeTab];
+        if (cached) setRows(cached);
+        setLoading(!cached);
         setError(null);
         try {
             const headers = await getHeaders();
@@ -596,14 +615,20 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                 throw new Error(`Query failed: ${response.statusText}${text ? ` - ${text}` : ''}`);
             }
             const data = await response.json();
-            setRows((data.records || []).map((r) => r.fields));
+            const fresh = (data.records || []).map((r) => r.fields);
+            cache.current[activeTab] = fresh;
+            if (showing.current === activeTab) setRows(fresh);
         } catch (err) {
             const message = err.message || String(err) || 'Unknown error occurred';
             console.error('Inventory Error:', message);
+            if (showing.current !== activeTab) return;
             setError(message);
-            setRows([]);
+            // Only clear the list if there was nothing to keep. A failed refresh
+            // over figures already on screen leaves them there, flagged by the
+            // error, rather than blanking a list the operator was reading.
+            if (!cache.current[activeTab]) setRows([]);
         } finally {
-            setLoading(false);
+            if (showing.current === activeTab) setLoading(false);
         }
     };
 
@@ -629,7 +654,15 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
         }
     };
 
-    const refresh = (activeTab) => { fetchData(activeTab); fetchPendingAck(); };
+    // `hard` throws the cache away first: booking stock in or out changes both
+    // views of it, so after a write the tab you are not looking at is wrong too,
+    // and switching to it should fetch rather than show the figure from before the
+    // booking. A plain tab change is soft -- nothing has changed underneath.
+    const refresh = (activeTab, hard = false) => {
+        if (hard) cache.current = {};
+        fetchData(activeTab);
+        fetchPendingAck();
+    };
 
     // A scanned label names a roll. Prefer the row already on screen -- it carries
     // the live available figure -- and fall back to Grist, so a roll that is out
@@ -1034,7 +1067,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                                 <ScanLine size={18} />
                             </Button>
                         )}
-                        <Button variant="secondary" onClick={() => refresh(tab)} disabled={loading} className="!px-2.5 shrink-0">
+                        <Button variant="secondary" onClick={() => refresh(tab, true)} disabled={loading} className="!px-2.5 shrink-0">
                             <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
                         </Button>
                     </div>
@@ -1369,7 +1402,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
             {ackOpen && (
                 <PendingAckModal
                     onClose={() => setAckOpen(false)}
-                    onAcknowledged={() => refresh(tab)}
+                    onAcknowledged={() => refresh(tab, true)}
                     getHeaders={getHeaders}
                     getUrl={getUrl}
                 />
@@ -1384,7 +1417,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
             {newStock && (
                 <NewRollStockModal
                     onClose={() => setNewStock(false)}
-                    onSaved={() => refresh(tab)}
+                    onSaved={() => refresh(tab, true)}
                     getHeaders={getHeaders}
                     getUrl={getUrl}
                 />
@@ -1429,7 +1462,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                     availableCount={rowQty(adjusting.row).count}
                     availableDerived={rowQty(adjusting.row).derived}
                     onClose={() => setAdjusting(null)}
-                    onSaved={() => { setAdjusting(null); refresh(tab); }}
+                    onSaved={() => { setAdjusting(null); refresh(tab, true); }}
                     getHeaders={getHeaders}
                     getUrl={getUrl}
                 />

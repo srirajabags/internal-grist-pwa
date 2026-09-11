@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
     ArrowLeft, Boxes, AlertCircle, Loader2, RefreshCw, Package,
     PlayCircle, CheckCircle2, Circle, Clock, ChevronRight, Layers, FileText, ArrowRight, Plus, X, Warehouse,
@@ -1239,15 +1240,50 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     const [error, setError] = useState(null);
 
     const [selectedType, setSelectedType] = useState('');
-    // Which half of the world is on screen: batches still being worked, or the
-    // ones that have been closed out.
-    const [scope, setScope] = useState('open');
+    // Where you are inside this page lives in the URL, not in component state.
+    //
+    // It used to be three useStates, so drilling batch -> job changed nothing the
+    // browser could see: no history entries existed for those steps, and Back
+    // popped the only entry there was -- the one that opened /production -- landing
+    // you on the home screen from two levels in. Reloading lost your place for the
+    // same reason, and there was no way to send anyone a link to a job.
+    //
+    // Scope rides along because it decides which batches are fetched at all: a
+    // link to a closed batch is a link to nothing unless it says so.
+    const [params, setParams] = useSearchParams();
+    const navigate = useNavigate();
+    const scope = params.get('scope') === 'closed' ? 'closed' : 'open';
+    // How deep into this page the history has been pushed, so the in-app back can
+    // be a real history step -- one stack, not two disagreeing ones -- and still
+    // know when there is nothing of ours left to go back to, as when somebody
+    // opened a link to a job directly.
+    const depth = useRef(0);
+    const go = (next, { replace = false } = {}) => {
+        const q = new URLSearchParams();
+        if (next.scope === 'closed') q.set('scope', 'closed');
+        if (next.batch) q.set('batch', String(next.batch));
+        if (next.job) q.set('job', String(next.job));
+        if (replace) depth.current = Math.max(depth.current - 1, 0);
+        else depth.current += 1;
+        setParams(q, { replace });
+    };
     // How many closed batches there are in all, against the pages read so far, so
     // the history can say how much of itself is still unread.
     const [closedTotal, setClosedTotal] = useState(null);
     const [loadingMore, setLoadingMore] = useState(false);
-    const [selectedBatchId, setSelectedBatchId] = useState(null);
-    const [selectedJobId, setSelectedJobId] = useState(null);
+    // The batches each scope last showed, and which scope is on screen now, so a
+    // reply that lands after the operator has flipped is dropped rather than
+    // painted over what they are looking at.
+    const cache = useRef({});
+    const showing = useRef(scope);
+    const selectedBatchId = num(params.get('batch')) || null;
+    const selectedJobId = num(params.get('job')) || null;
+    // Kept under the old names so the rest of the page reads the same. Opening a
+    // batch or a job pushes, which is the whole point: those are the steps Back
+    // has to be able to undo.
+    const setSelectedBatchId = (id) =>
+        go({ scope, batch: id, job: id === selectedBatchId ? selectedJobId : null });
+    const setSelectedJobId = (id) => go({ scope, batch: selectedBatchId, job: id });
     const [updatingJobId, setUpdatingJobId] = useState(null);
     const [updatingBatchId, setUpdatingBatchId] = useState(null);
     const [showCreate, setShowCreate] = useState(false);
@@ -1486,8 +1522,26 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
         return groupRows([...jobRows, ...subRows]);
     };
 
-    const fetchData = async (silent = false, forScope = scope) => {
-        if (!silent) setLoading(true);
+    // What each scope last showed, so going back to one is not another wait. Open
+    // work and history are different sets of batches and each costs a round trip
+    // plus a couple of hundred kilobytes; flipping between them paid for both
+    // again every time. Shown at once and refreshed underneath -- never shown and
+    // left, because a batch on this screen is work somebody is about to start.
+    // `asked` means a person pressed something and is waiting on the answer, as
+    // against the page loading itself. It decides whether the spinner turns.
+    //
+    // Showing what was cached and refreshing underneath is right when the page is
+    // reading itself -- opening it, flipping scope -- but wrong the moment somebody
+    // taps refresh: the list they already doubted goes back up unchanged, no
+    // spinner turns because there was cached data to show, and for the two and a
+    // half seconds until the reply lands the button has visibly done nothing. It
+    // was working; it just never said so, which is the same thing to whoever
+    // pressed it.
+    const fetchData = async (silent = false, forScope = scope, asked = false) => {
+        showing.current = forScope;
+        const cached = cache.current[forScope];
+        if (!silent && cached) setBatches(cached);
+        if (!silent && (!cached || asked)) setLoading(true);
         setError(null);
         try {
             // Refreshing the history redraws the pages already read, not the
@@ -1500,17 +1554,25 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                 readTree(forScope, page),
                 forScope === 'closed' ? askSql(closedCountSql()) : Promise.resolve(null)
             ]);
+            cache.current[forScope] = tree;
+            if (showing.current !== forScope) return;
             setBatches(tree);
             if (counted) setClosedTotal(num(counted[0]?.fields?.total));
         } catch (err) {
             const message = err.message || String(err) || 'Unknown error occurred';
             console.error('Production Jobs Error:', message);
+            if (showing.current !== forScope) return;
             setError(message);
-            if (!silent) setBatches([]);
+            // Keep what is on screen if a refresh fails: a blank list reads as a
+            // batch having gone away, and somebody is working from it.
+            if (!silent && !cached) setBatches([]);
         } finally {
-            if (!silent) setLoading(false);
+            if (showing.current === forScope && !silent) setLoading(false);
         }
     };
+
+    // What a person pressing refresh gets: the same read, but visibly working.
+    const refresh = () => fetchData(false, scope, true);
 
     // The next page of the history, from below the oldest batch on screen.
     const loadMoreHistory = async () => {
@@ -1544,10 +1606,10 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     // whatever was open on screen no longer exists to go back to.
     const switchScope = (next) => {
         if (next === scope) return;
-        setSelectedJobId(null);
-        setSelectedBatchId(null);
-        setBatches([]);
-        setScope(next);
+        // Not blanked: if that scope has been read once its batches go straight
+        // back up, and the fetch the effect fires refreshes them underneath.
+        setBatches(cache.current[next] || []);
+        go({ scope: next });
     };
 
     // Patch a job's fields by row id (optimistic), then silently refresh.
@@ -2111,9 +2173,10 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
             }
             await journal.run(`Delete batch ${batchLabel(batch)}`, () => deleteRecords(BATCHES_TABLE, [batch.id]));
             setDeleting(null);
-            setSelectedJobId(null);
-            setSelectedBatchId(null);
-            await fetchData();
+            // Back to the list, replacing rather than pushing: an entry naming a
+            // batch that has just been deleted is a Back button into nothing.
+            go({ scope }, { replace: true });
+            await refresh();
         } catch (err) {
             // Deleting the jobs but not the batch leaves an empty batch behind,
             // which somebody has to clear up -- so say so plainly.
@@ -2138,10 +2201,25 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     const { real: realJobs, latent: latentJobs } = splitJobs(selectedBatch?.jobs || []);
     const level = selectedJob ? 'job' : selectedBatch ? 'jobs' : 'batches';
 
+    // One history stack. Going back in the page IS going back in the browser, so
+    // the two can never disagree about where "back" is -- and an entry is spent
+    // rather than a new one added, which is what stopped browser-forward from
+    // walking deeper into a drill the operator had just climbed out of.
+    //
+    // Nothing of ours left on the stack means we were opened here: a link straight
+    // to a job, or a reload. Then back is a step up the page, replacing rather
+    // than pushing, and from the top it leaves for wherever onBack goes.
     const handleBack = () => {
-        if (level === 'job') setSelectedJobId(null);
-        else if (level === 'jobs') setSelectedBatchId(null);
-        else onBack();
+        if (level !== 'batches' && depth.current > 0) {
+            depth.current -= 1;
+            navigate(-1);
+        } else if (level === 'job') {
+            go({ scope, batch: selectedBatchId }, { replace: true });
+        } else if (level === 'jobs') {
+            go({ scope }, { replace: true });
+        } else {
+            onBack();
+        }
     };
 
     const headerTitle =
@@ -2192,7 +2270,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                             <span className="hidden sm:inline">Create Batch</span>
                         </Button>
                     )}
-                    <Button variant="secondary" onClick={() => fetchData()} disabled={loading} className="!px-2.5 shrink-0">
+                    <Button variant="secondary" onClick={refresh} disabled={loading} className="!px-2.5 shrink-0">
                         <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
                     </Button>
                 </div>
@@ -2203,7 +2281,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                     getHeaders={getHeaders}
                     getUrl={getUrl}
                     onClose={() => setShowCreate(false)}
-                    onCreated={() => { setShowCreate(false); fetchData(); }}
+                    onCreated={() => { setShowCreate(false); refresh(); }}
                 />
             )}
 
