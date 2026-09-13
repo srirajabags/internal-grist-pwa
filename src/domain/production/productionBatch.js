@@ -1133,10 +1133,33 @@ export const outputTypeFor = (batchType, so) => {
 // would eventually disagree, and the failure would be a job that cannot be closed
 // at the one moment somebody is standing at a machine waiting to close it.
 //
+// A side patty weighs what the roll it is cut from weighs. The order's GSM only
+// chooses the roll; when a different one goes on the machine -- job 25-255 was
+// given an 80 GSM roll for a 110 GSM order because none was on the shelf -- the
+// strips are 80 GSM, and booking them as 110 put a third more weight on the books
+// than the roll ever held. A bottom patty is the exception: the catalogue stocks
+// it at 90 whatever it came off.
+const pattyGsmOnRoll = (d, rollGsm) =>
+    (d.kind === 'SIDEPATTY' && num(rollGsm) > 0 ? String(num(rollGsm)) : d.gsm);
+
+// How much a sub-order's planned kg of patty changes once it is cut from the roll
+// actually assigned: 80/110 for job 25-255. 1 wherever the weight does not follow
+// the roll, or either weight is unknown.
+export const rollWeightFactor = (batchType, so, rollGsm) => {
+    if (norm(batchType) !== 'ROLLS TO SIDEPATTY') return 1;
+    const d = pattyDims(so);
+    if (!d || !(num(d.gsm) > 0)) return 1;
+    return num(pattyGsmOnRoll(d, rollGsm)) / num(d.gsm);
+};
+
 // Returns null when the geometry cannot be worked out -- a missing sheet size, a
 // patty with no bag width. Null means "cannot say", which callers must treat as a
 // reason to stop, never as permission to guess.
-export const outputDims = (batchType, so) => {
+//
+// `rollGsm` is the weight of the roll the job was actually given, where that is
+// known. A side patty is the roll's fabric in a strip, so it weighs what the roll
+// weighs: see rollWeightFactor.
+export const outputDims = (batchType, so, rollGsm = null) => {
     const type = norm(batchType);
     if (type === 'ROLLS TO SHEETS' || type === 'ROLLS TO MODEL SHEETS') {
         const m = String(so?.Sheet_Size ?? '').toLowerCase().match(/(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)/);
@@ -1153,7 +1176,8 @@ export const outputDims = (batchType, so) => {
         // travels with it because a bottom patty is 90 throughout the catalogue
         // whatever weight of roll it was cut from.
         const d = pattyDims(so);
-        return d ? { w: num(d.width), h: num(d.length), gsm: d.gsm } : null;
+        if (!d) return null;
+        return { w: num(d.width), h: num(d.length), gsm: pattyGsmOnRoll(d, rollGsm) };
     }
     // A handle is one fixed strip whatever bag it goes on. Its lines carry no size
     // of their own, but the article still has one, and the code carries it.
@@ -1169,15 +1193,14 @@ export const outputDims = (batchType, so) => {
 // produces ivory bags whatever the order said.
 export const outputCodeSpec = (batchType, so, roll) => {
     const type = outputTypeFor(batchType, so);
-    const dims = outputDims(batchType, so);
+    const dims = outputDims(batchType, so, roll?.gsm);
     if (!type || !dims) return null;
-    // Bottom patty is 90 GSM throughout the catalogue whatever roll it came off.
-    const patty = norm(batchType) === 'ROLLS TO SIDEPATTY' ? pattyDims(so) : null;
     return {
         type,
         material: roll?.material ?? null,
         colour: roll?.colour ?? null,
-        gsm: patty?.gsm ?? roll?.gsm ?? null,
+        // A patty's size carries its weight; everything else weighs what its roll does.
+        gsm: dims.gsm ?? roll?.gsm ?? null,
         w: dims.w,
         h: dims.h
     };

@@ -3,8 +3,12 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
     ArrowLeft, Boxes, AlertCircle, Loader2, RefreshCw, Package,
     PlayCircle, CheckCircle2, Circle, Clock, ChevronRight, Layers, FileText, ArrowRight, Plus, X, Warehouse,
-    AlertTriangle, Trash2, Lock, History, Printer, Zap, ChevronDown, CalendarRange
+    AlertTriangle, Trash2, Lock, History, Printer, Zap, ChevronDown, CalendarRange, Copy, Download
 } from 'lucide-react';
+import {
+    findOutputCode, outputCodeSpecForJob, outputBookingGaps, bookingGapMessage, batchBookingGaps, batchGapMessage,
+    bookingImportFiles
+} from '../domain/production/outputCode';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import CreateBatchModal from '../components/CreateBatchModal';
@@ -18,7 +22,7 @@ import { itemForm, FORM_LABEL, splitJobType } from '../domain/inventory/itemForm
 import {
     outputTypeFor, ROLL_WIDTH_TYPES, effectiveQty, outputSizeLabel,
     groupOutputCount, outputCount, pattyDims, bottomSheetDims, outputDims,
-    OUTPUT_COUNT_UNIT, outputColour, isFastMovingArticle, rollsPerRun, planShape,
+    OUTPUT_COUNT_UNIT, outputColour, isFastMovingArticle, rollsPerRun, planShape, rollWeightFactor,
     modelSheetRuns, readyKeyForSubOrder
 } from '../domain/production/productionBatch';
 import { choiceText } from '../grist/gristValues';
@@ -31,6 +35,8 @@ import { writableRecords } from '../grist/gristWrites';
 import { newJournal } from '../grist/writeJournal';
 import { jobLedger, batchLedger, outputBreakdown, drawnKg } from '../domain/production/jobLedger';
 import { downloadCsv } from '../utils/csvFile';
+import { wrapRows, wrapOverflows } from '../utils/gridRows';
+import useDeviceType from '../hooks/useDeviceType';
 import {
     isPrintingListType, printingListHeaders, printingListRows, printingListName
 } from '../domain/production/printingList';
@@ -1700,7 +1706,59 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
             })
         });
         if (!resp.ok) return null;
-        return pickOutputCode((await resp.json()).records || [], job, dims);
+        return findOutputCode((await resp.json()).records || [], outputCodeSpecForJob(job, { outputType, dims }));
+    };
+
+    // What still has to be added to the catalogue before these outputs can be
+    // booked -- asked when the completion form opens, and again just before
+    // anything is written. Throws when Grist cannot be asked: an unanswered check
+    // must not read as "nothing missing".
+    const checkOutputBooking = async (job, outputs) => {
+        const { codes, items } = await loadBookingCatalogue([{ job, outputs }]);
+        return outputBookingGaps({ job, outputs, codes, items });
+    };
+
+    // The same check for every job in a batch, run when the batch page opens so the
+    // office hears about a missing code while the job is still being cut.
+    const checkBatchBooking = async (batch) => {
+        const jobs = (batch?.jobs || [])
+            .filter((j) => !j.completed)
+            .map((j) => ({ job: { ...j, name: jobLabel(j) }, outputs: bookableLines(j) }))
+            .filter((e) => e.outputs.length > 0);
+        if (jobs.length === 0) return [];
+        const { codes, items } = await loadBookingCatalogue(jobs);
+        return batchBookingGaps({ jobs, codes, items });
+    };
+
+    // The catalogue rows and stock items a set of jobs' outputs could book onto,
+    // in two reads however many jobs are asked about.
+    const loadBookingCatalogue = async (pairs) => {
+        const headers = await getHeaders();
+        const sql = async (query, args) => {
+            const res = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
+                method: 'POST',
+                headers: { ...headers, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sql: query, args })
+            });
+            if (!res.ok) throw new Error(`Could not check the item codes (${res.status}).`);
+            return ((await res.json()).records || []).map((r) => r.fields);
+        };
+        const lines = (pairs || []).flatMap(({ job, outputs }) => (outputs || []).map((o) => ({ job, o })));
+        const types = [...new Set(lines.map(({ o }) => String(o.outputType || '').trim().toUpperCase()).filter(Boolean))];
+        const codes = types.length
+            ? await sql(
+                `SELECT id, Type, Material, Colour, GSM, Width_Inches_, Height_Inches_ FROM Inventory_Item_Codes
+                 WHERE UPPER(TRIM(Type)) IN (${types.map(() => '?').join(',')})`,
+                types
+            )
+            : [];
+        const found = [...new Set(lines
+            .map(({ job, o }) => findOutputCode(codes, outputCodeSpecForJob(job, o)))
+            .filter(Boolean))];
+        const items = found.length
+            ? await sql(`SELECT id, Item_Code FROM ${ITEMS_TABLE} WHERE Item_Code IN (${found.map(() => '?').join(',')})`, found)
+            : [];
+        return { codes, items };
     };
 
     // Finished goods are tracked as one Inventory_Items row per output code. Reuse
@@ -1796,6 +1854,13 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                 );
                 return;
             }
+            // The form already refused to complete while something was missing, but
+            // it was asked when the form opened. Ask again before writing anything,
+            // so nothing is booked under a code, or onto an item, nobody has added.
+            const producing = (form.outputs || []).filter((o) => num(o.weight) > 0);
+            const gaps = await checkOutputBooking(job, producing);
+            if (gaps.length > 0) throw new Error(bookingGapMessage({ ...job, name: jobLabel(job) }, gaps));
+
             const now = Date.now() / 1000;
             const txnRecords = [];
             const remainingRolls = Array.isArray(form.remainingRolls) ? form.remainingRolls : [];
@@ -2195,6 +2260,30 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     const filteredBatches = selectedType ? batches.filter((b) => b.type === selectedType) : batches;
     const selectedBatch = batches.find((b) => b.id === selectedBatchId);
     const selectedJob = selectedBatch?.jobs.find((j) => j.id === selectedJobId);
+
+    // Missing item codes across the open batch, found before anyone reaches a
+    // completion form. Re-asked when the batch changes, or when a job in it is
+    // completed or given different stock.
+    const [batchBooking, setBatchBooking] = useState({ batchId: null, entries: null, error: '' });
+    const batchBookingKey = selectedBatch
+        ? selectedBatch.jobs.map((j) => `${j.id}:${j.completed ? 1 : 0}:${(j.invItems || []).join('.')}`).join('|')
+        : '';
+    const runBatchBookingCheck = async () => {
+        if (!selectedBatch) return;
+        const batchId = selectedBatch.id;
+        setBatchBooking({ batchId, entries: null, error: '' });
+        try {
+            const entries = await checkBatchBooking(selectedBatch);
+            setBatchBooking((s) => (s.batchId === batchId ? { batchId, entries, error: '' } : s));
+        } catch (e) {
+            setBatchBooking((s) => (s.batchId === batchId ? { batchId, entries: null, error: e.message || String(e) } : s));
+        }
+    };
+    useEffect(() => {
+        runBatchBookingCheck();
+        // Re-ask only when the batch or its jobs' state changes, not on every render.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedBatchId, batchBookingKey]);
     // Only one job in a batch can be on the machine at a time.
     const runningJob = selectedBatch?.jobs.find((j) => j.started && !j.completed) || null;
     // The work, and the paperwork. Only the first belongs in the operator's list.
@@ -2358,6 +2447,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                     updating={updatingJobId === completingJob.id}
                     onClose={() => setCompletingJob(null)}
                     onSubmit={(form) => submitJobOutput(completingJob, form)}
+                    checkBooking={(outputs) => checkOutputBooking(completingJob, outputs)}
                 />
             )}
 
@@ -2555,6 +2645,12 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                         onCollect={async () => setCollectingBatch(await loadSwaps(selectedBatch))}
                                         onCollectFinished={() => setCollectingFinished(selectedBatch)}
                                         onReturn={() => openReturn(selectedBatch)}
+                                    />
+
+                                    <BatchBookingBanner
+                                        state={batchBooking.batchId === selectedBatch.id ? batchBooking : { entries: null, error: '' }}
+                                        batchName={batchLabel(selectedBatch)}
+                                        onRecheck={runBatchBookingCheck}
                                     />
 
                                     {/* The printing floor's own list: one row per
@@ -2795,6 +2891,9 @@ const Field = ({ label, value }) => (
 // What the batch has taken out of the godown and is now sitting on the floor.
 // Shown only once collection is marked: it is a custody list, so the crew can see
 // at a glance what is in their hands and put every piece of it back.
+const FLOOR_TILE_PX = 68;
+const FLOOR_GAP_PX = 8;
+
 const CollectedItems = ({ batch }) => {
     const [openKey, setOpenKey] = useState(null);
     // Only the raw stock. Ready-made items went bags-godown to printing area in
@@ -2803,6 +2902,30 @@ const CollectedItems = ({ batch }) => {
     const items = batch.jobs.flatMap((job) =>
         splitStock(job.invItemOptions).raw.map((item) => ({ key: `${job.id}:${item.id}`, job, item }))
     );
+    // Rows are a ceiling, not a target: five on desktop and two on a phone at most,
+    // but only as many as the width needs -- eleven rolls in a card with room for
+    // ten sit in two rows, not a five-row block three wide.
+    const { isDesktop } = useDeviceType();
+    const scrollerRef = useRef(null);
+    const [floorWidth, setFloorWidth] = useState(0);
+    const shown = items.length > 0;
+    useEffect(() => {
+        const el = scrollerRef.current;
+        if (!el || typeof ResizeObserver === 'undefined') return undefined;
+        // The content box, inside the scroller's padding: exactly the room the
+        // tiles have.
+        const observer = new ResizeObserver(([entry]) => {
+            setFloorWidth(Math.max(0, entry.contentRect.width));
+        });
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, [shown]);
+    const floorLayout = {
+        count: items.length, width: floorWidth, itemWidth: FLOOR_TILE_PX, gap: FLOOR_GAP_PX,
+        maxRows: isDesktop ? 5 : 2
+    };
+    const floorRows = wrapRows(floorLayout);
+    const floorOverflows = wrapOverflows(floorLayout);
     if (items.length === 0) return null;
 
     // The whole story of one item, for the tooltip and the tapped-open caption.
@@ -2820,15 +2943,18 @@ const CollectedItems = ({ batch }) => {
         <div className="mt-3 pt-3 border-t border-slate-100">
             <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
                 On the floor · {items.length} item{items.length === 1 ? '' : 's'}
-                {items.length > 4 && <span className="font-normal normal-case tracking-normal text-slate-400"> · swipe to see them all</span>}
+                {floorOverflows && <span className="font-normal normal-case tracking-normal text-slate-400"> · swipe to see them all</span>}
             </p>
             {/* One row that scrolls, not a block that wraps. A batch can hold thirty
                 rolls, and wrapped they pushed everything below them off the screen --
                 the section is a reminder of what the crew is holding, not the main
                 event. Bled to the card's edge so the last item is visibly cut off
                 rather than looking like the end of the list. */}
-            <div className="-mx-4 px-4 overflow-x-auto no-scrollbar">
-            <div className="grid grid-flow-col grid-rows-2 lg:grid-rows-5 gap-2 w-max pb-0.5">
+            <div ref={scrollerRef} className="-mx-4 px-4 overflow-x-auto no-scrollbar">
+            <div
+                className="grid grid-flow-col gap-2 w-max pb-0.5"
+                style={{ gridTemplateRows: `repeat(${floorRows}, auto)` }}
+            >
                 {items.map((entry) => {
                     const on = entry.key === openKey;
                     return (
@@ -3370,20 +3496,6 @@ const countDivisor = (outputType, unit) => {
 //
 // So: exact, or null. Null makes the caller raise the error it already has, which
 // names the code to create.
-const pickOutputCode = (rows, job, dims = null) => {
-    const same = (a, b) => String(a ?? '').trim().toUpperCase() === String(b ?? '').trim().toUpperCase();
-    const dim = (a, b) => num(a) > 0 && num(b) > 0 && Math.abs(num(a) - num(b)) < 1e-6;
-    const f = (r) => r.fields ?? r;
-    // Without the article's own measurements there is nothing to match on, and
-    // the catalogue has no unsized codes to fall back to -- every output type in
-    // the document carries both. Not knowing the size is itself a reason to stop.
-    if (!dims || !(num(dims.w) > 0) || !(num(dims.h) > 0)) return null;
-    const hit = (rows || []).find((r) => same(f(r).GSM, dims.gsm ?? job.gsm)
-        && dim(f(r).Width_Inches_, dims.w)
-        && dim(f(r).Height_Inches_, dims.h));
-    return hit ? (f(hit).id ?? null) : null;
-};
-
 // Why a job cannot be started yet, or null when it can. The stock has to be off
 // the shelf before the machine runs, and the machine runs one job at a time.
 const startBlocker = ({ batch, job, runningJob }) => {
@@ -3430,7 +3542,11 @@ const jobWorkPlan = (job) => {
     // job fell through to whichever code happened to share its GSM. Likewise a
     // handle: its lines carry no size of their own, but the article is a fixed
     // 2x13 strip and its code says so.
-    const dimsFor = (so) => outputDims(jobType, planShape(so));
+    //
+    // A side patty is named at the weight of the roll on the machine, not the one
+    // the order asked for -- they differ when a roll was assigned by hand.
+    const rollGsm = splitStock(job.invItemOptions || []).raw[0]?.gsm ?? null;
+    const dimsFor = (so) => outputDims(jobType, planShape(so), rollGsm);
     // A token safe to put in an item id, from the label the operator sees.
     const tagFor = (so) => {
         const d = dimsFor(so);
@@ -3546,13 +3662,17 @@ const jobWorkPlan = (job) => {
         const orderQty = num(g.orderQty);
         const cutOrderQty = Math.max(orderQty - ready, 0);
         const share = orderQty > 0 ? cutOrderQty / orderQty : 0;
+        // Ready stock answered the orders at their own weight; what is left is cut
+        // from the roll, and weighs what the roll weighs. Without this job 25-255's
+        // 11 bundles read as 25.29 kg of an 80 GSM roll that yielded 18.7.
+        const onRoll = g.rows.length ? rollWeightFactor(jobType, planShape(g.rows[0]), rollGsm) : 1;
         return {
             readyQty: roundWeight(ready),
-            cutQty: roundWeight(cutOrderQty + (num(g.qty) - orderQty)),
+            cutQty: roundWeight((cutOrderQty + (num(g.qty) - orderQty)) * onRoll),
             cutMade: num(g.orderMade) * share + (num(g.made) - num(g.orderMade)),
             // The orders' own share of the cutting, with no plate minimum in it --
             // what the completion form books against the orders.
-            cutOrderQty: roundWeight(cutOrderQty),
+            cutOrderQty: roundWeight(cutOrderQty * onRoll),
             cutOrderMade: num(g.orderMade) * share
         };
     };
@@ -4043,7 +4163,82 @@ const RollRow = ({ item, value, onChange, children }) => (
     </div>
 );
 
-const OutputModal = ({ job, updating, onClose, onSubmit }) => {
+// The lines a job's completion form will ask to book: the same filter the form
+// uses, and none at all for a job with no roll to cut. Shared with the batch page,
+// which checks them ahead of the form.
+const bookableLines = (job) => {
+    const hasRoll = job.invItemOptions?.length
+        ? splitStock(job.invItemOptions).raw.length > 0
+        : (job.invItems || []).length > 0;
+    if (!hasRoll) return [];
+    return jobWorkPlan(job).sizeGroups
+        .filter((g) => num(g.cutQty) > 0 || num(g.cutMade) > 0)
+        .map((g) => ({ key: g.key, label: g.label, outputType: g.outputType, dims: g.dims }));
+};
+
+// What the batch still needs from the office before its jobs can be completed,
+// shown on the batch page so it is asked for while the jobs are being cut. Silent
+// when nothing is missing.
+const BatchBookingBanner = ({ state, batchName, onRecheck }) => {
+    // Remembers what was copied, so "Copied" lapses by itself once the message changes.
+    const [copiedText, setCopiedText] = useState('');
+    const entries = state?.entries;
+    const message = entries && entries.length > 0 ? batchGapMessage(batchName, entries) : '';
+    const copied = copiedText !== '' && copiedText === message;
+    const files = bookingImportFiles(entries || []);
+    const fileStem = String(batchName || 'batch').replace(/[^A-Za-z0-9-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+
+    if (state?.error) {
+        return (
+            <div className="mb-3 p-3 bg-red-50 text-red-700 rounded-lg border border-red-100 text-sm space-y-2">
+                <p className="flex gap-2 items-start break-words"><AlertCircle size={18} className="mt-0.5 shrink-0" />{state.error}</p>
+                <Button variant="ghost" icon={RefreshCw} onClick={onRecheck}>Check again</Button>
+            </div>
+        );
+    }
+    if (!message) return null;
+    const copy = async () => {
+        try {
+            await navigator.clipboard.writeText(message);
+            setCopiedText(message);
+        } catch {
+            setCopiedText('');
+        }
+    };
+    return (
+        <div className="mb-3 p-3 bg-red-50 text-red-800 rounded-lg border border-red-200 text-sm space-y-2">
+            <p className="flex gap-2 items-start font-semibold">
+                <AlertTriangle size={18} className="mt-0.5 shrink-0" />
+                {entries.length} job{entries.length === 1 ? '' : 's'} in this batch cannot be completed — item code missing
+            </p>
+            <p className="text-xs text-red-700">
+                Send this to the office now, so the codes are in place before the jobs are finished. Tap Check again once they are added.
+            </p>
+            <pre className="whitespace-pre-wrap break-words rounded bg-white/70 border border-red-100 p-2 text-xs text-slate-800 font-sans select-all">{message}</pre>
+            <div className="flex flex-wrap gap-2">
+                <Button variant="ghost" icon={Copy} onClick={copy}>{copied ? 'Copied' : 'Copy message'}</Button>
+                {files.codes.rows.length > 0 && (
+                    <Button variant="ghost" icon={Download} onClick={() => downloadCsv(`${fileStem}-item-codes.csv`, files.codes.headers, files.codes.rows)}>
+                        Item codes CSV ({files.codes.rows.length})
+                    </Button>
+                )}
+                {files.items.rows.length > 0 && (
+                    <Button variant="ghost" icon={Download} onClick={() => downloadCsv(`${fileStem}-items.csv`, files.items.headers, files.items.rows)}>
+                        Items CSV ({files.items.rows.length})
+                    </Button>
+                )}
+                <Button variant="ghost" icon={RefreshCw} onClick={onRecheck}>Check again</Button>
+            </div>
+            {(files.codes.rows.length > 0 || files.items.rows.length > 0) && (
+                <p className="text-xs text-red-700">
+                    Import into Grist in this order: the item codes file into Inventory_Item_Codes first, then the items file into Inventory_Items.
+                </p>
+            )}
+        </div>
+    );
+};
+
+const OutputModal = ({ job, updating, onClose, onSubmit, checkBooking }) => {
     const { jobType, countUnit, sizeGroups, sizeTitle, sizeNoun } = jobWorkPlan(job);
     // A pressing handle is pressed straight onto the bag, so it is never shelved:
     // everything produced belongs to the run, with no surplus to the bags godown.
@@ -4111,6 +4306,42 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
 
     const touched = () => { setWastageAccepted(false); setErr(''); };
 
+    // Whether every line has an item code and a stock item to book onto. Asked
+    // when the form opens, before anyone counts a thing: null while asking, a list
+    // of what to add once answered. An operator cannot add codes, so the answer is
+    // written to be passed on, and the job stays incomplete until the office has
+    // acted and the check comes back clean.
+    const [gaps, setGaps] = useState(nothingToProduce ? [] : null);
+    const [checkErr, setCheckErr] = useState('');
+    const [copied, setCopied] = useState(false);
+    const outputsKey = outputs.map((o) => `${o.key}|${o.outputType}|${o.dims?.w}x${o.dims?.h}@${o.dims?.gsm}`).join(';');
+    const runCheck = async () => {
+        if (nothingToProduce || !checkBooking) { setGaps([]); return; }
+        setGaps(null);
+        setCheckErr('');
+        setCopied(false);
+        try {
+            setGaps(await checkBooking(outputs));
+        } catch (e) {
+            setCheckErr(e.message || String(e));
+        }
+    };
+    useEffect(() => {
+        runCheck();
+        // Re-ask only when the lines themselves change, not on every render.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [job.id, outputsKey]);
+    const gapText = gaps && gaps.length > 0 ? bookingGapMessage({ ...job, name: jobLabel(job) }, gaps) : '';
+    const bookable = gaps !== null && gaps.length === 0 && !checkErr;
+    const copyGaps = async () => {
+        try {
+            await navigator.clipboard.writeText(gapText);
+            setCopied(true);
+        } catch {
+            setCopied(false);
+        }
+    };
+
     // A bag is held in kg, so a bag job is entered in kg -- asking for a count and
     // converting would put a derived figure into the books where the real one was
     // already on the scale. Counted forms stay as counts.
@@ -4130,11 +4361,15 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
     const wastageKg = roundWeight(heldKg - totalOut - totalReturned);
     const overReturned = totalReturned > heldKg + 1e-6;
 
-    const valid = !updating && !overReturned && (nothingToProduce
+    const valid = !updating && !overReturned && bookable && (nothingToProduce
         || (totalOut > 0 && wastageKg >= 0 && (wastageKg === 0 || wastageAccepted)));
 
     const submit = async () => {
         setErr('');
+        if (!bookable) {
+            setErr(gapText || checkErr || 'Still checking the item codes for this job.');
+            return;
+        }
         if (overReturned) {
             setErr('More roll is being returned than this job took out.');
             return;
@@ -4191,6 +4426,34 @@ const OutputModal = ({ job, updating, onClose, onSubmit }) => {
                 </div>
 
                 <div className="p-4 space-y-3 overflow-auto">
+                    {!nothingToProduce && gaps === null && !checkErr && (
+                        <div className="p-3 bg-slate-50 text-slate-600 rounded-lg border border-slate-200 flex gap-2 items-center text-sm">
+                            <Loader2 size={16} className="animate-spin shrink-0" />
+                            <span>Checking the item codes for this job…</span>
+                        </div>
+                    )}
+                    {checkErr && (
+                        <div className="p-3 bg-red-50 text-red-700 rounded-lg border border-red-100 text-sm space-y-2">
+                            <p className="flex gap-2 items-start break-words"><AlertCircle size={18} className="mt-0.5 shrink-0" />{checkErr}</p>
+                            <Button variant="ghost" icon={RefreshCw} onClick={runCheck}>Check again</Button>
+                        </div>
+                    )}
+                    {gapText && (
+                        <div className="p-3 bg-red-50 text-red-800 rounded-lg border border-red-200 text-sm space-y-2">
+                            <p className="flex gap-2 items-start font-semibold">
+                                <AlertTriangle size={18} className="mt-0.5 shrink-0" />
+                                Item code missing — this job cannot be completed yet
+                            </p>
+                            <p className="text-xs text-red-700">
+                                Send this message to the office. Once they have added it, tap Check again.
+                            </p>
+                            <pre className="whitespace-pre-wrap break-words rounded bg-white/70 border border-red-100 p-2 text-xs text-slate-800 font-sans select-all">{gapText}</pre>
+                            <div className="flex flex-wrap gap-2">
+                                <Button variant="ghost" icon={Copy} onClick={copyGaps}>{copied ? 'Copied' : 'Copy message'}</Button>
+                                <Button variant="ghost" icon={RefreshCw} onClick={runCheck}>Check again</Button>
+                            </div>
+                        </div>
+                    )}
                     {err && (
                         <div className="p-3 bg-red-50 text-red-700 rounded-lg border border-red-100 flex gap-2 items-start text-sm">
                             <AlertCircle size={18} className="mt-0.5 shrink-0" />

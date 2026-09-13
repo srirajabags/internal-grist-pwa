@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-    pattyDims, readyDemand, readyKeyForSubOrder, readyKeyForStock, effectiveQty
+    pattyDims, readyDemand, readyKeyForSubOrder, readyKeyForStock, effectiveQty,
+    outputCodeSpec, outputDims, missingOutputCodes, buildPlan, groupKeyFor, rollWeightFactor
 } from './productionBatch';
 
 const stitching = (over) => ({
@@ -92,6 +93,66 @@ describe('readyDemand — how much of each article the orders can absorb', () =>
     it('says it cannot tell when no order has a size to go on', () => {
         expect(readyDemand('ROLLS TO SIDEPATTY', [stitching({ Quantity: 100 })], 'finished')).toBeNull();
         expect(readyDemand('ROLLS TO SIDEPATTY', [], 'finished')).toBeNull();
+    });
+});
+
+// Job 2026-09-12 - ROLLS TO SIDEPATTY - 28 - 255. The order wanted a 110 GSM 12x54
+// side patty; no 110 GSM roll was on the shelf, so an 80 GSM one was assigned by
+// hand. The batch check and the completion form both named the output by the
+// order's GSM, so 80 GSM fabric was about to be booked into stock as 110.
+describe('a side patty is booked at the GSM of the roll it is cut from', () => {
+    const BT = 'ROLLS TO SIDEPATTY';
+    const order = stitching({
+        id: 10672, Quantity: 500, Bag_Width: '20', Bag_Height: '16',
+        Sidepatty_Width: '12', Sidepatty_Colour: 'RED', Sidepatty_GSM: '110', Handle_Colour: 'RED'
+    });
+    const code = (id, gsm, w, h, type = 'SIDEPATTY') => ({
+        id, Item_Code: `${type} ${gsm} ${w}x${h}`, Type: type, Material: 'NW REGULAR',
+        Colour: 'RED', GSM: gsm, Width_Inches_: w, Height_Inches_: h
+    });
+    const roll80 = { material: 'NW REGULAR', colour: 'RED', gsm: '80' };
+
+    it('names the code by the roll, not the order', () => {
+        expect(outputCodeSpec(BT, order, roll80)).toMatchObject({ gsm: '80', w: 12, h: 54 });
+    });
+
+    it('asks for the roll-weight code when a lighter roll is assigned by hand', () => {
+        const rollCode = { ...code(945, '80', '36', ''), Type: 'ROLL' };
+        const roll = {
+            itemId: 2460, codeId: 945, type: 'ROLL', material: 'NW REGULAR', colour: 'RED',
+            gsm: '80', width: '36', intakeAt: 1, availWeight: 37.1, availBundles: 0
+        };
+        const plan = (itemCodes) => buildPlan({
+            batchType: BT, subOrders: [order], itemCodes, inventory: [roll],
+            overrides: { [groupKeyFor(BT, order)]: [2460] }, excluded: []
+        });
+        const has110 = [rollCode, code(1235, '110', '12', '54')];
+        expect(missingOutputCodes(BT, plan(has110).groups, has110).map((m) => m.label))
+            .toEqual(['SIDEPATTY - NW REGULAR - RED - 80GSM (12x54)']);
+        const has80 = [rollCode, code(2000, '80', '12', '54')];
+        expect(missingOutputCodes(BT, plan(has80).groups, has80)).toEqual([]);
+    });
+
+    it('sizes the output at the roll weight at completion, and the order weight until a roll is known', () => {
+        expect(outputDims(BT, order, '80')).toEqual({ w: 12, h: 54, gsm: '80' });
+        expect(outputDims(BT, order)).toEqual({ w: 12, h: 54, gsm: '110' });
+    });
+
+    it('converts bundles to kg at the roll weight, so the form can balance against the roll', () => {
+        // 11 bundles came to 25.29 kg at 110 GSM; the 37.1 kg roll less 18.4 kg
+        // returned left 18.7, and the form refused a wastage of -6.59 kg.
+        expect(rollWeightFactor(BT, order, '80')).toBeCloseTo(80 / 110, 9);
+        expect(25.29 * rollWeightFactor(BT, order, '80')).toBeLessThan(37.1 - 18.4);
+        expect(rollWeightFactor(BT, order, '110')).toBe(1);
+        expect(rollWeightFactor(BT, order, null)).toBe(1);
+        expect(rollWeightFactor('ROLLS TO SHEETS', order, '80')).toBe(1);
+    });
+
+    it('keeps a bottom patty at 90 GSM whatever roll it came off', () => {
+        const printed = stitching({ Bag_Width: '16', Bag_Height: '18', Sidepatty_Width: '5', Sidepatty_Colour: 'PRINTED', Sidepatty_GSM: '110', Handle_Colour: 'PINK' });
+        expect(outputCodeSpec(BT, printed, { ...roll80, colour: 'PINK' })).toMatchObject({ gsm: '90' });
+        expect(outputDims(BT, printed, '80')).toMatchObject({ gsm: '90' });
+        expect(rollWeightFactor(BT, printed, '80')).toBe(1);
     });
 });
 
