@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     outputCodeSpecForJob, findOutputCode, outputBookingGaps, bookingGapMessage,
-    batchBookingGaps, batchGapMessage, bookingImportFiles, stockItemName
+    batchBookingGaps, batchGapMessage, bookingImportFiles, stockItemName, bookingTargets
 } from './outputCode';
 
 // Job 2026-09-12 - ROLLS TO SIDEPATTY - 28 - 255. Its output had no item code, and
@@ -155,3 +155,18 @@ describe('the files to import what a batch is missing', () => {
 });
 
 function other() { return { ...job, name: '2026-09-12 - ROLLS TO SIDEPATTY - 28 - 999' }; }
+
+// The completion form books each line under the code and stock item the check just
+// found, from the same rows -- not from a lookup of its own that can disagree.
+describe('where each line of a completion is booked', () => {
+    it('takes the code and the stock item from the rows the check read', () => {
+        const codes = [code(1235, '110', '12', '54'), code(1237, '80', '12', '54')];
+        const items = [{ id: 2489, Item_Code: 1237 }];
+        expect(bookingTargets({ job, outputs: [output], codes, items })).toEqual([{ codeId: 1237, itemId: 2489 }]);
+    });
+
+    it('leaves the stock item empty when the code has none', () => {
+        const codes = [code(1237, '80', '12', '54')];
+        expect(bookingTargets({ job, outputs: [output], codes, items: [] })).toEqual([{ codeId: 1237, itemId: null }]);
+    });
+});

@@ -7,8 +7,9 @@ import {
 } from 'lucide-react';
 import {
     findOutputCode, outputCodeSpecForJob, outputBookingGaps, bookingGapMessage, batchBookingGaps, batchGapMessage,
-    bookingImportFiles
+    bookingImportFiles, bookingTargets
 } from '../domain/production/outputCode';
+import { codesQuery, itemsQuery } from '../grist/outputCatalogue';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import CreateBatchModal from '../components/CreateBatchModal';
@@ -1671,44 +1672,6 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
         if (open) setSelectedJobId(job.id);
     };
 
-    // Compact, deterministic Item_ID label for a freshly produced output item,
-    // mirroring the existing finished-goods convention (e.g. "DB_W_NN_110_36").
-    // `sizeTag` separates articles that share one item code -- a 14x18 DCUT bag and
-    // a 16x20 one are stocked under the same code, and without it the two would be
-    // booked onto the same row and the size would be lost the moment it was typed.
-    // Stock still totals by code; the size stays legible on the item, its label and
-    // the movement history.
-    const outputItemSlug = (job, outputType, sizeTag = '') => {
-        const abbr = (s) => String(s ?? '').trim().split(/\s+/).filter(Boolean).map((w) => w[0]).join('').toUpperCase();
-        return [abbr(outputType), abbr(job.colour), abbr(job.material), job.gsm, job.width, sizeTag]
-            .filter((v) => v !== '' && v !== null && v !== undefined)
-            .join('_');
-    };
-
-    // Resolve the Inventory_Item_Codes id for one of a job's output products. For
-    // roll-width jobs the output code shares the consumed roll's material/colour/gsm
-    // and roll width, so we look it up by (output type · those attributes). Other
-    // jobs carry their single output code directly. Returns null if none exists yet.
-    // The item code for a produced output, resolved from what the job is made of
-    // rather than a column on the job. The output's identity is its type plus the
-    // material it came from, which the assigned stock already carries.
-    // `dims` are the finished article's own measurements, when the line knows
-    // them. Sheets are stocked under a code per size, so a job cutting three sheet
-    // sizes has three codes to find; bags and patty share one code per
-    // specification, and fall through to the job-level match as before.
-    const resolveOutputCode = async (headers, job, outputType, dims = null) => {
-        const resp = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
-            method: 'POST',
-            headers: { ...headers, 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                sql: 'SELECT id, GSM, Width_Inches_, Height_Inches_ FROM Inventory_Item_Codes WHERE Type = ? AND Material = ? AND Colour = ?',
-                args: [outputType, job.material, job.colour]
-            })
-        });
-        if (!resp.ok) return null;
-        return findOutputCode((await resp.json()).records || [], outputCodeSpecForJob(job, { outputType, dims }));
-    };
-
     // What still has to be added to the catalogue before these outputs can be
     // booked -- asked when the completion form opens, and again just before
     // anything is written. Throws when Grist cannot be asked: an unanswered check
@@ -1744,61 +1707,14 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
             return ((await res.json()).records || []).map((r) => r.fields);
         };
         const lines = (pairs || []).flatMap(({ job, outputs }) => (outputs || []).map((o) => ({ job, o })));
-        const types = [...new Set(lines.map(({ o }) => String(o.outputType || '').trim().toUpperCase()).filter(Boolean))];
-        const codes = types.length
-            ? await sql(
-                `SELECT id, Type, Material, Colour, GSM, Width_Inches_, Height_Inches_ FROM Inventory_Item_Codes
-                 WHERE UPPER(TRIM(Type)) IN (${types.map(() => '?').join(',')})`,
-                types
-            )
-            : [];
-        const found = [...new Set(lines
+        const codeRead = codesQuery(lines.map(({ o }) => o.outputType));
+        const codes = codeRead ? await sql(codeRead.sql, codeRead.args) : [];
+        const found = lines
             .map(({ job, o }) => findOutputCode(codes, outputCodeSpecForJob(job, o)))
-            .filter(Boolean))];
-        const items = found.length
-            ? await sql(`SELECT id, Item_Code FROM ${ITEMS_TABLE} WHERE Item_Code IN (${found.map(() => '?').join(',')})`, found)
-            : [];
+            .filter(Boolean);
+        const itemRead = itemsQuery(found);
+        const items = itemRead ? await sql(itemRead.sql, itemRead.args) : [];
         return { codes, items };
-    };
-
-    // Finished goods are tracked as one Inventory_Items row per output code. Reuse
-    // the existing row for a code, or create one labelled by `slug`.
-    // Found by item code, not by the name this app would have given it.
-    //
-    // Finished goods carry the article's size on the ITEM CODE -- a 16x20 DCUT bag
-    // and a 14x18 one are different codes -- and every such code has exactly one
-    // physical item behind it. So the code identifies the row outright.
-    //
-    // Looking it up by a generated name instead does not work: the rows in the
-    // document are named DCUT_BAG_NW_REGULAR_BISCUIT_IVORY_70_16X20, which no
-    // abbreviation this file produces will ever equal. Every lookup missed, every
-    // completion tried to create a row instead, and an operator without create
-    // rights on Inventory_Items could not finish a job at all. `slug` is now only
-    // the name given to a row that genuinely does not exist yet.
-    const findOrCreateOutputItem = async (headers, codeId, slug) => {
-        const sqlResp = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
-            method: 'POST',
-            headers: { ...headers, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sql: 'SELECT id FROM Inventory_Items WHERE Item_Code = ? LIMIT 1', args: [codeId] })
-        });
-        if (sqlResp.ok) {
-            const data = await sqlResp.json();
-            const found = (data.records || [])[0];
-            if (found && Number.isInteger(found.fields?.id)) return found.fields.id;
-        }
-        const createResp = await fetch(getUrl(`/api/docs/${DOC_ID}/tables/${ITEMS_TABLE}/records`), {
-            method: 'POST',
-            headers: { ...headers, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ records: [{ fields: { Item_ID: slug, Item_Code: codeId } }] })
-        });
-        if (!createResp.ok) {
-            const text = await createResp.text().catch(() => '');
-            throw new Error(`Failed to create output inventory item: ${createResp.statusText}${text ? ` - ${text}` : ''}`);
-        }
-        const created = await createResp.json();
-        const newId = created.records?.[0]?.id;
-        if (!Number.isInteger(newId)) throw new Error('Output inventory item was not created.');
-        return newId;
     };
 
     // Complete a job from the output form. For each produced output (per model for
@@ -1854,40 +1770,40 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                 );
                 return;
             }
-            // The form already refused to complete while something was missing, but
-            // it was asked when the form opened. Ask again before writing anything,
-            // so nothing is booked under a code, or onto an item, nobody has added.
+            // One read of the catalogue, and everything below comes from it: the check
+            // that nothing is missing, and the code and stock item each line books
+            // under. The form checked when it opened, but ask again before writing.
+            //
+            // Booking used to run a lookup of its own. It selected fewer columns than
+            // it matched on, so it found nothing the check had just found, and job
+            // 25-255 -- every job with output, in fact -- was told its code was
+            // missing. Nothing is created here any more either: a code or item the
+            // office has not added stops the job, it is not quietly made up.
             const producing = (form.outputs || []).filter((o) => num(o.weight) > 0);
-            const gaps = await checkOutputBooking(job, producing);
+            const { codes, items } = await loadBookingCatalogue([{ job, outputs: producing }]);
+            const gaps = outputBookingGaps({ job, outputs: producing, codes, items });
             if (gaps.length > 0) throw new Error(bookingGapMessage({ ...job, name: jobLabel(job) }, gaps));
+            const targets = bookingTargets({ job, outputs: producing, codes, items });
 
             const now = Date.now() / 1000;
             const txnRecords = [];
             const remainingRolls = Array.isArray(form.remainingRolls) ? form.remainingRolls : [];
 
             // One or more produced outputs, each crediting its own item code.
-            for (const o of form.outputs) {
-                const output = num(o.weight);
-                if (output <= 0) continue;
-                const codeId = await resolveOutputCode(headers, job, o.outputType, o.dims);
-                if (!codeId) {
-                    throw new Error(`No ${o.outputType} item code for ${[job.material, job.colour, job.gsm && `${job.gsm} GSM`, o.sizeLabel].filter(Boolean).join(' · ')} — add it to Inventory_Item_Codes first.`);
-                }
-                // This can create an Inventory_Items row, so it is a write worth
-                // recording: a later failure leaves it behind.
-                const outItemId = await journal.run(
-                    `Find or create the stock item for ${o.sizeLabel || o.outputType}`,
-                    () => findOrCreateOutputItem(headers, codeId, outputItemSlug(job, o.outputType, o.sizeTag))
-                );
+            producing.forEach((o, i) => {
+                const { itemId } = targets[i];
+                // The check above has already refused a missing item; this only
+                // stops a blank reference being written if the two ever drift.
+                if (!itemId) throw new Error(`No stock item to book ${o.sizeLabel || o.outputType} onto.`);
                 for (const half of outputSplit(o)) {
                     txnRecords.push({
                         fields: {
-                            Item_ID: outItemId, Production_Job: job.id, Transaction_Type: 'ADD',
+                            Item_ID: itemId, Production_Job: job.id, Transaction_Type: 'ADD',
                             Location: half.location, Transaction_Time: now, ...half.fields
                         }
                     });
                 }
-            }
+            });
 
             // Leftover roll goes back to ROLLS GODOWN as soon as the run ends: the
             // roll is free at that moment, which is what the stock figure should

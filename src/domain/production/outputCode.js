@@ -78,6 +78,22 @@ export const outputBookingGaps = ({ job, outputs, codes, items }) => {
     return gaps;
 };
 
+// Where each line is booked: its code and that code's stock item, taken from the
+// same rows the check read, so booking can never disagree with the check that let
+// it through. Aligned with `outputs`; null where either cannot be found. Items come
+// oldest first, and the first for a code is the one used.
+export const bookingTargets = ({ job, outputs, codes, items }) => {
+    const itemByCode = new Map();
+    for (const i of (items || []).map(fieldsOf)) {
+        const codeId = num(i.Item_Code);
+        if (codeId > 0 && !itemByCode.has(codeId)) itemByCode.set(codeId, num(i.id) || null);
+    }
+    return (outputs || []).map((o) => {
+        const codeId = findOutputCode(codes, outputCodeSpecForJob(job, o));
+        return { codeId, itemId: codeId ? (itemByCode.get(codeId) ?? null) : null };
+    });
+};
+
 // The same answer as a message: the operator sends this to whoever keeps the
 // catalogue, so it names the job and says exactly what to add.
 export const bookingGapMessage = (job, gaps) => {
