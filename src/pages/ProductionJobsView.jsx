@@ -10,6 +10,7 @@ import {
     bookingImportFiles, bookingTargets
 } from '../domain/production/outputCode';
 import { codesQuery, itemsQuery } from '../grist/outputCatalogue';
+import { jobsClosedByFinishedCollection } from '../domain/production/finishedCollection';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import CreateBatchModal from '../components/CreateBatchModal';
@@ -2046,16 +2047,16 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
             // so one job left open holds the whole batch open forever, and the
             // printing queue only picks up sub-orders whose production job is
             // completed. Leaving these false stalls both.
-            const latent = splitJobs(batch.jobs).latent.filter((j) => !j.completed);
-            if (latent.length > 0) {
+            //
+            // Started and completed go together: Grist refuses a completion on a job
+            // that is not started, which is how batch 25's jobs 232 and 233 were
+            // left open. The *_At columns are triggers Grist stamps itself.
+            const closing = jobsClosedByFinishedCollection(batch.jobs);
+            if (closing.length > 0) {
+                const closingJobs = batch.jobs.filter((j) => closing.some((c) => c.id === j.id));
                 await journal.run(
-                    `Complete ${latent.length} job(s) answered from stock — ${latent.map(jobLabel).join('; ')}`,
-                    () => writeRecords(JOBS_TABLE, 'PATCH', {
-                        // Production_Completed_At is a trigger on this column; Grist
-                        // stamps it, and sending it would fight the document.
-                        records: writableRecords(JOBS_TABLE,
-                            latent.map((j) => ({ id: j.id, fields: { Production_Completed: true } })))
-                    })
+                    `Start and complete ${closing.length} job(s) answered from stock — ${closingJobs.map(jobLabel).join('; ')}`,
+                    () => writeRecords(JOBS_TABLE, 'PATCH', { records: writableRecords(JOBS_TABLE, closing) })
                 );
             }
             await fetchData(true);
