@@ -3,7 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
     ArrowLeft, Boxes, AlertCircle, Loader2, RefreshCw, Package,
     PlayCircle, CheckCircle2, Circle, Clock, ChevronRight, Layers, FileText, ArrowRight, Plus, X, Warehouse,
-    AlertTriangle, Trash2, Lock, History, Printer, Zap, ChevronDown, CalendarRange, Copy, Download
+    AlertTriangle, Trash2, Lock, History, Printer, Zap, ChevronDown, CalendarRange, Copy, Download, XCircle, Filter
 } from 'lucide-react';
 import {
     findOutputCode, outputCodeSpecForJob, outputBookingGaps, bookingGapMessage, batchBookingGaps, batchGapMessage,
@@ -11,6 +11,17 @@ import {
 } from '../domain/production/outputCode';
 import { codesQuery, itemsQuery } from '../grist/outputCatalogue';
 import { jobsClosedByFinishedCollection } from '../domain/production/finishedCollection';
+import { batchPills, batchMatchesPills, pillFilterOptions } from '../domain/production/batchStage';
+
+// What a pill's meaning looks like: something still owed is a red cross, something
+// settled a green tick, and work on the machine right now its own blue. The icon
+// carries the same distinction as the colour, for anyone who cannot tell the two
+// colours apart.
+const PILL_TONE = {
+    action: { icon: XCircle, cls: 'text-red-700 bg-red-50 ring-1 ring-red-200' },
+    done: { icon: CheckCircle2, cls: 'text-green-700 bg-green-50 ring-1 ring-green-200' },
+    live: { icon: PlayCircle, cls: 'text-blue-700 bg-blue-50 ring-1 ring-blue-200' }
+};
 import Card from '../components/Card';
 import Button from '../components/Button';
 import CreateBatchModal from '../components/CreateBatchModal';
@@ -1242,12 +1253,89 @@ const StockPill = ({ kg, count, unit }) => num(kg) > 0 ? (
     </span>
 ) : null;
 
+// Narrowing the batch list by what its batches still owe. Multi-select: tick
+// "rolls to be returned" and "finished stock to be collected" together to see
+// everything waiting on the godown. Nothing ticked shows everything.
+const BatchFilterMenu = ({ options, selected, onChange }) => {
+    const [open, setOpen] = useState(false);
+    const box = useRef(null);
+    useEffect(() => {
+        if (!open) return undefined;
+        const away = (e) => { if (!box.current?.contains(e.target)) setOpen(false); };
+        const esc = (e) => { if (e.key === 'Escape') setOpen(false); };
+        document.addEventListener('pointerdown', away);
+        document.addEventListener('keydown', esc);
+        return () => {
+            document.removeEventListener('pointerdown', away);
+            document.removeEventListener('keydown', esc);
+        };
+    }, [open]);
+    if (options.length === 0) return null;
+
+    const toggle = (key) => onChange(selected.includes(key)
+        ? selected.filter((k) => k !== key)
+        : [...selected, key]);
+
+    return (
+        <div className="relative shrink-0" ref={box}>
+            <button
+                type="button"
+                onClick={() => setOpen((v) => !v)}
+                aria-expanded={open}
+                aria-haspopup="true"
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${selected.length > 0
+                    ? 'bg-amber-100 text-amber-800 border-amber-300'
+                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+            >
+                <Filter size={14} />
+                <span className="hidden sm:inline">Status</span>
+                {selected.length > 0 && <span className="tabular-nums">({selected.length})</span>}
+                <ChevronDown size={14} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
+            </button>
+            {open && (
+                <div className="absolute right-0 mt-1 w-64 max-w-[80vw] bg-white border border-slate-200 rounded-lg shadow-lg z-20 p-1.5">
+                    <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                        What the batch still owes
+                    </p>
+                    {options.map((o) => (
+                        <label
+                            key={o.key}
+                            className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-slate-50 cursor-pointer text-sm"
+                        >
+                            <input
+                                type="checkbox"
+                                id={`batch-filter-${o.key}`}
+                                checked={selected.includes(o.key)}
+                                onChange={() => toggle(o.key)}
+                                className="accent-amber-600"
+                            />
+                            <span className="flex-1 min-w-0 truncate text-slate-700">{o.label}</span>
+                            <span className="text-xs text-slate-400 tabular-nums">{o.count}</span>
+                        </label>
+                    ))}
+                    {selected.length > 0 && (
+                        <button
+                            type="button"
+                            onClick={() => onChange([])}
+                            className="w-full text-left px-2 py-1.5 mt-1 border-t border-slate-100 text-xs font-medium text-slate-500 hover:text-slate-700"
+                        >
+                            Clear all
+                        </button>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+};
+
 const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     const [batches, setBatches] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
     const [selectedType, setSelectedType] = useState('');
+    // Which of the card's own pills the list is narrowed to. Empty shows everything.
+    const [pillFilter, setPillFilter] = useState([]);
     // Where you are inside this page lives in the URL, not in component state.
     //
     // It used to be three useStates, so drilling batch -> job changed nothing the
@@ -2174,7 +2262,11 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
 
     // --- Derived navigation state ---
     const types = [...new Set(batches.map((b) => b.type).filter(Boolean))].sort();
-    const filteredBatches = selectedType ? batches.filter((b) => b.type === selectedType) : batches;
+    const typeBatches = selectedType ? batches.filter((b) => b.type === selectedType) : batches;
+    // The filter offers what this type's batches actually carry, and counts them, so
+    // a tick never leads to an empty list.
+    const pillOptions = pillFilterOptions(typeBatches);
+    const filteredBatches = typeBatches.filter((b) => batchMatchesPills(b, pillFilter));
     const selectedBatch = batches.find((b) => b.id === selectedBatchId);
     const selectedJob = selectedBatch?.jobs.find((j) => j.id === selectedJobId);
 
@@ -2389,14 +2481,23 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                             {/* ---------- LEVEL 1: BATCHES ---------- */}
                             {level === 'batches' && (
                                 <>
-                                    {/* Job type filter */}
-                                    <div className="-mx-3 px-3 mb-3 overflow-x-auto no-scrollbar">
-                                        <div className="flex gap-2 w-max">
-                                            <TypeChip label="All Types" active={selectedType === ''} onClick={() => setSelectedType('')} />
-                                            {types.map((t) => (
-                                                <TypeChip key={t} label={t} active={selectedType === t} onClick={() => setSelectedType(t)} />
-                                            ))}
+                                    {/* Job type filter, and beside it the filter on what
+                                        each batch still owes -- the same pills the cards
+                                        below show. */}
+                                    <div className="flex items-start gap-2 mb-3">
+                                        <div className="-ml-3 pl-3 flex-1 min-w-0 overflow-x-auto no-scrollbar">
+                                            <div className="flex gap-2 w-max">
+                                                <TypeChip label="All Types" active={selectedType === ''} onClick={() => setSelectedType('')} />
+                                                {types.map((t) => (
+                                                    <TypeChip key={t} label={t} active={selectedType === t} onClick={() => setSelectedType(t)} />
+                                                ))}
+                                            </div>
                                         </div>
+                                        <BatchFilterMenu
+                                            options={pillOptions}
+                                            selected={pillFilter}
+                                            onChange={setPillFilter}
+                                        />
                                     </div>
 
                                     <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 px-1">
@@ -2408,10 +2509,17 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                     {filteredBatches.length === 0 ? (
                                         <Empty
                                             icon={Boxes}
-                                            title={scope === 'closed' ? 'No closed batches' : 'No batches of this type'}
-                                            subtitle={scope === 'closed'
-                                                ? 'A batch moves here once its jobs are done and the roll has been returned.'
-                                                : 'Try a different job type.'}
+                                            // An emptied list should name the control that
+                                            // emptied it: with a status ticked, the job type
+                                            // is not what the reader has to change.
+                                            title={pillFilter.length > 0
+                                                ? 'No batches match that status'
+                                                : scope === 'closed' ? 'No closed batches' : 'No batches of this type'}
+                                            subtitle={pillFilter.length > 0
+                                                ? 'Clear the status filter, or pick a different one.'
+                                                : scope === 'closed'
+                                                    ? 'A batch moves here once its jobs are done and the roll has been returned.'
+                                                    : 'Try a different job type.'}
                                         />
                                     ) : (
                                         <div className="space-y-2.5">
@@ -2518,9 +2626,23 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                                             />
                                                         )}
                                                     </div>
-                                                    {batch.startedAt && (
-                                                        <div className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full">
-                                                            <PlayCircle size={12} /> In Progress
+                                                    {/* Where the batch is up to: the cutting, the
+                                                        ready stock and the leftover roll, each
+                                                        only where it applies. A batch nobody has
+                                                        started yet says nothing. */}
+                                                    {batchPills(batch).length > 0 && (
+                                                        <div className="mt-2 flex flex-wrap gap-1.5">
+                                                            {batchPills(batch).map((p) => {
+                                                                const PillIcon = PILL_TONE[p.tone].icon;
+                                                                return (
+                                                                    <span
+                                                                        key={p.key}
+                                                                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${PILL_TONE[p.tone].cls}`}
+                                                                    >
+                                                                        <PillIcon size={12} /> {p.label}
+                                                                    </span>
+                                                                );
+                                                            })}
                                                         </div>
                                                     )}
                                                 </button>
