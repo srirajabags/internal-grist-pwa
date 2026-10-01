@@ -19,7 +19,8 @@ import {
     BATCH_TYPES, HARD_START_DATE, OUTPUT_TYPE, PRIORITY_LABEL, buildPlan, COMPONENT_TYPES,
     effectiveQty, needsPieceConversion, cannotConvertQty, cannotSizePieces, cannotSizePatty, BUNDLE_SIZE,
     typeNeedsSubOrder, missingInfoFields, outputCount, overageRate, outputSizeLabel, OUTPUT_COUNT_UNIT,
-    missingOutputCodes, machineLoads, rollsPerRun, isFastMovingSize, isUnverifiedSize,
+    missingOutputCodes, missingCodesCsvRows, MISSING_CODES_CSV_HEADERS,
+    missingItemsCsvRows, MISSING_ITEMS_CSV_HEADERS, machineLoads, rollsPerRun, isFastMovingSize, isUnverifiedSize,
     isModelNumberSheet,
     ROLL_CORE_ALLOWANCE, withCoreAllowance,
     ROLLS_PER_JOB_NOTICE,
@@ -1630,8 +1631,16 @@ const UnmatchedPanel = ({ subOrders, batchType, unit, onViewForm }) => (
 // codes to create, in the catalogue's own wording, so the fix is a copy and paste
 // rather than a puzzle: every one of these is a row somebody has to add to
 // Inventory_Item_Codes before the floor can book what it cuts.
-const MissingCodesPanel = ({ missing, onViewForm }) => {
+const MissingCodesPanel = ({ missing, batchType, unit, onViewForm }) => {
     if (!missing || missing.length === 0) return null;
+    // Ready for Grist's "Import from file": codes first, since each item names
+    // its code and Grist can only link it once the code exists.
+    const slug = `${String(batchType || '').trim().toLowerCase().replace(/\s+/g, '-')}_${stamp()}`;
+    const downloadCodes = () => downloadCsv(`1-inventory-item-codes_${slug}.csv`,
+        MISSING_CODES_CSV_HEADERS, missingCodesCsvRows(missing));
+    const downloadItems = () => downloadCsv(`2-inventory-items_${slug}.csv`,
+        MISSING_ITEMS_CSV_HEADERS, missingItemsCsvRows(missing));
+    const csvButton = 'flex items-center gap-1 text-[11px] font-semibold text-red-800 hover:text-red-900';
     return (
         <div className="rounded-xl border border-red-200 bg-red-50/70 p-3">
             <p className="text-sm font-bold text-red-900">
@@ -1639,28 +1648,33 @@ const MissingCodesPanel = ({ missing, onViewForm }) => {
             </p>
             <p className="text-[11px] text-red-800 mt-0.5 mb-2">
                 These jobs would produce articles the catalogue has no code for, so the floor could not
-                book what it made. Add them to Inventory_Item_Codes and re-run the plan. Jobs cannot be
-                created until then.
+                book what it made. Import both CSVs into Grist, codes first, then re-run the plan.
+                Jobs cannot be created until then.
             </p>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 mb-2">
+                <button type="button" onClick={downloadCodes} className={csvButton}>
+                    <Download size={13} /> 1. Inventory_Item_Codes CSV
+                </button>
+                <button type="button" onClick={downloadItems} className={csvButton}>
+                    <Download size={13} /> 2. Inventory_Items CSV
+                </button>
+            </div>
             <div className="space-y-1.5">
                 {missing.map((m) => (
                     <div key={m.key} className="bg-white rounded-lg border border-red-200 px-2.5 py-1.5">
                         <p className="font-mono text-[11px] font-semibold text-slate-800 break-all">{m.label}</p>
-                        <p className="text-[10px] text-slate-500 mt-0.5">
+                        <p className="text-[10px] text-slate-500 mt-0.5 mb-1">
                             needed by {m.count} sub-order{m.count === 1 ? '' : 's'}
-                            {onViewForm && m.subOrders?.length > 0 && (
-                                <>
-                                    {' · '}
-                                    <button
-                                        type="button"
-                                        onClick={() => onViewForm(m.subOrders[0])}
-                                        className="font-semibold text-teal-700 hover:text-teal-800"
-                                    >
-                                        see one
-                                    </button>
-                                </>
-                            )}
                         </p>
+                        {/* Every one of them, with its form: "see one" handed the
+                            whole sub-order to a viewer that wants its Order_Form,
+                            so the click did nothing. */}
+                        <div className="flex flex-wrap gap-1.5">
+                            {m.subOrders.map((so, k) => (
+                                <SubOrderPill key={`${so.id}-${k}`} so={so} batchType={batchType} unit={unit}
+                                    tone="red" onViewForm={onViewForm} />
+                            ))}
+                        </div>
                     </div>
                 ))}
             </div>
@@ -2116,7 +2130,7 @@ const PlanSection = ({ batchType, plan, missingCodes = [], onViewForm, itemNames
                         </div>
                         );
                     })}
-                    <MissingCodesPanel missing={missingCodes} onViewForm={onViewForm} />
+                    <MissingCodesPanel missing={missingCodes} batchType={batchType} unit={unit} onViewForm={onViewForm} />
                     <AwaitingSheetsPanel subOrders={plan.awaitingSheets} batchType={batchType}
                         unit={unit} onViewForm={onViewForm} />
                     <ExcludedPanel subOrders={plan.excluded} batchType={batchType} unit={unit}

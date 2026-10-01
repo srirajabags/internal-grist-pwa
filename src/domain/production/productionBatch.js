@@ -611,8 +611,13 @@ export const finishedSheetDims = (so) => {
 //   'ignore' -> not enough / junk geometry; drop the sub-order silently.
 //   null     -> a genuine requirement that no available roll width can satisfy;
 //               the caller flags it during allocation so it is not lost.
+//
+// A sheet with no standard roll width can carry `_rollWidth`, an off-list width
+// chosen for it by offListRollWidths. It is honoured so that grouping and the
+// job's attributes see the same width the plan picked.
 export const requiredRollWidth = (batchType, so) => {
     if (SHEET_TYPES.has(batchType)) {
+        if (typeof so._rollWidth === 'number') return so._rollWidth;
         const dims = parseSheetSize(so.Sheet_Size);
         if (!dims) return 'ignore';
         const [w, h] = dims;
@@ -635,6 +640,172 @@ export const requiredRollWidth = (batchType, so) => {
         return nextRollWidth(target, rolls);
     }
     return null;
+};
+
+// Roll widths for sheets that no standard width can cut, chosen together.
+//
+// The standard widths come first, always. A sheet that has none of them on
+// either side is cut from a roll as wide as one of its own sides: a 14x21 sheet
+// from a 14" roll or a 21" one. Which side is chosen across all such sheets at
+// once, and in this order:
+//
+//   1. as much of the requirement as the shelf can actually fulfil. Merging
+//      14x21 and 14x20 into one 14" job is no saving when the only 14" roll
+//      covers just one of them and a 20" roll is sitting there for the other --
+//      the group is broken rather than left half-planned.
+//   2. as few jobs as possible: 14x21 and 21x22 share a 21" job rather than
+//      taking one each.
+//   3. the narrower rolls.
+//
+// Fulfilment is judged by allocateStock itself on a scratch copy of the stock,
+// so it counts what the plan will count: whole sub-orders, ready sheets, the
+// core allowance. Jobs are split by material, colour and GSM regardless, so the
+// choice is made separately within each. Returns copies of the sub-orders with
+// `_rollWidth` set; a sheet size that cannot be read is left out.
+export const offListRollWidths = (batchType, subOrders, inventory = []) => {
+    const buckets = new Map();
+    for (const so of subOrders) {
+        const dims = parseSheetSize(so.Sheet_Size);
+        if (!dims) continue;
+        const a = groupAttrs(batchType, so);
+        const key = [norm(a.material), norm(a.colour), norm(a.gsm)].join(' | ');
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key).push({ so, sides: [...new Set(dims)].sort((x, y) => x - y) });
+    }
+    const out = [];
+    for (const lines of buckets.values()) {
+        const widths = bestOffListWidths(batchType, lines, inventory);
+        lines.forEach(({ so }, i) => out.push({ ...so, _rollWidth: widths[i] }));
+    }
+    return out;
+};
+
+// Past this many sheets that could go either way, every combination is no longer
+// tried; the best cover is improved one sheet at a time instead.
+const OFF_LIST_EXHAUSTIVE = 10;
+
+const bestOffListWidths = (batchType, lines, inventory) => {
+    const sideLists = lines.map((l) => l.sides);
+    // Rolls of any other width cannot be the answer, and need not be copied for
+    // every combination tried.
+    const candidates = new Set(sideLists.flat().map(String));
+    const stock = inventory.filter((r) => norm(r.type) !== 'ROLL' || candidates.has(norm(r.width)));
+    const score = (widths) => scoreOffList(batchType, lines, widths, stock);
+
+    // Fewest jobs, with no regard to stock: the starting point, and the answer
+    // when the shelf has nothing for any of them.
+    const cover = fewestWidths(sideLists);
+    const start = sideLists.map((sides) => sides.find((s) => cover.has(s)));
+
+    const free = sideLists.map((sides, i) => (sides.length > 1 ? i : -1)).filter((i) => i >= 0);
+    if (free.length <= OFF_LIST_EXHAUSTIVE) {
+        let best = null;
+        for (let mask = 0; mask < 2 ** free.length; mask++) {
+            const widths = sideLists.map((sides) => sides[0]);
+            free.forEach((i, bit) => { if (mask & (1 << bit)) widths[i] = sideLists[i][1]; });
+            const sc = score(widths);
+            if (!best || better(sc, best.sc)) best = { widths, sc };
+        }
+        return best.widths;
+    }
+    // Hill-climb: move one sheet to its other side while that improves things.
+    let widths = start;
+    let sc = score(widths);
+    for (let improved = true, rounds = 0; improved && rounds < 50; rounds++) {
+        improved = false;
+        for (const i of free) {
+            const trial = [...widths];
+            trial[i] = sideLists[i].find((s) => s !== widths[i]);
+            const tsc = score(trial);
+            if (better(tsc, sc)) { widths = trial; sc = tsc; improved = true; }
+        }
+    }
+    return widths;
+};
+
+// What a choice of widths would get from the shelf, planned as buildPlan plans
+// it: largest group first, each drawing on what the one before left.
+const scoreOffList = (batchType, lines, widths, inventory) => {
+    const groups = new Map();
+    lines.forEach(({ so }, i) => {
+        if (!groups.has(widths[i])) groups.set(widths[i], []);
+        groups.get(widths[i]).push({ ...so, _rollWidth: widths[i] });
+    });
+    const stock = inventory.map((r) => ({ ...r }));
+    const stockById = new Map(stock.map((r) => [r.itemId, r]));
+    let fulfilled = 0;
+    const ordered = [...groups.values()]
+        .map((sos) => ({ sos, req: sos.reduce((t, so) => t + effectiveQty(batchType, so), 0) }))
+        .sort((a, b) => b.req - a.req);
+    for (const { sos } of ordered) {
+        // As buildPlan does: a model-number sheet decides how the group looks for stock.
+        const attrs = groupAttrs(batchType, sos.find(isModelNumberSheet) || sos[0]);
+        const alloc = allocateStock(attrs, sos, stock, batchType);
+        consumePicks(stockById, alloc.picks);
+        fulfilled += alloc.fulfilledQty;
+    }
+    return {
+        fulfilled,
+        jobs: groups.size,
+        widths: [...groups.keys()].sort((a, b) => a - b),
+        narrowSides: widths.filter((w, i) => w === lines[i].sides[0]).length
+    };
+};
+
+const better = (a, b) => {
+    if (Math.abs(a.fulfilled - b.fulfilled) > 1e-6) return a.fulfilled > b.fulfilled;
+    if (a.jobs !== b.jobs) return a.jobs < b.jobs;
+    for (let i = 0; i < a.widths.length; i++) {
+        if (a.widths[i] !== b.widths[i]) return a.widths[i] < b.widths[i];
+    }
+    return a.narrowSides > b.narrowSides;
+};
+
+// Take what a group's picks consume off the working copy of the shelf. A roll
+// leaves the shelf whole, so it is committed to its job entirely -- deducting
+// only the slice it will use let the very same roll be handed to a second job in
+// the same run.
+const consumePicks = (stockById, picks) => {
+    for (const p of picks) {
+        const row = stockById.get(p.itemId);
+        if (!row) continue;
+        row.availWeight = p.whole != null ? 0 : num(row.availWeight) - p.take;
+    }
+};
+
+// The smallest set of widths that includes a side of every sheet, narrowest set
+// first among ties. Exact by enumeration: a batch's off-list sheets come in a
+// handful of sizes. Past that, fall back to taking the width that covers the
+// most sheets still uncovered.
+const fewestWidths = (sideLists) => {
+    const widths = [...new Set(sideLists.flat())].sort((a, b) => a - b);
+    const covers = (set) => sideLists.every((sides) => sides.some((s) => set.has(s)));
+    if (widths.length <= 16) {
+        // Combinations of size k, in ascending order, so the first cover found is
+        // both the smallest and the narrowest.
+        const pick = (start, k, acc) => {
+            if (acc.length === k) return covers(new Set(acc)) ? new Set(acc) : null;
+            for (let i = start; i <= widths.length - (k - acc.length); i++) {
+                const hit = pick(i + 1, k, [...acc, widths[i]]);
+                if (hit) return hit;
+            }
+            return null;
+        };
+        for (let k = 1; k <= widths.length; k++) {
+            const hit = pick(0, k, []);
+            if (hit) return hit;
+        }
+    }
+    const chosen = new Set();
+    let left = sideLists;
+    while (left.length) {
+        const best = widths
+            .map((w) => ({ w, n: left.filter((sides) => sides.includes(w)).length }))
+            .sort((a, b) => b.n - a.n || a.w - b.w)[0];
+        chosen.add(best.w);
+        left = left.filter((sides) => !sides.includes(best.w));
+    }
+    return chosen;
 };
 
 // The size of the thing a job actually turns out, for the review and the job
@@ -1254,6 +1425,46 @@ export const missingOutputCodes = (batchType, groups, itemCodes) => {
         }
     }
     return [...wanted.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+};
+
+// The missing codes as two CSVs for Grist's import: the codes first, then the
+// Inventory_Items rows that stock is booked against, one per code. Completion
+// books output onto an item, never onto a bare code, so a code alone still
+// leaves the floor unable to book what it made.
+//
+// Codes: only the data columns. Item_Code is a formula there and writes itself
+// from them.
+export const MISSING_CODES_CSV_HEADERS = ['Type', 'Material', 'Colour', 'GSM', 'Width_Inches_', 'Height_Inches_'];
+const csvSize = (v) => (isSet(v) && num(v) > 0 ? String(num(v)) : '');
+const codeCells = (spec) => [spec.type, spec.material, spec.colour, spec.gsm, csvSize(spec.w), csvSize(spec.h)];
+export const missingCodesCsvRows = (missing) => (missing || []).map(({ spec }) => codeCells(spec));
+
+// Items: Item_Code is a reference, and Grist matches it on import by the code's
+// text -- so it is written here exactly as the Item_Code formula will write it
+// from the codes CSV above, and resolves once that has been imported.
+export const MISSING_ITEMS_CSV_HEADERS = ['Item_ID', 'Item_Code'];
+export const missingItemsCsvRows = (missing) => (missing || []).map(({ spec }) => [
+    itemIdFor(spec), itemCodeText(spec)
+]);
+
+// Inventory_Item_Codes.Item_Code, as its formula writes it.
+const itemCodeText = (spec) => {
+    const [type, material, colour, gsm, w, h] = codeCells(spec);
+    return `${type} - ${material} - ${colour} - ${gsm}GSM (${h ? `${w}x${h}` : w})`;
+};
+
+// The godown's way of naming a finished item: SHEET_NW_REGULAR_IVORY_110_14X21,
+// a 4.5" patty as 4_5. A model-number sheet is named for its model alone --
+// MODELSHEET_K9_16X19 -- since it is always white NW VIRGIN. A 16x21 one is the
+// sheet for a 16x19 stick bag, and the godown says so: MODELSHEET_W1_16X21_STICK.
+// The code has no field for it; the size is the only thing that carries it.
+export const itemIdFor = (spec) => {
+    const [type, material, colour, gsm, w, h] = codeCells(spec);
+    const size = h ? `${w}x${h}` : w;
+    const parts = norm(type) === 'MODEL NUMBER SHEET'
+        ? ['MODELSHEET', colour, size, ...(w === '16' && h === '21' ? ['STICK'] : [])]
+        : [type, material, colour, gsm, size];
+    return parts.join('_').toUpperCase().replace(/[\s.]+/g, '_');
 };
 
 // The catalogue's own way of writing a code, so what the review asks for can be
@@ -1960,6 +2171,7 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, override
     const placeholderColour = [];  // colour still says MATCHING COLOUR
     const unverifiedSheet = [];    // sheet size still carries its "#" 
     const groupable = [];
+    const offList = [];            // sheets no standard roll width can cut
     for (const so of eligible) {
         // A pieces-quoted order with no GSM (or a patty missing strip width / bag
         // dims / GSM) can't be sized; flag it rather than grouping a zero quantity.
@@ -1985,9 +2197,13 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, override
         if (!usesRollWidth) { groupable.push(so); continue; }
         const rw = requiredRollWidth(batchType, so);
         if (rw === 'ignore') continue;
+        if (rw == null && SHEET_TYPES.has(batchType)) { offList.push(so); continue; }
         if (rw == null) { unmatched.push(so); continue; }
         groupable.push(so);
     }
+    // Only once every standard-width sheet is placed: the off-list widths are
+    // chosen across what is left: what the shelf can fulfil, then fewest jobs.
+    groupable.push(...offListRollWidths(batchType, offList, inventory));
 
     const byKey = new Map();
     for (const so of groupable) {
@@ -2031,14 +2247,7 @@ export const buildPlan = ({ batchType, subOrders, itemCodes, inventory, override
             const manualRejected = candidates.filter((r) => !canForceRoll(r, g.attrs)).map((r) => r.itemId);
             const forced = candidates.filter((r) => canForceRoll(r, g.attrs));
             const alloc = allocateStock(g.attrs, g.subOrders, stock, batchType, undefined, forced);
-            for (const p of alloc.picks) {
-                const row = stockById.get(p.itemId);
-                if (!row) continue;
-                // A roll leaves the shelf whole, so it is committed to this job
-                // entirely -- deducting only the slice it will use let the very
-                // same roll be handed to a second job in the same run.
-                row.availWeight = p.whole != null ? 0 : num(row.availWeight) - p.take;
-            }
+            consumePicks(stockById, alloc.picks);
             // Roll-width jobs are identified by the roll they consume (one roll code
             // per group), so output codes can be resolved per model at completion.
             //
