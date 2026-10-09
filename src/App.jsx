@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users, Boxes, Warehouse, Printer, Scissors, Zap, PackageSearch, CheckCircle2 } from 'lucide-react';
+import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users, Boxes, Warehouse, Printer, Scissors, Zap, PackageSearch, CheckCircle2, ClipboardList } from 'lucide-react';
 import SqlVisualization from './components/SqlVisualization';
 import DashboardList from './components/DashboardList';
 import DashboardView from './components/DashboardView';
@@ -409,6 +409,14 @@ const HomePage = ({ onNavigate, user, onLogout, impersonateEmail, setImpersonate
       hoverColor: 'hover:bg-indigo-700'
     },
     {
+      id: 'reports',
+      title: 'Reports',
+      description: 'Ready-made reports, organised into folders',
+      icon: ClipboardList,
+      color: 'bg-sky-600',
+      hoverColor: 'hover:bg-sky-700'
+    },
+    {
       id: 'factory',
       title: 'Factory View',
       description: 'View today\'s factory updates',
@@ -601,6 +609,7 @@ import ProductionJobsView from './pages/ProductionJobsView';
 import InventoryView from './pages/InventoryView';
 import StageJobsView from './pages/StageJobsView';
 import OrderTrackingView from './pages/OrderTrackingView';
+import ReportsView from './pages/ReportsView';
 
 // Design Confirmation View Component (Placeholder)
 const DesignConfirmationView = ({ onBack, user, onLogout, impersonateEmail, setImpersonateEmail, teamMembers, loadingTeamMembers }) => {
@@ -2867,6 +2876,9 @@ export default function App() {
             />
           }
         />
+        <Route path="/reports" element={<ReportsView onBack={() => navigate('/')} getHeaders={getHeaders} getUrl={getUrl} />} />
+        <Route path="/reports/:folderId" element={<ReportsView onBack={() => navigate('/')} getHeaders={getHeaders} getUrl={getUrl} />} />
+        <Route path="/reports/:folderId/:reportId" element={<ReportsView onBack={() => navigate('/')} getHeaders={getHeaders} getUrl={getUrl} />} />
         <Route path="/sql" element={<SQLAnalysisView onBack={() => navigate('/dashboards')} user={derivedUser} teamId={derivedUser?.id} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
         <Route path="/dashboards" element={<DashboardList onNavigate={(id) => navigate(`/dashboards/${id}`)} onBack={() => navigate('/')} teamId={derivedUser?.id} getHeaders={getHeaders} getUrl={getUrl} user={derivedUser} userRoles={currentUserRoles} godMode={godMode} />} />
         <Route path="/dashboards/:id" element={<DashboardWrapper onBack={() => navigate('/dashboards')} getHeaders={getHeaders} getUrl={getUrl} teamId={derivedUser?.id} user={derivedUser} />} />

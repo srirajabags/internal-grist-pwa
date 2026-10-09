@@ -14,6 +14,9 @@ export const PAGE_ROLE_REQUIREMENTS = {
   design: ['DESIGN CONFIRMATION'],
   printing: ['FACTORY PRINTING'],
   stitching: ['FACTORY STITCHING'],
+  // Batch reports read production and godown figures, so they go to the people
+  // who run those, not to every logged-in user.
+  reports: ['FACTORY PRODUCTION', 'FACTORY INVENTORY'],
 };
 
 // PWA GOD is a maintenance role, not a licence to browse: it unlocks everything
