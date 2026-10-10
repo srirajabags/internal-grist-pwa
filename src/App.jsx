@@ -22,7 +22,7 @@ import { generateAndDownloadDiagnosticReport } from './services/diagnosticServic
 import { fetchDeployedBuild, isDifferentBuild, applyUpdate } from './services/appUpdate';
 
 // Import role-based page access control
-import { canAccessPage, hasGodRole, PAGE_ROLE_REQUIREMENTS } from './utils/pageAccess';
+import { canAccessPage, canAccessPath, hasGodRole, isGatedPath } from './utils/pageAccess';
 
 // Simple UI Components
 
@@ -602,6 +602,8 @@ const DashboardWrapper = (props) => {
 };
 
 import TelecallerView from './pages/TelecallerView';
+import TelecallerHome from './pages/TelecallerHome';
+import ReferralEnquiriesView from './pages/ReferralEnquiriesView';
 import TelecallerCustomerView from './pages/TelecallerCustomerView';
 import SalesmanView from './pages/SalesmanView';
 import SalesmanCustomerView from './pages/SalesmanCustomerView';
@@ -2414,17 +2416,17 @@ const UnauthorisedScreen = () => {
   );
 };
 
-// Central route guard: wraps ALL routes and derives the page id from the URL's
-// first path segment (e.g. "/salesman/customer/1" -> "salesman"). Any page added
-// to PAGE_ROLE_REQUIREMENTS is automatically gated here — no per-route wiring
-// needed. Ungated pages pass straight through. While roles are still loading a
+// Central route guard: wraps ALL routes and checks the URL against both the page
+// rule (first segment, e.g. "/salesman/customer/1" -> "salesman") and, where one
+// exists, the subpage rule (first two, e.g. "telecaller/referrals"). Anything
+// added to PAGE_ROLE_REQUIREMENTS or SUBPAGE_ROLE_REQUIREMENTS is gated here — no
+// per-route wiring needed. Ungated pages pass straight through. While roles are still loading a
 // gated page shows a spinner rather than gating prematurely.
 const RouteAccessGuard = ({ userRoles, rolesLoading, godMode, children }) => {
   const location = useLocation();
-  const pageId = location.pathname.split('/')[1] || '';
 
-  // Not a gated page -> render normally.
-  if (!(pageId in PAGE_ROLE_REQUIREMENTS)) {
+  // Not a gated page or subpage -> render normally.
+  if (!isGatedPath(location.pathname)) {
     return children;
   }
 
@@ -2436,7 +2438,8 @@ const RouteAccessGuard = ({ userRoles, rolesLoading, godMode, children }) => {
     );
   }
 
-  if (!canAccessPage(pageId, userRoles, godMode)) {
+  // Page and subpage rules both apply (e.g. /telecaller/referrals).
+  if (!canAccessPath(location.pathname, userRoles, godMode)) {
     return <UnauthorisedScreen />;
   }
 
@@ -2783,11 +2786,20 @@ export default function App() {
       <RouteAccessGuard userRoles={currentUserRoles} rolesLoading={rolesLoading} godMode={godMode}>
       <Routes>
         <Route path="/" element={<HomePage onNavigate={(path) => navigate(`/${path}`)} user={derivedUser} onLogout={handleLogout} impersonateEmail={impersonateEmail} setImpersonateEmail={setImpersonateEmail} teamMembers={teamMembers} loadingTeamMembers={loadingTeamMembers} showConsole={showConsole} setShowConsole={setShowConsole} getHeaders={getHeaders} getUrl={getUrl} userRoles={currentUserRoles} godMode={godMode} setGodMode={setGodMode} />} />
+        {/* /telecaller is a hub; each subpage has its own roles (pageAccess.js). */}
         <Route
           path="/telecaller"
+          element={<TelecallerHome onBack={() => navigate('/')} onNavigate={navigate} userRoles={currentUserRoles} godMode={godMode} />}
+        />
+        <Route
+          path="/telecaller/referrals"
+          element={<ReferralEnquiriesView onBack={() => navigate('/telecaller')} user={derivedUser} getHeaders={getHeaders} getUrl={getUrl} />}
+        />
+        <Route
+          path="/telecaller/calls"
           element={
             <TelecallerView
-              onBack={() => navigate('/')}
+              onBack={() => navigate('/telecaller')}
               user={derivedUser}
               teamId={derivedUser?.id}
               onLogout={handleLogout}
@@ -2882,7 +2894,7 @@ export default function App() {
         <Route path="/sql" element={<SQLAnalysisView onBack={() => navigate('/dashboards')} user={derivedUser} teamId={derivedUser?.id} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
         <Route path="/dashboards" element={<DashboardList onNavigate={(id) => navigate(`/dashboards/${id}`)} onBack={() => navigate('/')} teamId={derivedUser?.id} getHeaders={getHeaders} getUrl={getUrl} user={derivedUser} userRoles={currentUserRoles} godMode={godMode} />} />
         <Route path="/dashboards/:id" element={<DashboardWrapper onBack={() => navigate('/dashboards')} getHeaders={getHeaders} getUrl={getUrl} teamId={derivedUser?.id} user={derivedUser} />} />
-        <Route path="/telecaller/customer/:customerId" element={<TelecallerCustomerView onBack={() => navigate('/telecaller')} user={derivedUser} getHeaders={getHeaders} getUrl={getUrl} />} />
+        <Route path="/telecaller/customer/:customerId" element={<TelecallerCustomerView onBack={() => navigate('/telecaller/calls')} user={derivedUser} getHeaders={getHeaders} getUrl={getUrl} />} />
         <Route path="/salesman" element={<SalesmanView onBack={() => navigate('/')} user={derivedUser} teamId={derivedUser?.id} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
         <Route path="/salesman/customer/:customerId" element={<SalesmanCustomerView onBack={() => navigate('/salesman')} user={derivedUser} getHeaders={getHeaders} getUrl={getUrl} />} />
       </Routes>
