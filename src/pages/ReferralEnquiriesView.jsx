@@ -13,7 +13,7 @@ const PAGE = 20;
 // formulas (see railway-functions/referral-portal-proxy/setup-grist-tables.mjs).
 const QUERY = `
 SELECT e.id, e.Enquiry_Ref, e.Business_Name, e.Contact_Name, e.Phone, e.City, e.Requirement,
-       e.Status, e.Submitted_At, e.Notes, e.Priority, e.Priority_Rank,
+       e.Status, e.Submitted_At, e.Notes, e.Priority, e.Priority_Rank, e.Source,
        e.Customer, e.Matched_Customer, e.Existing_Customer,
        a.Referral_Code, a.Lead_Score, a.Lead_Quality, a.Status AS Affiliate_Status,
        mc.Shop_Name AS Matched_Shop, cc.Shop_Name AS Customer_Shop
@@ -184,8 +184,13 @@ const EnquiryCard = ({ row, busy, error, who, onSave }) => {
                 {row.Requirement && <p className="mt-1 text-sm text-slate-700 whitespace-pre-wrap line-clamp-3">{row.Requirement}</p>}
             </div>
 
+            {/* Added by the affiliate: the buyer did not fill a form, so open the call by
+                saying who passed their number on. */}
             <p className="text-xs text-slate-500">
-                Via <span className="font-mono font-medium text-slate-700">{row.Referral_Code}</span>
+                {row.Source === 'Added by affiliate'
+                    ? <><span className="mr-1 rounded bg-violet-50 px-1.5 py-0.5 font-medium text-violet-700">added by affiliate</span>for</>
+                    : 'Via link'}{' '}
+                <span className="font-mono font-medium text-slate-700">{row.Referral_Code}</span>
                 {' · '}lead quality <span className="font-medium text-slate-700">{row.Lead_Quality || 'Not rated yet'}</span>
                 {row.Affiliate_Status === 'Blocked' && <span className="ml-1 rounded bg-red-50 px-1.5 py-0.5 font-medium text-red-700">affiliate on hold</span>}
             </p>
