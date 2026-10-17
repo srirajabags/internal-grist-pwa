@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { X, Loader2, AlertCircle, ArrowDownLeft, ArrowUpRight, Sparkles, Check, ShieldCheck, Factory, Trash2 } from 'lucide-react';
+import { X, Loader2, AlertCircle, ArrowDownLeft, ArrowUpRight, Sparkles, Check, ShieldCheck, Factory, Trash2, UserCheck } from 'lucide-react';
 import { ItemVisual } from './itemVisuals';
 import HoldToAct, { DESTRUCTIVE_HOLD_MS } from './HoldToAct';
 import ChipRow from './FilterChips';
 import { passes, toggleIn, optionsOf } from '../utils/chipFilters';
 import { typeName } from '../domain/inventory/itemForms';
 import { num, dayKey, changeText, isOutward, toneFor, attrText, countUnitFor } from '../domain/inventory/txnDisplay';
+import { canAcknowledge } from '../domain/inventory/ackPermission';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 const TXN_TABLE = 'Inventory_Transactions';
@@ -15,8 +16,10 @@ const iconFor = (type) => TYPE_ICON[String(type || '').toUpperCase()] || ArrowDo
 
 // Everything booked into the godown that the incharge has not signed off yet.
 // Until a transaction is acknowledged it does not count towards stock, so this is
-// the queue that keeps the inventory figures honest.
-const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
+// the queue that keeps the inventory figures honest. Entries the viewer booked
+// themselves stay listed but cannot be signed off here -- someone else has to,
+// unless the viewer owns the doc (see ackPermission).
+const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl, teamId, ownerExempt = false }) => {
     const [txns, setTxns] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -43,7 +46,7 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
                        ic.Colour AS col, ic.GSM AS gsm,
                        ic.Width_Inches_ AS w, ic.Height_Inches_ AS h,
                        t.Production_Job AS jobId, j.Job_ID AS jobName,
-                       bt.jtype AS jobType, tm.Name AS who
+                       bt.jtype AS jobType, tm.Name AS who, t.Created_by AS creatorId
                 FROM ${TXN_TABLE} t
                 LEFT JOIN Inventory_Items it ON it.id = t.Item_ID
                 LEFT JOIN Inventory_Item_Codes ic ON ic.id = t.Item_Code
@@ -126,7 +129,9 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
         }
     };
 
-    const remaining = txns.filter((t) => !doneIds.includes(t.id) && !rejectedIds.includes(t.id)).length;
+    const open = txns.filter((t) => !doneIds.includes(t.id) && !rejectedIds.includes(t.id));
+    const remaining = open.length;
+    const awaitingOthers = open.filter((t) => !canAcknowledge(t.creatorId, teamId, ownerExempt)).length;
 
     // A transaction with no job behind it is a godown correction, and reviewing
     // those on their own is worth a chip of its own rather than no chip at all.
@@ -160,6 +165,7 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
                                 : filtering
                                     ? `${shown.length} of ${remaining} shown · not counted in stock yet`
                                     : `${remaining} transaction${remaining !== 1 ? 's' : ''} not counted in stock yet`}
+                            {!loading && awaitingOthers > 0 && ` · ${awaitingOthers} booked by you need someone else`}
                         </p>
                     </div>
                     <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1 shrink-0"><X size={20} /></button>
@@ -219,6 +225,7 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
                                 const unit = countUnitFor(t.itype, t.name);
                                 const done = doneIds.includes(t.id);
                                 const rejected = rejectedIds.includes(t.id);
+                                const mayAck = canAcknowledge(t.creatorId, teamId, ownerExempt);
                                 // Against the filtered list: reading the day off the
                                 // unfiltered queue printed headings for days that
                                 // had nothing under them once a filter was on.
@@ -282,10 +289,18 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
                                                             icon={Trash2}
                                                             tone="rose"
                                                         />
-                                                        <HoldToAct
-                                                            busy={savingId === t.id}
-                                                            onConfirm={() => acknowledge(t.id)}
-                                                        />
+                                                        {mayAck ? (
+                                                            <HoldToAct
+                                                                busy={savingId === t.id}
+                                                                onConfirm={() => acknowledge(t.id)}
+                                                            />
+                                                        ) : (
+                                                            <span
+                                                                title="You booked this entry, so someone else has to acknowledge it."
+                                                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-slate-600 bg-slate-100 ring-1 ring-slate-200">
+                                                                <UserCheck size={14} /> Needs someone else
+                                                            </span>
+                                                        )}
                                                     </>
                                                 )}
                                             </div>
@@ -301,6 +316,7 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl }) => {
                     <p className="text-[11px] text-slate-400">
                         Hold a button until it fills — a stray tap does nothing. Acknowledged stock counts
                         immediately; rejecting deletes the entry, and takes a longer hold.
+                        {!ownerExempt && ' An entry you booked yourself has to be acknowledged by someone else.'}
                     </p>
                 </div>
             </div>

@@ -20,6 +20,7 @@ import { ItemVisual, Dim } from '../components/itemVisuals';
 import { colourToCss, itemForm, typeName, FORM_LABEL } from '../domain/inventory/itemForms';
 import { SHEET_FORMS, PIECES_PER_BUNDLE, pieceKg, countToKg, primaryUnitFor } from '../domain/inventory/txnDisplay';
 import { downloadCsv } from '../utils/csvFile';
+import { fetchIsDocOwner } from '../grist/docAccess';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 
@@ -544,7 +545,7 @@ const InventoryTable = ({ rows, tab, colFilters, options, onColToggle, onColClea
     );
 };
 
-const InventoryView = ({ onBack, getHeaders, getUrl }) => {
+const InventoryView = ({ onBack, getHeaders, getUrl, user }) => {
     const [tab, setTab] = useState('code');
     const [rows, setRows] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -562,7 +563,12 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     // Transactions the incharge has not signed off yet — they do not count towards
     // stock, so the queue is surfaced as an action button while any are waiting.
     const [pendingAck, setPendingAck] = useState(0);
+    // Of those, the ones this person booked: someone else has to sign them off,
+    // so they are not counted as waiting on this person -- unless they own the doc.
+    const [pendingOwn, setPendingOwn] = useState(0);
+    const [ownerExempt, setOwnerExempt] = useState(false);
     const [ackOpen, setAckOpen] = useState(false);
+    const teamId = num(user?.id);
     // Roll being booked in or out, with the direction: { row, mode }.
     const [adjusting, setAdjusting] = useState(null);
     // An item code covers many physical rolls; booking against one means saying
@@ -641,14 +647,18 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                 method: 'POST',
                 headers: { ...headers, 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    sql: `SELECT count(*) AS n FROM Inventory_Transactions
+                    sql: `SELECT count(*) AS n, COALESCE(SUM(Created_by = ?), 0) AS own
+                          FROM Inventory_Transactions
                           WHERE Incharge_Ack IS NULL OR Incharge_Ack = 0`,
-                    args: []
+                    // No Team id yet: match nothing rather than every blank creator.
+                    args: [teamId || -1]
                 })
             });
             if (!res.ok) return;
             const data = await res.json();
-            setPendingAck(num((data.records || [])[0]?.fields?.n));
+            const fields = (data.records || [])[0]?.fields;
+            setPendingAck(num(fields?.n));
+            setPendingOwn(num(fields?.own));
         } catch {
             // The queue button is an extra; the inventory list stands on its own.
         }
@@ -658,6 +668,14 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
     // views of it, so after a write the tab you are not looking at is wrong too,
     // and switching to it should fetch rather than show the figure from before the
     // booking. A plain tab change is soft -- nothing has changed underneath.
+    // The Team id arrives after the first load, and with it which entries are this
+    // person's own; impersonating someone changes both answers.
+    useEffect(() => {
+        fetchPendingAck();
+        fetchIsDocOwner(DOC_ID, getHeaders, getUrl).then(setOwnerExempt);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [teamId]);
+
     const refresh = (activeTab, hard = false) => {
         if (hard) cache.current = {};
         fetchData(activeTab);
@@ -980,6 +998,8 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
 
     // List/table view benefits from extra width on desktop.
     const wrap = view === 'list' ? 'max-w-6xl' : 'max-w-3xl';
+
+    const actionableAck = ownerExempt ? pendingAck : pendingAck - pendingOwn;
 
     return (
         <div className="min-h-screen bg-slate-50 flex flex-col">
@@ -1385,7 +1405,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
 
             {/* Urgent action: stock booked but not yet counted. Hidden entirely when
                 the queue is empty — there is nothing to open. */}
-            {pendingAck > 0 && !ackOpen && (
+            {pendingAck > 0 && !ackOpen && (actionableAck > 0 ? (
                 <button
                     onClick={() => setAckOpen(true)}
                     title={`${pendingAck} transaction(s) awaiting acknowledgement`}
@@ -1395,9 +1415,20 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                         <span className="absolute inline-flex w-full h-full rounded-full bg-white/40 animate-ping" />
                         <ShieldAlert size={20} className="relative" />
                     </span>
-                    <span className="text-sm">{pendingAck} to acknowledge</span>
+                    <span className="text-sm">{actionableAck} to acknowledge</span>
                 </button>
-            )}
+            ) : (
+                // Everything waiting is this person's own: nothing for them to do,
+                // so no alarm -- but they can still see what is held up.
+                <button
+                    onClick={() => setAckOpen(true)}
+                    title="Entries you booked, waiting for someone else to acknowledge"
+                    className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-2 pl-3 pr-4 py-3 rounded-full bg-white text-slate-700 ring-1 ring-slate-300 font-semibold shadow-lg hover:bg-slate-50 active:scale-95 transition"
+                >
+                    <ShieldAlert size={20} className="text-slate-400" />
+                    <span className="text-sm">{pendingOwn} waiting on others</span>
+                </button>
+            ))}
 
             {ackOpen && (
                 <PendingAckModal
@@ -1405,6 +1436,8 @@ const InventoryView = ({ onBack, getHeaders, getUrl }) => {
                     onAcknowledged={() => refresh(tab, true)}
                     getHeaders={getHeaders}
                     getUrl={getUrl}
+                    teamId={teamId}
+                    ownerExempt={ownerExempt}
                 />
             )}
 
