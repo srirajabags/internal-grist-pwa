@@ -563,8 +563,9 @@ const InventoryView = ({ onBack, getHeaders, getUrl, user }) => {
     // Transactions the incharge has not signed off yet — they do not count towards
     // stock, so the queue is surfaced as an action button while any are waiting.
     const [pendingAck, setPendingAck] = useState(0);
-    // Of those, the ones this person booked: someone else has to sign them off,
-    // so they are not counted as waiting on this person -- unless they own the doc.
+    // Of those, the ADD and LESS this person booked: someone else has to sign them
+    // off, so they are not counted as waiting on this person -- unless they own the
+    // doc. Their own NEW STOCK they may acknowledge, so it counts.
     const [pendingOwn, setPendingOwn] = useState(0);
     const [ownerExempt, setOwnerExempt] = useState(false);
     const [ackOpen, setAckOpen] = useState(false);
@@ -647,7 +648,7 @@ const InventoryView = ({ onBack, getHeaders, getUrl, user }) => {
                 method: 'POST',
                 headers: { ...headers, 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    sql: `SELECT count(*) AS n, COALESCE(SUM(Created_by = ?), 0) AS own
+                    sql: `SELECT count(*) AS n, COALESCE(SUM(Created_by = ? AND UPPER(TRIM(COALESCE(Transaction_Type, ''))) != 'NEW STOCK'), 0) AS own
                           FROM Inventory_Transactions
                           WHERE Incharge_Ack IS NULL OR Incharge_Ack = 0`,
                     // No Team id yet: match nothing rather than every blank creator.

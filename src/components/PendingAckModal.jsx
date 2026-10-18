@@ -18,7 +18,7 @@ const iconFor = (type) => TYPE_ICON[String(type || '').toUpperCase()] || ArrowDo
 // Until a transaction is acknowledged it does not count towards stock, so this is
 // the queue that keeps the inventory figures honest. Entries the viewer booked
 // themselves stay listed but cannot be signed off here -- someone else has to,
-// unless the viewer owns the doc (see ackPermission).
+// unless it is NEW STOCK or the viewer owns the doc (see ackPermission).
 const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl, teamId, ownerExempt = false }) => {
     const [txns, setTxns] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -131,7 +131,7 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl, teamId, 
 
     const open = txns.filter((t) => !doneIds.includes(t.id) && !rejectedIds.includes(t.id));
     const remaining = open.length;
-    const awaitingOthers = open.filter((t) => !canAcknowledge(t.creatorId, teamId, ownerExempt)).length;
+    const awaitingOthers = open.filter((t) => !canAcknowledge(t.creatorId, teamId, ownerExempt, t.type)).length;
 
     // A transaction with no job behind it is a godown correction, and reviewing
     // those on their own is worth a chip of its own rather than no chip at all.
@@ -225,7 +225,7 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl, teamId, 
                                 const unit = countUnitFor(t.itype, t.name);
                                 const done = doneIds.includes(t.id);
                                 const rejected = rejectedIds.includes(t.id);
-                                const mayAck = canAcknowledge(t.creatorId, teamId, ownerExempt);
+                                const mayAck = canAcknowledge(t.creatorId, teamId, ownerExempt, t.type);
                                 // Against the filtered list: reading the day off the
                                 // unfiltered queue printed headings for days that
                                 // had nothing under them once a filter was on.
@@ -316,7 +316,7 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl, teamId, 
                     <p className="text-[11px] text-slate-400">
                         Hold a button until it fills — a stray tap does nothing. Acknowledged stock counts
                         immediately; rejecting deletes the entry, and takes a longer hold.
-                        {!ownerExempt && ' An entry you booked yourself has to be acknowledged by someone else.'}
+                        {!ownerExempt && ' An ADD or LESS you booked yourself has to be acknowledged by someone else.'}
                     </p>
                 </div>
             </div>
