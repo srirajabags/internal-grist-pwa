@@ -11,6 +11,7 @@ import {
 } from '../domain/production/outputCode';
 import { codesQuery, itemsQuery } from '../grist/outputCatalogue';
 import { jobsClosedByFinishedCollection } from '../domain/production/finishedCollection';
+import { collectionLines as rawCollectionLines, uncollectedLines } from '../domain/production/rawCollection';
 import { batchPills, batchMatchesPills, pillFilterOptions } from '../domain/production/batchStage';
 
 // What a pill's meaning looks like: something still owed is a red cross, something
@@ -1974,14 +1975,27 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
             // a Location the by-location stock summaries never see the movement, so
             // it must always be set.
             // Some actions only set a flag — the stock has already moved.
-            const txnRecords = cfg.linesFor ? batch.jobs.flatMap((j) => cfg.linesFor(j, now)) : [];
+            let txnRecords = cfg.linesFor ? batch.jobs.flatMap((j) => cfg.linesFor(j, now)) : [];
+            // What this phone shows can be minutes old. Ask Grist what is already
+            // booked against these jobs and write only the rest, so a second phone
+            // -- or a retry after a half-finished attempt -- never books a roll twice.
+            let already = [];
+            if (cfg.skipBooked && txnRecords.length > 0) {
+                const booked = await journal.run(
+                    'Check which rolls are already booked out to these jobs',
+                    () => bookedCollections(batch.jobs.map((j) => j.id))
+                );
+                ({ toWrite: txnRecords, already } = uncollectedLines(txnRecords, booked));
+            }
             if (txnRecords.length > 0) {
                 await journal.run(
                     `Book ${txnRecords.length} ${cfg.type} inventory transaction(s) against this batch's jobs`,
                     () => writeRecords(TXN_TABLE, 'POST', { records: txnRecords })
                 );
             } else {
-                journal.skip('Book inventory transactions', 'This batch has no jobs to book against');
+                journal.skip('Book inventory transactions', already.length > 0
+                    ? 'Every roll is already booked out to these jobs'
+                    : 'This batch has no jobs to book against');
             }
 
             // 2. Mark the batch flag. Its timestamp is a trigger formula.
@@ -1993,6 +2007,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
             );
 
             await fetchData(true);
+            if (already.length > 0) setError(alreadyBookedText(already));
         } catch (err) {
             const message = err.message || String(err) || 'Unknown error occurred';
             console.error('Production Jobs (inventory action) Error:', message);
@@ -2009,46 +2024,49 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
         }
     };
 
-    // Collecting takes each assigned item off its own shelf, whole: a roll is
-    // never split at the godown, and Available_Weight_Kg_ is the sum of exactly
-    // these figures. One line per item, so every movement names the item it moved
-    // and the godown it left -- a single job-level line could do neither once a
-    // job draws on more than one item.
-    const collectionLines = (job, now) => {
-        // Only the raw stock. Finished stock never sits on the production floor as
-        // raw material -- it goes shelf-to-printing in one move, handled by its own
-        // action, so mixing it in here would book it out twice.
-        const assigned = job.invItemOptions || [];
-        const items = splitStock(assigned).raw;
-        const needKg = jobWorkPlan(job).totals.kg;
-        // A job whose stock is entirely ready-made has nothing on the roll trip.
-        // Falling through to the no-item line below booked a phantom LESS against
-        // no item at all, in whichever godown the job type guessed.
-        if (items.length === 0 && assigned.length > 0) return [];
-        if (items.length === 0) {
-            return [{
-                fields: {
-                    Item_ID: null,
-                    Production_Job: job.id,
-                    Transaction_Type: 'LESS',
-                    Weight_Kg_: roundWeight(needKg),
-                    Location: godownForJob(job),
-                    Transaction_Time: now
-                }
-            }];
+    // The LESS lines that take a job's rolls off the shelf; the rules are in
+    // domain/production/rawCollection.
+    const collectionLines = (job, now) => rawCollectionLines(job, jobWorkPlan(job).totals.kg, now);
+
+    // Every LESS already written against these jobs, and who wrote it. Read
+    // fresh from Grist, never from the page state, which is only as current as
+    // this phone's last refresh.
+    const bookedCollections = async (jobIds) => {
+        const ids = jobIds.filter(Number.isInteger);
+        if (ids.length === 0) return [];
+        const headers = await getHeaders();
+        const res = await fetch(getUrl(`/api/docs/${DOC_ID}/sql`), {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sql: `SELECT t.Production_Job AS job, t.Item_ID AS item,
+                             tm.Name AS who, t.Transaction_Time AS at
+                      FROM ${TXN_TABLE} t
+                      LEFT JOIN Team tm ON tm.id = t.Created_by
+                      WHERE t.Transaction_Type = 'LESS'
+                        AND t.Production_Job IN (${ids.map(() => '?').join(',')})`,
+                args: ids
+            })
+        });
+        if (!res.ok) {
+            const text = await res.text().catch(() => '');
+            throw new Error(`Could not check what is already collected (${res.status} ${res.statusText})${text ? `: ${text}` : ''}`);
         }
-        return items
-            .map((item) => ({
-                fields: {
-                    Item_ID: item.id,
-                    Production_Job: job.id,
-                    Transaction_Type: 'LESS',
-                    Weight_Kg_: item.kg != null ? num(item.kg) : roundWeight(needKg / items.length),
-                    Location: godownOf(item),
-                    Transaction_Time: now
-                }
-            }))
-            .filter((r) => num(r.fields.Weight_Kg_) > 0);
+        return ((await res.json()).records || []).map((r) => r.fields);
+    };
+
+    // Who already took the rolls a collection skipped, in the words the floor uses.
+    const alreadyBookedText = (already) => {
+        const byWho = new Map();
+        for (const b of already) {
+            const who = b.who || 'Someone';
+            if (!byWho.has(who)) byWho.set(who, { n: 0, at: b.at });
+            const e = byWho.get(who);
+            e.n += 1;
+            e.at = Math.min(num(e.at) || Infinity, num(b.at) || Infinity);
+        }
+        const parts = [...byWho].map(([who, { n, at }]) => `${who} at ${formatDateTime(at)} (${n} roll${n === 1 ? '' : 's'})`);
+        return `Already collected by ${parts.join(', ')}. Those rolls were not booked out again.`;
     };
 
     // Ready-made stock does not get cut, so it never joins a production run as raw
@@ -2165,7 +2183,8 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
         localDone: 'invCollected',
         localAt: 'invCollectedAt',
         type: 'LESS',
-        linesFor: collectionLines
+        linesFor: collectionLines,
+        skipBooked: true
     });
 
     // The leftover was already booked back when each job finished — the roll was
