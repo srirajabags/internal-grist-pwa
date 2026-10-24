@@ -53,3 +53,20 @@ describe('visibleSubpages — the hub shows only what you may open', () => {
     }
   });
 });
+
+describe('reports — each folder has its own people', () => {
+  it('shows the inbound call report to a senior telecaller, not to a telecaller', () => {
+    expect(canAccessPath('/reports/telecalling/inbound-calls', ['SENIOR TELECALLER'])).toBe(true);
+    expect(canAccessPath('/reports', ['SENIOR TELECALLER'])).toBe(true);
+    expect(canAccessPath('/reports/telecalling/inbound-calls', ['TELECALLER'])).toBe(false);
+  });
+  it('keeps production reports with production and inventory, away from telecalling', () => {
+    expect(canAccessPath('/reports/production/batch', ['FACTORY INVENTORY'])).toBe(true);
+    expect(canAccessPath('/reports/production/batch', ['SENIOR TELECALLER'])).toBe(false);
+    expect(canAccessPath('/reports/telecalling/inbound-calls', ['FACTORY PRODUCTION'])).toBe(false);
+  });
+  it('lets the owner into both', () => {
+    expect(canAccessPath('/reports/telecalling/inbound-calls', ['OWNER'])).toBe(true);
+    expect(canAccessPath('/reports/production/batch', ['OWNER'])).toBe(true);
+  });
+});

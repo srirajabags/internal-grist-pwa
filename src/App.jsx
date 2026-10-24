@@ -2888,9 +2888,9 @@ export default function App() {
             />
           }
         />
-        <Route path="/reports" element={<ReportsView onBack={() => navigate('/')} getHeaders={getHeaders} getUrl={getUrl} />} />
-        <Route path="/reports/:folderId" element={<ReportsView onBack={() => navigate('/')} getHeaders={getHeaders} getUrl={getUrl} />} />
-        <Route path="/reports/:folderId/:reportId" element={<ReportsView onBack={() => navigate('/')} getHeaders={getHeaders} getUrl={getUrl} />} />
+        <Route path="/reports" element={<ReportsView onBack={() => navigate('/')} getHeaders={getHeaders} getUrl={getUrl} userRoles={currentUserRoles} godMode={godMode} />} />
+        <Route path="/reports/:folderId" element={<ReportsView onBack={() => navigate('/')} getHeaders={getHeaders} getUrl={getUrl} userRoles={currentUserRoles} godMode={godMode} />} />
+        <Route path="/reports/:folderId/:reportId" element={<ReportsView onBack={() => navigate('/')} getHeaders={getHeaders} getUrl={getUrl} userRoles={currentUserRoles} godMode={godMode} />} />
         <Route path="/sql" element={<SQLAnalysisView onBack={() => navigate('/dashboards')} user={derivedUser} teamId={derivedUser?.id} onLogout={handleLogout} getHeaders={getHeaders} getUrl={getUrl} />} />
         <Route path="/dashboards" element={<DashboardList onNavigate={(id) => navigate(`/dashboards/${id}`)} onBack={() => navigate('/')} teamId={derivedUser?.id} getHeaders={getHeaders} getUrl={getUrl} user={derivedUser} userRoles={currentUserRoles} godMode={godMode} />} />
         <Route path="/dashboards/:id" element={<DashboardWrapper onBack={() => navigate('/dashboards')} getHeaders={getHeaders} getUrl={getUrl} teamId={derivedUser?.id} user={derivedUser} />} />

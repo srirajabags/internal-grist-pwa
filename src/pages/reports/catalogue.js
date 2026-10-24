@@ -1,8 +1,9 @@
 // Every report the Reports page offers, filed by folder. Adding a report is one
 // entry here: the page builds its folders, lists and URLs from this list
 // (/reports/<folder>/<report>).
-import { Boxes } from 'lucide-react';
+import { Boxes, PhoneIncoming } from 'lucide-react';
 import ProductionBatchReport from './ProductionBatchReport';
+import InboundCallReport from './InboundCallReport';
 
 export const REPORT_FOLDERS = [
     {
@@ -17,6 +18,21 @@ export const REPORT_FOLDERS = [
                 title: 'Production Batch Report',
                 description: 'Rolls godown before and after a batch, with its roll kg, made kg, return and waste',
                 component: ProductionBatchReport
+            }
+        ]
+    },
+    {
+        id: 'telecalling',
+        title: 'Telecalling',
+        description: 'Inbound calls, who dealt with them and what they came to',
+        icon: PhoneIncoming,
+        color: 'bg-teal-600',
+        reports: [
+            {
+                id: 'inbound-calls',
+                title: 'Inbound Call Registry',
+                description: 'Calls by day and who dealt with them, against status, with the share that gave an order',
+                component: InboundCallReport
             }
         ]
     }

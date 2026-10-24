@@ -16,9 +16,9 @@ export const PAGE_ROLE_REQUIREMENTS = {
   design: ['DESIGN CONFIRMATION'],
   printing: ['FACTORY PRINTING'],
   stitching: ['FACTORY STITCHING'],
-  // Batch reports read production and godown figures, so they go to the people
-  // who run those, not to every logged-in user.
-  reports: ['FACTORY PRODUCTION', 'FACTORY INVENTORY'],
+  // Reports are gated folder by folder (SUBPAGE_ROLE_REQUIREMENTS); this is the
+  // union, so each folder's people reach the hub.
+  reports: ['FACTORY PRODUCTION', 'FACTORY INVENTORY', 'SENIOR TELECALLER'],
 };
 
 // Subpages with their own roles, keyed "page/subpage" from the first two path
@@ -31,6 +31,11 @@ export const SUBPAGE_ROLE_REQUIREMENTS = {
   // Enquiries from the referral portal. REFERRAL ENQUIRIES lets someone work this
   // queue without seeing the call list.
   'telecaller/referrals': ['TELECALLER', 'SENIOR TELECALLER', 'REFERRAL ENQUIRIES'],
+  // Batch reports read production and godown figures, so they go to the people
+  // who run those, not to every logged-in user.
+  'reports/production': ['FACTORY PRODUCTION', 'FACTORY INVENTORY'],
+  // Every telecaller's conversion side by side is a supervisor's view.
+  'reports/telecalling': ['SENIOR TELECALLER'],
 };
 
 // The page and (if any) subpage rule an address falls under.

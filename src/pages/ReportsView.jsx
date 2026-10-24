@@ -4,13 +4,14 @@ import { ArrowLeft, ClipboardList, Folder, FileText, ChevronRight } from 'lucide
 import Button from '../components/Button';
 import Card from '../components/Card';
 import { REPORT_FOLDERS, findFolder, findReport } from './reports/catalogue';
+import { canAccessPath } from '../utils/pageAccess';
 
 // Reports, filed into folders. Three levels, each its own URL so the back button
 // and a shared link both land where they should:
 //   /reports                     the folders
 //   /reports/<folder>            the reports in one folder
 //   /reports/<folder>/<report>   the report itself
-const ReportsView = ({ onBack, getHeaders, getUrl }) => {
+const ReportsView = ({ onBack, getHeaders, getUrl, userRoles = [], godMode = false }) => {
     const { folderId, reportId } = useParams();
     const navigate = useNavigate();
 
@@ -28,6 +29,9 @@ const ReportsView = ({ onBack, getHeaders, getUrl }) => {
     const subtitle = report ? folder.title : folder ? 'Reports' : 'Data dashboards, by folder';
     const Icon = folder?.icon || ClipboardList;
     const Report = report?.component;
+    // Each folder has its own roles; the route guard stops a direct link, and
+    // this keeps the hub from offering a folder that would only refuse.
+    const folders = REPORT_FOLDERS.filter((f) => canAccessPath(`/reports/${f.id}`, userRoles, godMode));
 
     return (
         <div className="min-h-screen bg-slate-50 print:bg-white">
@@ -56,7 +60,7 @@ const ReportsView = ({ onBack, getHeaders, getUrl }) => {
 
                 {!missing && !folder && (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        {REPORT_FOLDERS.map((f) => (
+                        {folders.map((f) => (
                             <button
                                 key={f.id}
                                 onClick={() => navigate(`/reports/${f.id}`)}
