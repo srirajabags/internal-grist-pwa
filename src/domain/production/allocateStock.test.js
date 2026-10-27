@@ -173,3 +173,68 @@ describe('allocateStock — a model number is answered by its own model', () => 
         expect(blank.every((p) => p.source === 'blank')).toBe(true);
     });
 });
+
+// Batch 2026-10-27 - ROLLS TO DCUT - 90. The bags godown held 55.7 kg of red 80
+// GSM 16x20 D-cut bags, ivory 16x20, white 14x20 and more -- the exact bags its
+// orders asked for -- and not one job was offered any of it. A D-cut group is
+// keyed by the ROLL it cuts (45"), and the ready-stock search inherited that width
+// from the group, so it looked for 45"-wide bags. No D-cut batch had ever been
+// given ready stock. The floor reported "no size of D-cut or handle came out".
+describe('allocateStock — a D-cut batch draws ready bags by bag size, not roll width', () => {
+    const DC = 'ROLLS TO DCUT';
+    const bagOrder = (id, model, w, h, kg, colour = 'RED') => ({
+        id, Model: model, Material: 'NON-WOVEN', Print: 'SINGLE COLOUR',
+        Quantity: kg, Quantity_Type: 'WEIGHT (KG)',
+        Bag_Width: String(w), Bag_Height: String(h), Bag_GSM: '80',
+        Bag_Colour: `["${colour}"]`, Roll_Material: 'NW REGULAR'
+    });
+    const bags = (itemId, type, w, h, kg, colour = 'RED') =>
+        stock({ itemId, type, colour, gsm: '80', width: String(w), height: String(h), availWeight: kg });
+    const dcRoll = (itemId, kg, width) =>
+        stock({ itemId, type: 'ROLL', gsm: '80', width: String(width), availWeight: kg });
+    const plan = (subs, inventory) =>
+        allocateStock(groupAttrs(DC, subs[0]), subs, inventory, DC, undefined, undefined, 0.1);
+    const rollFor = (s) => groupAttrs(DC, s).width;
+
+    it('answers a D-cut order from ready D-cut bags of its size (sub-order 13074)', () => {
+        const subs = [bagOrder(13074, 'DCUT', 16, 20, 20)];
+        const res = plan(subs, [bags('DC-RED-16x20', 'DCUT BAG', 16, 20, 55.7)]);
+        expect(took(res, 'DC-RED-16x20')).toBeCloseTo(effectiveQty(DC, subs[0], 0.1), 6);
+        expect(res.priority).toBe(1);
+    });
+
+    it('does not hand a D-cut order bags of another size', () => {
+        const subs = [bagOrder(13074, 'DCUT', 16, 20, 20)];
+        const res = plan(subs, [
+            bags('DC-RED-14x18', 'DCUT BAG', 14, 18, 39.76),
+            dcRoll('R', 200, rollFor(subs[0]))
+        ]);
+        expect(took(res, 'DC-RED-14x18')).toBe(0);
+        expect(took(res, 'R')).toBeGreaterThan(0);
+    });
+
+    // Job 817's shape. Its real handle-bag shelf held 10.6 kg against 11 kg owed
+    // with the overage, which a whole-or-nothing order cannot take; given enough,
+    // each model draws its own kind of bag.
+    it('serves a job holding both models from both kinds of ready bag (job 817)', () => {
+        const subs = [bagOrder(13199, 'DCUT', 14, 18, 10), bagOrder(13200, 'HANDLE', 16, 20, 10)];
+        const res = plan(subs, [
+            bags('DC-RED-14x18', 'DCUT BAG', 14, 18, 39.76),
+            bags('HB-RED-16x20', 'HANDLE BAG', 16, 20, 20)
+        ]);
+        expect(took(res, 'DC-RED-14x18')).toBeCloseTo(effectiveQty(DC, subs[0], 0.1), 6);
+        expect(took(res, 'HB-RED-16x20')).toBeCloseTo(effectiveQty(DC, subs[1], 0.1), 6);
+    });
+
+    it('does not give a handle-model order D-cut bags of the same size', () => {
+        const subs = [bagOrder(13200, 'HANDLE', 16, 20, 10)];
+        const res = plan(subs, [bags('DC-RED-16x20', 'DCUT BAG', 16, 20, 55.7)]);
+        expect(took(res, 'DC-RED-16x20')).toBe(0);
+    });
+
+    it('does not give ready bags of another colour', () => {
+        const subs = [bagOrder(13074, 'DCUT', 16, 20, 20)];
+        const res = plan(subs, [bags('DC-IVORY-16x20', 'DCUT BAG', 16, 20, 49.78, 'IVORY')]);
+        expect(took(res, 'DC-IVORY-16x20')).toBe(0);
+    });
+});

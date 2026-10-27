@@ -1276,6 +1276,14 @@ export const groupAttrs = (batchType, so) => {
         // group has no single finished size. Ready sheets are matched per size
         // instead, in allocateStock -- see finishedBySize.
         if (SHEET_TYPES.has(batchType)) return { ...base, finishedWidth: null, finishedHeight: null };
+        // The same holds for D-cut: the group's width is the 45" roll, and a ready
+        // bag is 16x20. Inheriting it looked for 45"-wide bags and found none, so
+        // no D-cut batch was ever offered ready stock (batch 90). A D-cut job can
+        // also hold HANDLE-model orders, answered by HANDLE BAG stock; each line is
+        // still matched on its own type and size in finishedBySize.
+        if (batchType === 'ROLLS TO DCUT') {
+            return { ...base, finishedTypes: ['DCUT BAG', 'HANDLE BAG'], finishedWidth: null, finishedHeight: null };
+        }
         return base;
     }
     return {
