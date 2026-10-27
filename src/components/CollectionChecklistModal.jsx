@@ -60,7 +60,11 @@ const CollectionChecklistModal = ({
     // The finished-stock trip supplies its own lines, already carrying the amount
     // each item will be drawn down by, so the sheet shows exactly what is written.
     lines: givenLines, title = 'Collect the raw roll', note,
-    emptyText = 'This batch has no jobs to collect for.'
+    emptyText = 'This batch has no jobs to collect for.',
+    // Nothing left to tick, but the confirmation is still owed: the stock was
+    // moved and the batch never marked (batch 86). Without this the button stays
+    // disabled on an empty sheet and the batch cannot be closed.
+    confirmEmpty = false
 }) => {
     const lines = useMemo(() => givenLines ?? buildLines(batch), [givenLines, batch]);
     const [ticked, setTicked] = useState(() => new Set());
@@ -83,6 +87,7 @@ const CollectionChecklistModal = ({
         return next;
     });
     const allTicked = lines.length > 0 && lines.every((l) => ticked.has(l.key));
+    const canConfirm = allTicked || (lines.length === 0 && confirmEmpty);
     const tickAll = () => setTicked(allTicked ? new Set() : new Set(lines.map((l) => l.key)));
 
     // One label per physical roll, however many lines mention it.
@@ -354,7 +359,7 @@ const CollectionChecklistModal = ({
                         <Button
                             variant="primary"
                             className="flex-1"
-                            disabled={!allTicked || updating}
+                            disabled={!canConfirm || updating}
                             icon={updating ? Loader2 : CheckCircle2}
                             onClick={onConfirm}
                         >

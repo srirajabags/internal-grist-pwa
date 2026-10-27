@@ -10,7 +10,10 @@ import {
     bookingImportFiles, bookingTargets
 } from '../domain/production/outputCode';
 import { codesQuery, itemsQuery } from '../grist/outputCatalogue';
-import { jobsClosedByFinishedCollection } from '../domain/production/finishedCollection';
+import {
+    jobsClosedByFinishedCollection, canMarkFinishedCollected, finishedStockAlreadyMoved, finishedCollectionActions
+} from '../domain/production/finishedCollection';
+import { fetchIsDocOwner } from '../grist/docAccess';
 import { collectionLines as rawCollectionLines, uncollectedLines } from '../domain/production/rawCollection';
 import { batchPills, batchMatchesPills, pillFilterOptions } from '../domain/production/batchStage';
 
@@ -1329,7 +1332,7 @@ const BatchFilterMenu = ({ options, selected, onChange }) => {
     );
 };
 
-const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
+const ProductionJobsView = ({ onBack, getHeaders, getUrl, userRoles = [] }) => {
     const [batches, setBatches] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -1390,6 +1393,15 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
     const [collectingBatch, setCollectingBatch] = useState(null);
     const [returningBatch, setReturningBatch] = useState(null);
     const [collectingFinished, setCollectingFinished] = useState(null);
+    // Whether this person may mark finished stock collected. Grist decides in the
+    // end; asking first means nobody is sent to the shelf for a write that will be
+    // refused. Impersonating someone answers for them.
+    const [isDocOwner, setIsDocOwner] = useState(false);
+    useEffect(() => {
+        fetchIsDocOwner(DOC_ID, getHeaders, getUrl).then(setIsDocOwner);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [userRoles]);
+    const mayCollectFinished = canMarkFinishedCollected(userRoles, isDocOwner);
     // The batch whose delete confirmation is open, with the safety check's result.
     const [deleting, setDeleting] = useState(null);
     // A part-finished write, shown as a modal rather than a line of red text: the
@@ -1576,6 +1588,21 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                 `${method === 'POST' ? 'Create' : 'Update'} in ${table} refused (${res.status} ${res.statusText})`
                 + (text ? `: ${text}` : '')
             );
+        }
+        return res.json().catch(() => ({}));
+    };
+
+    // Several writes as one Grist bundle: applied whole, or refused whole.
+    const applyActions = async (actions) => {
+        const headers = await getHeaders();
+        const res = await fetch(getUrl(`/api/docs/${DOC_ID}/apply`), {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify(actions)
+        });
+        if (!res.ok) {
+            const text = await res.text().catch(() => '');
+            throw new Error(`Write refused (${res.status} ${res.statusText})${text ? `: ${text}` : ''}`);
         }
         return res.json().catch(() => ({}));
     };
@@ -2131,21 +2158,6 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                     { fields: { ...base, Transaction_Type: 'ADD', Location: PRINTING_AREA } }
                 ];
             });
-            if (records.length === 0) {
-                journal.skip('Move finished stock to the printing area', 'Nothing left to move');
-            } else {
-                await journal.run(
-                    `Move ${records.length / 2} finished item(s) from ${BAGS_GODOWN} to ${PRINTING_AREA}`,
-                    () => writeRecords(TXN_TABLE, 'POST', { records })
-                );
-            }
-            await journal.run(
-                'Mark the batch finished stock collected',
-                () => writeRecords(BATCHES_TABLE, 'PATCH', {
-                    records: writableRecords(BATCHES_TABLE, [{ id: batch.id, fields: { Finished_Stock_Collected: true } }])
-                })
-            );
-
             // A job answered entirely from stock is finished the moment that stock
             // is collected: the trip IS the work. Marking it so is not bookkeeping
             // tidiness -- the batch's own Production_Completed_At formula reads
@@ -2158,17 +2170,27 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
             // that is not started, which is how batch 25's jobs 232 and 233 were
             // left open. The *_At columns are triggers Grist stamps itself.
             const closing = jobsClosedByFinishedCollection(batch.jobs);
-            if (closing.length > 0) {
-                const closingJobs = batch.jobs.filter((j) => closing.some((c) => c.id === j.id));
-                await journal.run(
-                    `Start and complete ${closing.length} job(s) answered from stock — ${closingJobs.map(jobLabel).join('; ')}`,
-                    () => writeRecords(JOBS_TABLE, 'PATCH', { records: writableRecords(JOBS_TABLE, closing) })
-                );
-            }
+            const closingJobs = batch.jobs.filter((j) => closing.some((c) => c.id === j.id));
+            // One bundle, so Grist takes all of it or none. Batch 86 was written in
+            // three steps: the moves landed, the flag was refused, and the stock sat
+            // booked to the printing area against a batch that said it was not.
+            const label = [
+                records.length > 0
+                    ? `Move ${records.length / 2} finished item(s) from ${BAGS_GODOWN} to ${PRINTING_AREA}`
+                    : 'Nothing left to move',
+                'mark the batch finished stock collected',
+                closing.length > 0
+                    ? `start and complete ${closing.length} job(s) answered from stock — ${closingJobs.map(jobLabel).join('; ')}`
+                    : null
+            ].filter(Boolean).join('; ');
+            await journal.run(label, () => applyActions(
+                finishedCollectionActions({ batchId: batch.id, moves: records, closing })
+            ));
             await fetchData(true);
         } catch (err) {
             setWriteFailure({
-                title: 'Collecting the finished stock did not finish',
+                // Sent as one bundle, so a refusal booked nothing at all.
+                title: 'Collecting the finished stock was refused — nothing was booked',
                 error: err.message || String(err),
                 steps: journal.steps
             });
@@ -2446,7 +2468,10 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                     lines={finishedCollectionPlan(collectingFinished)}
                     title="Collect the finished stock"
                     note="These go straight from the bags godown to the printing area — no roll is cut for them."
-                    emptyText="Nothing left to pull from the bags godown for this batch."
+                    emptyText={finishedStockAlreadyMoved(collectingFinished)
+                        ? 'Everything was already moved to the printing area. Mark Collected to close this batch\'s finished stock.'
+                        : 'Nothing left to pull from the bags godown for this batch.'}
+                    confirmEmpty={finishedStockAlreadyMoved(collectingFinished)}
                     updating={updatingBatchId === collectingFinished.id}
                     onClose={() => setCollectingFinished(null)}
                     onConfirm={async () => {
@@ -2701,6 +2726,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl }) => {
                                         batch={selectedBatch}
                                         updating={updatingBatchId === selectedBatch.id}
                                         onCollect={async () => setCollectingBatch(await loadSwaps(selectedBatch))}
+                                        mayCollectFinished={mayCollectFinished}
                                         onCollectFinished={() => setCollectingFinished(selectedBatch)}
                                         onReturn={() => openReturn(selectedBatch)}
                                     />
@@ -3046,7 +3072,7 @@ const CollectedItems = ({ batch }) => {
     );
 };
 
-const BatchInventory = ({ batch, updating, onCollect, onCollectFinished, onReturn }) => {
+const BatchInventory = ({ batch, updating, mayCollectFinished = true, onCollect, onCollectFinished, onReturn }) => {
     const collectedAt = formatDateTime(batch.invCollectedAt);
     const returnedAt = formatDateTime(batch.invReturnedAt);
     // The roll goes back when the cutting is done. Jobs met from ready-made stock
@@ -3077,12 +3103,15 @@ const BatchInventory = ({ batch, updating, onCollect, onCollectFinished, onRetur
                 {finishedItems.length > 0 && (
                     <InventoryAction
                         label={`Finished stock collected (${finishedItems.length})`}
-                        hint="Straight from the bags godown to the printing area"
+                        hint={mayCollectFinished
+                            ? 'Straight from the bags godown to the printing area'
+                            : 'Only a finished stock collector can mark this — ask the bags godown'}
                         done={batch.finCollected}
                         at={finishedAt}
                         actionLabel="Mark Collected"
                         doneLabel="Collected"
                         updating={updating}
+                        disabled={!mayCollectFinished}
                         onClick={onCollectFinished}
                     />
                 )}

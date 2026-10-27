@@ -2851,6 +2851,7 @@ export default function App() {
               onLogout={handleLogout}
               getHeaders={getHeaders}
               getUrl={getUrl}
+              userRoles={currentUserRoles}
             />
           }
         />
