@@ -6,6 +6,7 @@ import DashboardList from './components/DashboardList';
 import DashboardView from './components/DashboardView';
 import Card from './components/Card';
 import Button from './components/Button';
+import NotificationsSetting from './components/NotificationsSetting';
 import Console from './components/Console';
 import { useAuth0 } from '@auth0/auth0-react';
 
@@ -330,6 +331,8 @@ const SettingsModal = ({ onClose, user, onLogout, impersonateEmail, setImpersona
           </div>
         </label>
       </div>
+
+      <NotificationsSetting getHeaders={getHeaders} getUrl={getUrl} impersonating={!!impersonateEmail} />
 
       {/* Server Info */}
       <div className="mb-4 p-3 bg-slate-50 rounded-lg">

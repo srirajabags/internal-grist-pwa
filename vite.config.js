@@ -111,6 +111,10 @@ export default defineConfig({
         ]
       },
       workbox: {
+        // Push notifications: public/push-sw.js adds the push and click handlers
+        // to the generated worker. A separate file so the generated part stays
+        // exactly what the plugin builds.
+        importScripts: ['push-sw.js'],
         navigateFallbackDenylist: [/\/api/],
         // version.json says which build is deployed, so it must always come from
         // the network -- precaching it would have the app compare itself against
