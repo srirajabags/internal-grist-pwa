@@ -4,6 +4,7 @@
 import { Boxes, PhoneIncoming } from 'lucide-react';
 import ProductionBatchReport from './ProductionBatchReport';
 import InboundCallReport from './InboundCallReport';
+import EnquirySourceReport from './EnquirySourceReport';
 
 export const REPORT_FOLDERS = [
     {
@@ -33,6 +34,12 @@ export const REPORT_FOLDERS = [
                 title: 'Inbound Call Registry',
                 description: 'Calls by day and who dealt with them, against status, with the share that gave an order',
                 component: InboundCallReport
+            },
+            {
+                id: 'enquiry-sources',
+                title: 'Enquiry Sources & Orders',
+                description: 'A day\'s enquiries by source, the customers and orders they led to, and the last 14 days in one chart',
+                component: EnquirySourceReport
             }
         ]
     }
