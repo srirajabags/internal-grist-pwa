@@ -4,6 +4,7 @@ import { isOwnEntry, canAcknowledge, needsSecondPerson } from './ackPermission';
 // 2026-10-17: Sudhakar acknowledged 653 of his own rolls-godown entries in a
 // month. Grist now refuses a self-acknowledgement; these keep the app from
 // offering one. 2026-10-18: NEW STOCK, a new roll's opening entry, is exempt.
+// 2026-11-03: so is an entry booked against a production job (owner's call).
 
 describe('isOwnEntry', () => {
     it('matches the creator against the current Team member', () => {
@@ -44,6 +45,16 @@ describe('canAcknowledge', () => {
 
     it('lets the person who booked NEW STOCK sign it off', () => {
         expect(canAcknowledge(36, 36, false, 'NEW STOCK')).toBe(true);
+    });
+
+    it('lets the person who booked an entry for a production job sign it off', () => {
+        expect(canAcknowledge(36, 36, false, 'ADD', 512)).toBe(true);
+        expect(canAcknowledge(36, 36, false, 'LESS', '512')).toBe(true);
+    });
+
+    it('still stops them when no production job is attached', () => {
+        expect(canAcknowledge(36, 36, false, 'LESS', 0)).toBe(false);
+        expect(canAcknowledge(36, 36, false, 'ADD', null)).toBe(false);
     });
 
     it('exempts doc owners', () => {

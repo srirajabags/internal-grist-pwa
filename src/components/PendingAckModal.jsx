@@ -131,7 +131,7 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl, teamId, 
 
     const open = txns.filter((t) => !doneIds.includes(t.id) && !rejectedIds.includes(t.id));
     const remaining = open.length;
-    const awaitingOthers = open.filter((t) => !canAcknowledge(t.creatorId, teamId, ownerExempt, t.type)).length;
+    const awaitingOthers = open.filter((t) => !canAcknowledge(t.creatorId, teamId, ownerExempt, t.type, t.jobId)).length;
 
     // A transaction with no job behind it is a godown correction, and reviewing
     // those on their own is worth a chip of its own rather than no chip at all.
@@ -225,7 +225,7 @@ const PendingAckModal = ({ onClose, onAcknowledged, getHeaders, getUrl, teamId, 
                                 const unit = countUnitFor(t.itype, t.name);
                                 const done = doneIds.includes(t.id);
                                 const rejected = rejectedIds.includes(t.id);
-                                const mayAck = canAcknowledge(t.creatorId, teamId, ownerExempt, t.type);
+                                const mayAck = canAcknowledge(t.creatorId, teamId, ownerExempt, t.type, t.jobId);
                                 // Against the filtered list: reading the day off the
                                 // unfiltered queue printed headings for days that
                                 // had nothing under them once a filter was on.
