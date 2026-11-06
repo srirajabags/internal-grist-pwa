@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users, Boxes, Warehouse, Printer, Scissors, Zap, PackageSearch, CheckCircle2, ClipboardList } from 'lucide-react';
+import { Settings, LogOut, Database, Loader2, AlertCircle, RefreshCw, Search, X, User, Phone, CheckSquare, Table, Home, ArrowLeft, Factory, Code, History, Save, Pin, Trash2, Clock, BarChart2, LayoutDashboard, Users, Boxes, Warehouse, Printer, Scissors, Zap, PackageSearch, CheckCircle2, ClipboardList, Tag } from 'lucide-react';
 import SqlVisualization from './components/SqlVisualization';
 import DashboardList from './components/DashboardList';
 import DashboardView from './components/DashboardView';
@@ -444,6 +444,14 @@ const HomePage = ({ onNavigate, user, onLogout, impersonateEmail, setImpersonate
       hoverColor: 'hover:bg-fuchsia-700'
     },
     {
+      id: 'plates',
+      title: 'Printing Plates',
+      description: 'Find plates, check the racks, confirm old plates for repeat orders',
+      icon: Tag,
+      color: 'bg-rose-700',
+      hoverColor: 'hover:bg-rose-800'
+    },
+    {
       id: 'stitching',
       title: 'Stitching Jobs',
       description: 'Stitch printed sheets into finished bags',
@@ -613,6 +621,8 @@ import SalesmanCustomerView from './pages/SalesmanCustomerView';
 import ProductionJobsView from './pages/ProductionJobsView';
 import InventoryView from './pages/InventoryView';
 import StageJobsView from './pages/StageJobsView';
+import PrintingJobsView from './pages/PrintingJobsView';
+import PrintingPlatesView from './pages/PrintingPlatesView';
 import OrderTrackingView from './pages/OrderTrackingView';
 import ReportsView from './pages/ReportsView';
 
@@ -2861,11 +2871,22 @@ export default function App() {
         <Route
           path="/printing"
           element={
-            <StageJobsView
-              stage="printing"
+            <PrintingJobsView
               onBack={() => navigate('/')}
               getHeaders={getHeaders}
               getUrl={getUrl}
+              userRoles={currentUserRoles}
+            />
+          }
+        />
+        <Route
+          path="/plates"
+          element={
+            <PrintingPlatesView
+              onBack={() => navigate('/')}
+              getHeaders={getHeaders}
+              getUrl={getUrl}
+              userRoles={currentUserRoles}
             />
           }
         />

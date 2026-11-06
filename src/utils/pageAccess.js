@@ -1,3 +1,5 @@
+import { OPERATOR_ROLES as PRINTING_OPERATOR_ROLES } from '../domain/printing/printingMachines';
+
 // Centralised page access control based on Team table Roles.
 //
 // PAGE_ROLE_REQUIREMENTS maps a page id to the roles allowed to view/navigate
@@ -14,7 +16,12 @@ export const PAGE_ROLE_REQUIREMENTS = {
   // the /telecaller hub; each subpage then checks its own roles.
   telecaller: ['TELECALLER', 'SENIOR TELECALLER', 'REFERRAL ENQUIRIES'],
   design: ['DESIGN CONFIRMATION'],
-  printing: ['FACTORY PRINTING'],
+  // Supervisors, the plates incharge who takes plates out and puts them back,
+  // and each machine's operator (domain/printing/printingMachines).
+  printing: ['FACTORY PRINTING', 'PRINTING PLATES INCHARGE', ...PRINTING_OPERATOR_ROLES],
+  // FACTORY answers Old_Plate_Available in Grist today, so it confirms old
+  // plates for repeat orders here too.
+  plates: ['FACTORY PRINTING', 'PRINTING PLATES INCHARGE', 'FACTORY'],
   stitching: ['FACTORY STITCHING'],
   // Reports are gated folder by folder (SUBPAGE_ROLE_REQUIREMENTS); this is the
   // union, so each folder's people reach the hub.

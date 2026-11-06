@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// Creates the four Grist tables behind /printing and /stitching:
+// Creates the two Grist tables behind /stitching:
 //
-//   Printing_Job_Batches   Printing_Jobs
 //   Stitching_Job_Batches  Stitching_Jobs
+//
+// Printing has its own tables now, made by create-printing-tables.mjs.
 //
 // A batch is one day's work at a stage; a job is one sub-order at that stage,
 // mirroring Factory_Production_Job_Batches / Factory_Production_Jobs.
@@ -78,7 +79,6 @@ const stage = (name, ref, started, completed) => ([
 ]);
 
 const tables = [
-    ...stage('Printing', 'Printing_Job_Batch', 'Printing_Started', 'Printing_Completed'),
     ...stage('Stitching', 'Stitching_Job_Batch', 'Stitching_Started', 'Stitching_Completed')
 ];
 
@@ -91,4 +91,4 @@ if (clash.length > 0) {
 
 const res = await api('/tables', 'POST', { tables });
 console.log(`Created: ${res.tables.map((t) => t.id).join(', ')}`);
-console.log('\n/printing and /stitching will work as soon as this lands.');
+console.log('\n/stitching will work as soon as this lands.');
