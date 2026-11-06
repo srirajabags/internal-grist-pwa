@@ -15,6 +15,7 @@ import { plateFromRow, subOrderFromRow } from '../domain/printing/printingJobs';
 import { KIND } from '../domain/printing/rackCodes';
 import { proofQuery, proofShots, isShowableProof, shotIndexFor } from '../domain/printing/finalisationProof';
 import ImagePreviewModal from '../components/ImagePreviewModal';
+import { confirmPlateAction, confirmRepeatAnswer } from '../domain/printing/plateConfirm';
 import {
     sharedCodes, filterPlates, sortForSheet, SECTIONS, rackLabel, slotsOfRack, designText, plateDetails
 } from '../domain/printing/plateTable';
@@ -118,9 +119,21 @@ const PrintingPlatesView = ({ onBack, getHeaders, getUrl, userRoles = [] }) => {
         }
     };
 
-    // One write, journalled so a refusal is shown the same way as on every
-    // other floor page.
-    const save = async (title, label, actions) => {
+    // The second confirmation every write on this page asks for (user, 6 Nov
+    // 2026): `save` waits here until the person says yes or backs out.
+    const [asking, setAsking] = useState(null);
+    const ask = (confirm) => new Promise((resolve) => setAsking({ ...confirm, resolve }));
+    const answerAsk = (yes) => {
+        asking?.resolve(yes);
+        setAsking(null);
+    };
+
+    // One write, confirmed first, then journalled so a refusal is shown the
+    // same way as on every other floor page. No write goes without a
+    // confirmation: a call that brings none is refused outright.
+    const save = async (title, label, actions, confirm) => {
+        if (!confirm) throw new Error(`No confirmation for "${label}".`);
+        if (!(await ask(confirm))) return false;
         const journal = newJournal();
         try {
             await journal.run(label, () => apply(actions));
@@ -173,12 +186,41 @@ const PrintingPlatesView = ({ onBack, getHeaders, getUrl, userRoles = [] }) => {
                 {tab === 'rack' && <RackPanel register={register} save={save} runSql={runSql} attachments={attachments} />}
                 {tab === 'repeat' && <RepeatPanel runSql={runSql} save={save} attachments={attachments} />}
             </main>
+            {asking && <ConfirmModal confirm={asking} onAnswer={answerAsk} />}
             {writeFailure && (
                 <WriteFailureModal title={writeFailure.title} error={writeFailure.error} steps={writeFailure.steps} onClose={() => setWriteFailure(null)} />
             )}
         </div>
     );
 };
+
+// Above the plate sheet, which may still be open beneath it.
+const ConfirmModal = ({ confirm, onAnswer }) => (
+    <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-[60] sm:p-4" onClick={() => onAnswer(false)}>
+        <div role="alertdialog" aria-modal="true" aria-labelledby="plate-confirm-heading"
+            className="bg-white w-full sm:max-w-sm rounded-t-2xl sm:rounded-2xl shadow-xl p-4 space-y-3"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start gap-3">
+                <div className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${confirm.danger ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'}`}>
+                    {confirm.danger ? <AlertTriangle size={18} /> : <CheckCircle2 size={18} />}
+                </div>
+                <div className="min-w-0">
+                    <h2 id="plate-confirm-heading" className="font-bold text-slate-800 leading-snug">{confirm.heading}</h2>
+                    {confirm.subject && <p className="text-xs text-slate-500 mt-0.5">{confirm.subject}</p>}
+                </div>
+            </div>
+            <ul className="rounded-lg bg-slate-50 border border-slate-200 p-2.5 space-y-1 text-sm text-slate-700">
+                {confirm.lines.map((l) => <li key={l}>{l}</li>)}
+            </ul>
+            <div className="flex gap-2">
+                <Button variant="outline" className="flex-1" onClick={() => onAnswer(false)}>Cancel</Button>
+                <Button className={`flex-1 ${confirm.danger ? '!bg-rose-700 hover:!bg-rose-800' : ''}`} onClick={() => onAnswer(true)}>
+                    {confirm.confirmLabel}
+                </Button>
+            </div>
+        </div>
+    </div>
+);
 
 const useLoader = (load, deps) => {
     const [rows, setRows] = useState([]);
@@ -596,7 +638,8 @@ const PlateModal = ({ plate, save, runSql, attachments, onClose, onChanged }) =>
     const submit = async () => {
         setBusy(true);
         const ok = await save(`${plate.rackCode || plate.plateNo}: ${action}`, `Record ${action.toLowerCase()} for ${plate.plateNo}`,
-            plateActionBundle(plate, action, { rack, slot, notes, stereoSize: isStereo ? stereoSize : '' }));
+            plateActionBundle(plate, action, { rack, slot, notes, stereoSize: isStereo ? stereoSize : '' }),
+            confirmPlateAction(plate, action, { rack, slot, stereoSize: isStereo ? stereoSize : '' }));
         setBusy(false);
         if (ok) onChanged();
     };
@@ -707,11 +750,10 @@ const RackPanel = ({ register, save, runSql, attachments }) => {
 
     const mark = async (plate, action) => {
         setBusyId(plate.id);
+        const stereoSize = plate.plateType === KIND.STEREO ? sizes[plate.id] : '';
         const ok = await save(`${plate.rackCode || plate.plateNo}: ${action}`, `Rack check ${plate.plateNo}`,
-            plateActionBundle(plate, action, {
-                notes: 'Rack check',
-                stereoSize: plate.plateType === KIND.STEREO ? sizes[plate.id] : ''
-            }));
+            plateActionBundle(plate, action, { notes: 'Rack check', stereoSize }),
+            confirmPlateAction(plate, action, { stereoSize }));
         setBusyId(null);
         if (ok) register.reload();
     };
@@ -848,7 +890,8 @@ const RepeatCard = ({ so, plates, save, onDone, runSql, attachments }) => {
             : { Old_Plate_Available: 'NO' };
         const ok = await save(`Old plate for ${so.shop}`,
             yes ? `Reuse ${chosen?.plate.rackCode || chosen?.plate.plateNo || 'the old plate'}` : 'No old plate',
-            [['UpdateRecord', 'Sub_Orders', so.id, fields]]);
+            [['UpdateRecord', 'Sub_Orders', so.id, fields]],
+            confirmRepeatAnswer(so, yes ? chosen : null));
         setBusy(false);
         if (ok) onDone();
     };
