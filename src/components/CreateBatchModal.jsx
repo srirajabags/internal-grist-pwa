@@ -26,18 +26,12 @@ import {
     ROLLS_PER_JOB_NOTICE,
     bagPieceCount
 } from '../domain/production/productionBatch';
+import { existingJobsSql, godownStockSql } from '../domain/production/batchPlanQueries';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 const BATCHES_TABLE = 'Factory_Production_Job_Batches';
 const JOBS_TABLE = 'Factory_Production_Jobs';
 const SUB_ORDERS_TABLE = 'Sub_Orders';
-const ACKED_GODOWN_FILTER = `
-                    s.Location IN ('ROLLS GODOWN', 'BAGS GODOWN')
-                    AND s.Incharge_Ack = 1
-`;
-const SUMMARY_BY_ID_TABLE = 'Inventory_Transactions_summary_Incharge_Ack_Item_Code_Item_ID_Location';
-const SUMMARY_BY_CODE_TABLE = 'Inventory_Transactions_summary_Incharge_Ack_Item_Code_Location';
-const TXN_TABLE = 'Inventory_Transactions';
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const norm = (v) => String(v ?? '').trim().toUpperCase();
@@ -594,15 +588,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
 
             // 2. Map every existing job -> its batch type so we can drop sub-orders
             //    that already have a job of a given type (checked per type below).
-            const jobs = await runSql(
-                `SELECT j.id AS id, b.Type AS type, j.Sub_Orders AS subOrders,
-                        j.Inventory_Items AS invItems, j.Job_Overage AS overage,
-                        COALESCE(b.Remaining_Inventory_Returned, 0) AS returned,
-                        (SELECT ROUND(SUM(ABS(tx.Weight_Kg_)), 3) FROM ${TXN_TABLE} tx
-                         WHERE tx.Production_Job = j.id AND tx.Transaction_Type = 'LESS') AS drawn
-                 FROM Factory_Production_Jobs j
-                 LEFT JOIN Factory_Production_Job_Batches b ON b.id = j.Factory_Production_Job_Batch`
-            );
+            const jobs = await runSql(existingJobsSql());
             const jobType = new Map(jobs.map((j) => [num(j.id), j.type]));
             const plannedTypes = plannedTypesBySubOrder(jobs);
             // A sub-order is out of scope for a type the moment either side of the
@@ -631,49 +617,7 @@ const CreateBatchModal = ({ onClose, onCreated, getHeaders, getUrl }) => {
             // the weight is derived from it where there is none. Filtering on
             // Available_Weight_Kg_ here made all of that stock invisible, and every
             // order fell through to cutting a fresh roll.
-            const invRows = await runSql(
-                `SELECT s.Item_ID AS itemId, s.Item_Code AS codeId,
-                        it.Item_ID AS itemName, it.Created_at AS intakeAt,
-                        ic.Type AS type, ic.Material AS material, ic.Colour AS colour,
-                        ic.GSM AS gsm, ic.Width_Inches_ AS width,
-                        ic.Height_Inches_ AS height,
-                        ic.Item_Code AS name,
-                        s.Available_Weight_Kg_ AS availWeight,
-                        -- Only the by-code summary carries counts; each non-roll code
-                        -- has exactly one physical item, so this maps one to one.
-                        COALESCE((
-                            SELECT c.Available_Count_Bundles_
-                            FROM ${SUMMARY_BY_CODE_TABLE} c
-                            WHERE c.Item_Code = s.Item_Code AND c.Location = s.Location
-                              AND c.Incharge_Ack = 1
-                            LIMIT 1
-                        ), 0) AS availCount
-                 FROM ${SUMMARY_BY_ID_TABLE} s
-                 LEFT JOIN Inventory_Item_Codes ic ON ic.id = s.Item_Code
-                 LEFT JOIN Inventory_Items it ON it.id = s.Item_ID
-                 WHERE s.Item_Code != 0
-                    AND ${ACKED_GODOWN_FILTER}
-                    -- A ROLL promised to an open batch is not on the shelf,
-                    -- whatever the summary says: it leaves whole and belongs to one
-                    -- job. Between creating a batch and collecting it the godown
-                    -- balance is untouched, so without this the next batch plans
-                    -- the very same rolls again.
-                    --
-                    -- Ready-made stock is a POOL, not one object -- 2,900 sheets can
-                    -- fund several jobs -- so it is not excluded here. What open
-                    -- jobs have claimed of it is deducted below instead.
-                    AND NOT (
-                        UPPER(COALESCE(ic.Type, '')) = 'ROLL'
-                        AND EXISTS (
-                            SELECT 1 FROM Factory_Production_Jobs j
-                            JOIN Factory_Production_Job_Batches b ON b.id = j.Factory_Production_Job_Batch
-                            JOIN json_each(CASE WHEN json_valid(j.Inventory_Items)
-                                                THEN j.Inventory_Items ELSE '[]' END) ji
-                              ON ji.value = s.Item_ID
-                            WHERE COALESCE(b.Remaining_Inventory_Returned, 0) = 0
-                        )
-                    )`
-            );
+            const invRows = await runSql(godownStockSql());
             // Row id -> the id printed on the roll or the stock label, so the
             // review can name what it picked instead of pointing at a row number.
             setItemNames(new Map(invRows.map((r) => [num(r.itemId), r.itemName]).filter(([, v]) => v)));
