@@ -43,6 +43,8 @@ export const SUBPAGE_ROLE_REQUIREMENTS = {
   'reports/production': ['FACTORY PRODUCTION', 'FACTORY INVENTORY'],
   // Every telecaller's conversion side by side is a supervisor's view.
   'reports/telecalling': ['SENIOR TELECALLER'],
+  // Order value by area group and month is the business's sales figure.
+  'reports/sales': ['SENIOR TELECALLER'],
 };
 
 // The page and (if any) subpage rule an address falls under.

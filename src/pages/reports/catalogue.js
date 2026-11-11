@@ -1,10 +1,11 @@
 // Every report the Reports page offers, filed by folder. Adding a report is one
 // entry here: the page builds its folders, lists and URLs from this list
 // (/reports/<folder>/<report>).
-import { Boxes, PhoneIncoming } from 'lucide-react';
+import { Boxes, PhoneIncoming, IndianRupee } from 'lucide-react';
 import ProductionBatchReport from './ProductionBatchReport';
 import InboundCallReport from './InboundCallReport';
 import EnquirySourceReport from './EnquirySourceReport';
+import OrderMixReport from './OrderMixReport';
 
 export const REPORT_FOLDERS = [
     {
@@ -40,6 +41,21 @@ export const REPORT_FOLDERS = [
                 title: 'Enquiry Sources & Orders',
                 description: 'A day\'s enquiries by source, the customers and orders they led to, and the last 14 days in one chart',
                 component: EnquirySourceReport
+            }
+        ]
+    },
+    {
+        id: 'sales',
+        title: 'Sales',
+        description: 'Orders and order value by month and area group',
+        icon: IndianRupee,
+        color: 'bg-emerald-600',
+        reports: [
+            {
+                id: 'order-mix',
+                title: 'Regular, Other & New Orders',
+                description: 'Order count and value by month and area group: Regular customers, other customers and new orders',
+                component: OrderMixReport
             }
         ]
     }
