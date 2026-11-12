@@ -16,6 +16,7 @@ import {
 import { fetchIsDocOwner } from '../grist/docAccess';
 import { collectionLines as rawCollectionLines, uncollectedLines } from '../domain/production/rawCollection';
 import { batchPills, batchMatchesPills, pillFilterOptions } from '../domain/production/batchStage';
+import { isStockOnlyBatch, canCloseStockOnlyBatch, closeStockOnlyBatchFields } from '../domain/production/stockOnlyBatch';
 
 // What a pill's meaning looks like: something still owed is a red cross, something
 // settled a green tick, and work on the machine right now its own blue. The icon
@@ -2220,6 +2221,32 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl, userRoles = [] }) => {
         type: 'ADD'
     });
 
+    // A batch answered entirely from ready stock has no roll to return, so it is
+    // closed directly -- see domain/production/stockOnlyBatch.
+    const closeStockOnlyBatch = async (batch) => {
+        if (!canCloseStockOnlyBatch(batch)) return;
+        setUpdatingBatchId(batch.id);
+        const journal = newJournal();
+        try {
+            await journal.run(
+                `Close batch ${batchLabel(batch)} (no roll to return)`,
+                () => writeRecords(BATCHES_TABLE, 'PATCH', {
+                    records: writableRecords(BATCHES_TABLE, [{ id: batch.id, fields: closeStockOnlyBatchFields() }])
+                })
+            );
+            await fetchData(true);
+        } catch (err) {
+            setWriteFailure({
+                title: 'Closing the batch was refused — only this batch type\'s operator or a doc owner can close it',
+                error: err.message || String(err),
+                steps: journal.steps
+            });
+            await fetchData(true);
+        } finally {
+            setUpdatingBatchId(null);
+        }
+    };
+
     const openReturn = (batch) => {
         // Only the jobs that cut a roll. A job answered from ready-made stock is
         // never started or completed, so waiting on it would hold the roll on the
@@ -2729,6 +2756,7 @@ const ProductionJobsView = ({ onBack, getHeaders, getUrl, userRoles = [] }) => {
                                         mayCollectFinished={mayCollectFinished}
                                         onCollectFinished={() => setCollectingFinished(selectedBatch)}
                                         onReturn={() => openReturn(selectedBatch)}
+                                        onCloseStockOnly={() => closeStockOnlyBatch(selectedBatch)}
                                     />
 
                                     <BatchBookingBanner
@@ -3072,7 +3100,8 @@ const CollectedItems = ({ batch }) => {
     );
 };
 
-const BatchInventory = ({ batch, updating, mayCollectFinished = true, onCollect, onCollectFinished, onReturn }) => {
+const BatchInventory = ({ batch, updating, mayCollectFinished = true, onCollect, onCollectFinished, onReturn, onCloseStockOnly }) => {
+    const stockOnly = isStockOnlyBatch(batch);
     const collectedAt = formatDateTime(batch.invCollectedAt);
     const returnedAt = formatDateTime(batch.invReturnedAt);
     // The roll goes back when the cutting is done. Jobs met from ready-made stock
@@ -3115,26 +3144,46 @@ const BatchInventory = ({ batch, updating, mayCollectFinished = true, onCollect,
                         onClick={onCollectFinished}
                     />
                 )}
-                <InventoryAction
-                    label="Raw roll collected"
-                    hint="From the rolls godown"
-                    done={batch.invCollected}
-                    at={collectedAt}
-                    actionLabel="Mark Collected"
-                    doneLabel="Collected"
-                    updating={updating}
-                    onClick={onCollect}
-                />
-                <InventoryAction
-                    label="Remaining roll returned"
-                    done={batch.invReturned}
-                    at={returnedAt}
-                    actionLabel="Mark Returned"
-                    doneLabel="Returned"
-                    updating={updating}
-                    disabled={!allJobsCompleted}
-                    onClick={onReturn}
-                />
+                {stockOnly ? (
+                    // No roll leaves the rolls godown, so there is none to collect
+                    // or return -- one step closes the batch instead.
+                    <InventoryAction
+                        label="Close batch"
+                        hint={batch.completedAt
+                            ? 'No roll in this batch — nothing to return'
+                            : 'No roll in this batch — collect the finished stock first'}
+                        done={batch.invReturned}
+                        at={returnedAt}
+                        actionLabel="Close Batch"
+                        doneLabel="Closed"
+                        updating={updating}
+                        disabled={!canCloseStockOnlyBatch(batch)}
+                        onClick={onCloseStockOnly}
+                    />
+                ) : (
+                    <>
+                        <InventoryAction
+                            label="Raw roll collected"
+                            hint="From the rolls godown"
+                            done={batch.invCollected}
+                            at={collectedAt}
+                            actionLabel="Mark Collected"
+                            doneLabel="Collected"
+                            updating={updating}
+                            onClick={onCollect}
+                        />
+                        <InventoryAction
+                            label="Remaining roll returned"
+                            done={batch.invReturned}
+                            at={returnedAt}
+                            actionLabel="Mark Returned"
+                            doneLabel="Returned"
+                            updating={updating}
+                            disabled={!allJobsCompleted}
+                            onClick={onReturn}
+                        />
+                    </>
+                )}
             </div>
 
             {batch.invCollected && !batch.invReturned && <CollectedItems batch={batch} />}
