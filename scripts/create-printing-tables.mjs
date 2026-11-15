@@ -67,7 +67,17 @@ const choice = (id, choices, type = 'Choice') => col(id, type, { widgetOptions: 
 const live = (id, type, formula) => col(id, type, { isFormula: true, formula });
 // A trigger: a data column Grist fills from `formula` when one of `deps` (column
 // ids on the same table) changes -- or once, on creation, when there are none.
-const trigger = (id, type, formula, deps = []) => ({ ...col(id, type, { formula }), deps });
+const trigger = (id, type, formula, deps = [], extra = {}) => ({ ...col(id, type, { formula, ...extra }), deps });
+// A design's fact copied from the order it was made for, whenever that is set.
+const fromOrder = (id, type, formula, extra = {}) => trigger(id, type, formula, ['Source_Sub_Order'], extra);
+// A size the order keeps as text ("12"), as a number.
+const size = (colId) => [
+    'so = $Source_Sub_Order',
+    'try:',
+    `  return float(so.${colId}) if so and so.${colId} else None`,
+    'except ValueError:',
+    '  return None'
+].join('\n');
 
 const TABLES = [
     {
@@ -150,28 +160,60 @@ const TABLES = [
             // The design's number; its sides add -1, -2 (Plate_Sides.Plate_No).
             // Stamped once: a plate's number never moves.
             trigger('Plate_No', 'Text', 'f"PL-{$id:05d}"'),
-            col('Customer', 'Ref:Customers'),
+            // The order the plate was made for. The design's facts below are
+            // copied from it by trigger (the user prefers triggers, 15 Nov
+            // 2026): stamped when it is set or changed, never following a later
+            // edit to the order. The app (newDesignRecord) and the register
+            // builder write the same values, which a trigger never overrides.
             col('Source_Sub_Order', 'Ref:Sub_Orders'),
-            col('Plate_Order', 'Ref:Plate_Orders'),
+            fromOrder('Customer', 'Ref:Customers', '$Source_Sub_Order.Customer if $Source_Sub_Order else None'),
+            // The plate order sent for the order it was made for -- the latest,
+            // when its files were sent again (user, 15 Nov 2026).
+            fromOrder('Plate_Order', 'Ref:Plate_Orders', [
+                'orders = Plate_Orders.lookupRecords(Sub_Order_in_Context=$Source_Sub_Order) if $Source_Sub_Order else []',
+                'return max(orders, key=lambda o: o.id) if orders else None'
+            ].join('\n')),
             // PLATE, DIGITAL (a full-colour design's plate) or STEREO: the kind
-            // letter of its rack code -- K-12, KD-12, KS-12.
-            choice('Plate_Type', PLATE_KINDS),
-            // As the order said when the plate was made. Copied, not looked up:
-            // a later edit to the order does not change the plate in the rack.
-            col('Material', 'Text'),
-            col('Print', 'Text'),
-            col('Printing_Colours', 'Text'),
+            // letter of its rack code -- K-12, KD-12, KS-12. Same rule as
+            // kindOfOrder in printingPlates.js. A company plate has no order and
+            // is written by the app.
+            fromOrder('Plate_Type', 'Choice', [
+                'so = $Source_Sub_Order',
+                'if not so:',
+                '  return None',
+                'plate = (so.Plate or "").strip().upper()',
+                'if plate == "STEREO":',
+                '  return "STEREO"',
+                'if plate != "PLATE":',
+                '  return None',
+                'return "DIGITAL" if (so.Print or "").strip().upper() == "MULTI COLOUR" else "PLATE"'
+            ].join('\n'), { widgetOptions: JSON.stringify({ choices: PLATE_KINDS }) }),
+            // As the order said when the plate was made.
+            fromOrder('Material', 'Text', '($Source_Sub_Order.Material or "") if $Source_Sub_Order else ""'),
+            fromOrder('Print', 'Text', '($Source_Sub_Order.Print or "") if $Source_Sub_Order else ""'),
+            // "RED + BLACK", or MULTI COLOUR for a full design: colourKey in
+            // printingMachines.js.
+            fromOrder('Printing_Colours', 'Text', [
+                'so = $Source_Sub_Order',
+                'if not so:',
+                '  return ""',
+                'colours = sorted(set((c or "").strip().upper() for c in (so.Printing_Colour or []) if (c or "").strip()))',
+                'if "MULTI COLOUR" in colours or (so.Print or "").strip().upper() == "MULTI COLOUR":',
+                '  return "MULTI COLOUR"',
+                'return " + ".join(colours)'
+            ].join('\n')),
             // The bag the plate was made for. It fits that bag and anything bigger.
-            col('Bag_Width', 'Numeric'),
-            col('Bag_Height', 'Numeric'),
-            // How many plates the set holds: single, two, four.
-            col('Plate_Count', 'Int'),
-            col('Bag_Model', 'Text'),
+            fromOrder('Bag_Width', 'Numeric', size('Bag_Width')),
+            fromOrder('Bag_Height', 'Numeric', size('Bag_Height')),
+            // How many plates the design holds: single, two, four.
+            fromOrder('Plate_Count', 'Int', 'max(1, int($Source_Sub_Order.Plate_Count or 0)) if $Source_Sub_Order else None'),
+            fromOrder('Bag_Model', 'Text', '($Source_Sub_Order.Model or "") if $Source_Sub_Order else ""'),
             // Every order that printed with it, oldest first.
             col('Orders', 'RefList:Sub_Orders'),
-            // When this plate was made: the design's first order, or the repeat
-            // order that had it made again. Blank before the records start.
-            col('Made_On', 'Date'),
+            // When this plate was made: the date of the order it was made for --
+            // its first order, or the repeat order that had it made again. Blank
+            // before the records start.
+            fromOrder('Made_On', 'Date', '$Source_Sub_Order.Order_Form_Date if $Source_Sub_Order else None'),
             col('Last_Used_On', 'Date'),
             // Plates last six months from the day they were made, digital
             // plates a year, stereos for good (user, 5 Nov 2026) -- the same
@@ -186,7 +228,11 @@ const TABLES = [
                 ['Made_On', 'Last_Used_On', 'Plate_Type']),
             // Measured on the floor; nothing on the order says it.
             col('Stereo_Size', 'Text'),
-            col('Reusable', 'Bool'),
+            // Stereos are kept; plastic-cover and BOPP plates are binned after
+            // the run (isReusable in printingPlates.js).
+            trigger('Reusable', 'Bool',
+                'True if $Plate_Type == "STEREO" else ($Material or "").strip().upper() not in ("PLASTIC", "BOPP LAMINATED")',
+                ['Material', 'Plate_Type']),
             live('Shop', 'Any', '$Customer.Shop_Name if $Customer else None'),
             live('City', 'Any', '$Customer.City if $Customer else None'),
             choice('Rack', RACKS),
@@ -402,13 +448,17 @@ for (const t of TABLES) {
 //     column keeping its values and its formula as the trigger (the user prefers
 //     triggers, 15 Nov 2026); step 3 then sets when it fires. The reverse --
 //     a data column into a live formula -- is never done here.
+//     A plain data column defined as a trigger gets its formula the same way;
+//     its values stay until a dependency changes.
 for (const t of TABLES) {
     if (DRY_RUN && !existing.has(t.id)) continue;
-    const live = new Set((await sql(`
-        SELECT c.colId FROM _grist_Tables_column c JOIN _grist_Tables tb ON tb.id = c.parentId
-        WHERE tb.tableId = ? AND c.isFormula = 1`, [t.id])).map((r) => r.colId));
-    for (const c of t.columns.filter((x) => x.deps && live.has(x.id))) {
-        say(`${t.id}.${c.id}: live formula -> data column with a trigger`);
+    const current = new Map((await sql(`
+        SELECT c.colId, c.isFormula, c.formula FROM _grist_Tables_column c JOIN _grist_Tables tb ON tb.id = c.parentId
+        WHERE tb.tableId = ?`, [t.id])).map((r) => [r.colId, r]));
+    for (const c of t.columns.filter((x) => x.deps && current.has(x.id))) {
+        const now = current.get(c.id);
+        if (!now.isFormula && now.formula === c.fields.formula) continue;
+        say(`${t.id}.${c.id}: ${now.isFormula ? 'live formula' : 'data column'} -> data column with a trigger`);
         await apply([['ModifyColumn', t.id, c.id, { isFormula: false, formula: c.fields.formula }]]);
     }
 }
