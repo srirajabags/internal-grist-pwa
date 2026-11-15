@@ -35,6 +35,11 @@ describe('which files a design\'s pictures are made from', () => {
         expect(artworksIn(['only.jpg'])).toEqual(['only.jpg']);
     });
 
+    it('counts a file attached twice once, so it is not taken for both plates', () => {
+        expect(fileSources({ plateOrder: [30547, 30547] })).toEqual([[30547]]);
+        expect(candidateFiles(2, fileSources({ plateOrder: [1, 1] }), meta)).toEqual([]);
+    });
+
     it('looks at the plate order first, then the designer\'s TIFF task, then an old TIFF', () => {
         expect(fileSources({ plateOrder: [], designerTask: [1, 2], oldTiff: [5] })).toEqual([[1, 2], [5]]);
     });

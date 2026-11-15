@@ -43,8 +43,10 @@ export const artworksIn = (names) => {
 // Where a sub-order's design files are, best first: the plate order (what the
 // plate maker was sent), the designer's TIFF task, then a repeat order's old
 // TIFF. Each source is a list of attachment ids in the order they were added.
+// The same file attached twice is one artwork, not two (plate order
+// [24780, 24780], 15 Nov 2026): each id counts once.
 export const fileSources = ({ plateOrder = [], designerTask = [], oldTiff = [] } = {}) =>
-    [plateOrder, designerTask, oldTiff].map((ids) => (ids || []).map(num).filter(Boolean)).filter((ids) => ids.length);
+    [plateOrder, designerTask, oldTiff].map((ids) => [...new Set((ids || []).map(num).filter(Boolean))]).filter((ids) => ids.length);
 
 // The files of the first source that can give one artwork per plate, judged
 // from names alone, before anything is downloaded. An archive holds at least
