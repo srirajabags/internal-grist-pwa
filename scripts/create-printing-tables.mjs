@@ -148,7 +148,8 @@ const TABLES = [
         page: '🔖 Printing Plates',
         columns: [
             // The design's number; its sides add -1, -2 (Plate_Sides.Plate_No).
-            live('Plate_No', 'Text', 'f"PL-{$id:05d}"'),
+            // Stamped once: a plate's number never moves.
+            trigger('Plate_No', 'Text', 'f"PL-{$id:05d}"'),
             col('Customer', 'Ref:Customers'),
             col('Source_Sub_Order', 'Ref:Sub_Orders'),
             col('Plate_Order', 'Ref:Plate_Orders'),
@@ -176,12 +177,13 @@ const TABLES = [
             // plates a year, stereos for good (user, 5 Nov 2026) -- the same
             // rule as EXPIRY_MONTHS in printingPlates.js. A plate used with no
             // making order on record was made before the records began (1 Oct
-            // 2025), so that is the latest it can date from. Live: it reads
-            // only this row.
-            live('Expires_On', 'Date',
+            // 2025), so that is the latest it can date from. A trigger on the
+            // fields it reads.
+            trigger('Expires_On', 'Date',
                 'months = {"PLATE": 6, "DIGITAL": 12}.get($Plate_Type)\n'
                 + 'made = $Made_On or (DATE(2025, 10, 1) if $Last_Used_On else None)\n'
-                + 'return DATEADD(made, months=months) if months and made else None'),
+                + 'return DATEADD(made, months=months) if months and made else None',
+                ['Made_On', 'Last_Used_On', 'Plate_Type']),
             // Measured on the floor; nothing on the order says it.
             col('Stereo_Size', 'Text'),
             col('Reusable', 'Bool'),
@@ -190,11 +192,12 @@ const TABLES = [
             choice('Rack', RACKS),
             // The number after the rack letter: K-1290 is rack K, slot 1290.
             col('Slot', 'Int'),
-            // The code as the office writes it. Live, because it only ever reads
-            // this row's own place and kind.
-            live('Rack_Code', 'Text',
+            // The code as the office writes it, from this row's place and kind:
+            // a trigger on those.
+            trigger('Rack_Code', 'Text',
                 'kind = {"STEREO": "S", "DIGITAL": "D"}.get($Plate_Type, "")\n'
-                + 'return "%s%s-%s" % ($Rack, kind, $Slot) if $Rack and $Slot else ""'),
+                + 'return "%s%s-%s" % ($Rack, kind, $Slot) if $Rack and $Slot else ""',
+                ['Rack', 'Plate_Type', 'Slot']),
             // The design's status, from its sides (user, 15 Nov 2026): the same
             // rule as designStatus in src/domain/printing/plateSets.js -- change
             // both. It was a data column until scripts/plate-sides.mjs --switch;
@@ -208,8 +211,10 @@ const TABLES = [
                 'return " · ".join("%d %s" % (n, st.lower()) for st, n in counts if n)'
             ].join('\n')),
             live('Sides', 'RefList:Plate_Sides', 'Plate_Sides.lookupRecords(Design=$id, sort_by="Side_No")'),
-            trigger('Updated_At', TZ, 'NOW()', ['Status', 'Rack', 'Slot']),
-            trigger('Updated_By', 'Ref:Team', 'user.Team', ['Status', 'Rack', 'Slot']),
+            // A design's own edits are its place; its status is its sides', and
+            // each side stamps its own Updated_At.
+            trigger('Updated_At', TZ, 'NOW()', ['Rack', 'Slot']),
+            trigger('Updated_By', 'Ref:Team', 'user.Team', ['Rack', 'Slot']),
             live('Movements', 'RefList:Printing_Plate_Movements',
                 'Printing_Plate_Movements.lookupRecords(Plate=$id, sort_by="-At")'),
             col('Notes', 'Text')
@@ -227,14 +232,16 @@ const TABLES = [
             // Which plate of the design: 1, 2, ... A new plate made for a
             // damaged one takes its place number.
             col('Side_No', 'Int'),
-            // Same rule as sideNo in src/domain/printing/plateSets.js.
-            live('Plate_No', 'Text', [
+            // Same rule as sideNo in src/domain/printing/plateSets.js. The number
+            // on the plate's label: stamped when the side is made, never moved
+            // by a later edit to its design.
+            trigger('Plate_No', 'Text', [
                 'd = $Design',
                 'no = "PL-%05d" % (d.id if d else 0)',
                 'if d and (d.Plate_Count or 1) > 1:',
                 '  no += "-%d" % ($Side_No or 1)',
                 'return no + ("R" if $Replaces else "")'
-            ].join('\n')),
+            ].join('\n'), ['Design', 'Side_No', 'Replaces']),
             // What is printed on it: from its design file
             // (scripts/plate-previews.mjs) or a photo the godown took.
             col('Picture', 'Attachments'),
@@ -388,6 +395,21 @@ for (const t of TABLES) {
         if (!now || now.formula === c.fields.formula) continue;
         say(`${t.id}.${c.id}: updating its formula`);
         await apply([['ModifyColumn', t.id, c.id, { formula: c.fields.formula }]]);
+    }
+}
+
+// 2c. A column now defined as a trigger but still a live formula becomes a data
+//     column keeping its values and its formula as the trigger (the user prefers
+//     triggers, 15 Nov 2026); step 3 then sets when it fires. The reverse --
+//     a data column into a live formula -- is never done here.
+for (const t of TABLES) {
+    if (DRY_RUN && !existing.has(t.id)) continue;
+    const live = new Set((await sql(`
+        SELECT c.colId FROM _grist_Tables_column c JOIN _grist_Tables tb ON tb.id = c.parentId
+        WHERE tb.tableId = ? AND c.isFormula = 1`, [t.id])).map((r) => r.colId));
+    for (const c of t.columns.filter((x) => x.deps && live.has(x.id))) {
+        say(`${t.id}.${c.id}: live formula -> data column with a trigger`);
+        await apply([['ModifyColumn', t.id, c.id, { isFormula: false, formula: c.fields.formula }]]);
     }
 }
 
