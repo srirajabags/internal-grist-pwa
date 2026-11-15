@@ -1,5 +1,8 @@
 #!/usr/bin/env node
-// Fills Printing_Plates from the sub-orders, ahead of the one on-ground check
+// Fills Printing_Plates from the sub-orders, ahead of the one on-ground check.
+// Run scripts/plate-sides.mjs afterwards: each design's physical plates (and so
+// its status) are its Plate_Sides rows (15 Nov 2026).
+//
 // that confirms what is really on the racks.
 //
 //   GRIST_URL=https://grist.srirajabags.in GRIST_API_KEY=xxxx \

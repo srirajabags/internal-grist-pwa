@@ -46,6 +46,12 @@ describe('registerRows — Yuvaraj Mens Wear, the case the user checked (5 Nov 2
     it('makes exactly those two rows', () => {
         expect(rows).toHaveLength(2);
     });
+
+    // A design's status is its sides' (Plate_Sides, 15 Nov 2026): a formula,
+    // which a write would be refused for.
+    it('writes no status on a design', () => {
+        for (const row of rows) expect(row).not.toHaveProperty('Status');
+    });
 });
 
 describe('designsFromOrders — one row per design', () => {

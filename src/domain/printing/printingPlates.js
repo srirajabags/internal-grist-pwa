@@ -14,13 +14,22 @@
 // traced.
 
 import { KIND } from './rackCodes.js';
+import { plateSets, setsOf, setKey } from './plateSets.js';
 
 const norm = (v) => String(v ?? '').trim().toUpperCase();
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 
 export const PLATES_TABLE = 'Printing_Plates';
 export const MOVEMENTS_TABLE = 'Printing_Plate_Movements';
+// One row per physical plate or stereo of a design (plateSets.js).
+export const SIDES_TABLE = 'Plate_Sides';
 export const PLATES_INCHARGE = 'PRINTING PLATES INCHARGE';
+
+// A company plate prints a model design (F12, M3, ...) on plain sheets for
+// every customer's model-number order, on the multi-colour machine (user,
+// 12 Nov 2026). It belongs to no shop and no city rack, so it is found by the
+// design it prints, never by customer.
+export const COMPANY_PLATE = 'COMPANY';
 
 export const STATUS = {
     UNVERIFIED: 'TO BE VERIFIED',
@@ -127,6 +136,13 @@ export const ACTIONS = {
 };
 export const ACTION_LIST = ['ADDED', ...Object.keys(ACTIONS)];
 
+// Moving, issuing and returning happen to the whole plate -- its design, all
+// its sides together -- never to one side (user, 15 Nov 2026: "plate movements
+// will always be at plate level not at individual side level"). The checks --
+// found, not found, damaged, discarded -- are each side's own.
+export const PLATE_LEVEL = ['MOVED', 'ISSUED', 'RETURNED'];
+export const isPlateLevel = (action) => PLATE_LEVEL.includes(action);
+
 export const canDo = (plate, action) => Boolean(ACTIONS[action]?.from.includes(norm(plate?.status)));
 
 // Why an action cannot be done, or null when it can.
@@ -144,37 +160,75 @@ export const actionProblem = (plate, action, { rack, slot } = {}) => {
     return null;
 };
 
-// The Grist bundle for one action on one plate: the plate's new state and the
-// movement that explains it, applied whole or not at all.
+// The Grist bundle for one check on one side (plateSets.js): the side's new
+// state and the movement that explains it, naming the design and the side,
+// applied whole or not at all. Plate-level actions go through
+// designActionBundle.
 // `stereoSize` is what the person measured while they had a stereo in hand,
-// written only when given.
-export const plateActionBundle = (plate, action, { rack, slot, jobId, notes, stereoSize } = {}) => {
-    const problem = actionProblem(plate, action, { rack, slot });
+// written to the design (both stereos of a design are one size) only when given.
+export const plateActionBundle = (plate, action, { notes, stereoSize, jobId } = {}) => {
+    if (isPlateLevel(action)) throw new Error(`${action} moves the whole plate, not one side.`);
+    const problem = actionProblem(plate, action);
     if (problem) throw new Error(problem);
     const rule = ACTIONS[action];
-    const fields = { Status: rule.to };
-    if (rule.needsPlace) {
-        fields.Rack = norm(rack);
-        fields.Slot = slotNumber(slot);
-    }
-    if (String(stereoSize ?? '').trim()) fields.Stereo_Size = String(stereoSize).trim();
-    // An issued plate names the job holding it, so a missing one can be chased;
-    // once it is back, or gone, it names nothing.
-    fields.Issued_To_Job = action === 'ISSUED' ? num(jobId) || null : null;
-    // Taking a plate out of its slot proves it was there, the same as the check.
-    if (action === 'VERIFIED' || (action === 'ISSUED' && norm(plate.status) !== STATUS.IN_RACK)) fields.Verified = true;
-    const movement = {
-        Plate: plate.id,
-        Action: action,
-        Status_After: rule.to,
-        Rack: fields.Rack ?? norm(plate.rack),
-        Slot: fields.Slot ?? (slotNumber(plate.slot) || null),
-        Printing_Job: num(jobId) || null,
-        Notes: notes || ''
-    };
+    const side = { Status: rule.to, Issued_To_Job: null };
+    if (action === 'VERIFIED') side.Verified = true;
+    const stereo = String(stereoSize ?? '').trim();
     return [
-        ['UpdateRecord', PLATES_TABLE, plate.id, fields],
-        ['AddRecord', MOVEMENTS_TABLE, null, movement]
+        ['UpdateRecord', SIDES_TABLE, num(plate.id), side],
+        ...(stereo ? [['UpdateRecord', PLATES_TABLE, setKey(plate), { Stereo_Size: stereo }]] : []),
+        ['AddRecord', MOVEMENTS_TABLE, null, {
+            Plate: setKey(plate),
+            Side: num(plate.id),
+            Action: action,
+            Status_After: rule.to,
+            Rack: norm(plate.rack),
+            Slot: slotNumber(plate.slot) || null,
+            // The job it came back from, when it is retired after one.
+            Printing_Job: num(jobId) || null,
+            Notes: notes || ''
+        }]
+    ];
+};
+
+// The Grist bundle for a plate-level action -- moved, issued, returned -- on
+// one design: each of `sides` (the design's sides it applies to) takes its new
+// state, the design its new place when it moved, and one movement for the
+// plate records it, naming no side.
+export const designActionBundle = (sides, action, { rack, slot, jobId, notes } = {}) => {
+    if (!isPlateLevel(action)) throw new Error(`${action} is checked side by side, not for the whole plate.`);
+    const list = (sides || []).filter(Boolean);
+    if (!list.length) throw new Error('No plate to move.');
+    const designId = setKey(list[0]);
+    if (list.some((p) => setKey(p) !== designId)) throw new Error('These sides belong to different plates.');
+    for (const p of list) {
+        const problem = actionProblem(p, action, { rack, slot });
+        if (problem) throw new Error(problem);
+    }
+    const rule = ACTIONS[action];
+    // A move changes only where the design lives; its sides stay as they are.
+    const sideUpdates = action === 'MOVED' ? [] : list.map((p) => {
+        const fields = { Status: rule.to };
+        // An issued plate names the job holding it, so a missing one can be
+        // chased; once it is back, it names nothing.
+        fields.Issued_To_Job = action === 'ISSUED' ? num(jobId) || null : null;
+        // Taking a plate out of its slot proves it was there, the same as the check.
+        if (action === 'ISSUED' && norm(p.status) !== STATUS.IN_RACK) fields.Verified = true;
+        return ['UpdateRecord', SIDES_TABLE, num(p.id), fields];
+    });
+    const place = rule.needsPlace ? { Rack: norm(rack), Slot: slotNumber(slot) } : null;
+    return [
+        ...sideUpdates,
+        ...(place ? [['UpdateRecord', PLATES_TABLE, designId, place]] : []),
+        ['AddRecord', MOVEMENTS_TABLE, null, {
+            Plate: designId,
+            Action: action,
+            Status_After: rule.to,
+            Rack: place?.Rack ?? norm(list[0].rack),
+            Slot: place?.Slot ?? (slotNumber(list[0].slot) || null),
+            Printing_Job: num(jobId) || null,
+            Notes: notes || ''
+        }]
     ];
 };
 
@@ -200,14 +254,20 @@ export const afterJobAction = (plate, condition) => {
 //
 // Retired plates are never offered, and an order left with none is reported --
 // it cannot run.
+// The company plate for a model design, still kept.
+export const companyPlatesFor = (model, plates) => (plates || [])
+    .filter((p) => !isRetired(p) && norm(p.plateType) === COMPANY_PLATE && norm(p.modelDesign) === norm(model));
+
 export const platesForSubOrder = (so, plates) => {
     const soId = num(so?.id);
+    // Sub_Orders.Reused_Plates names designs; a design runs on all its live sides.
     const reused = new Set((so?.reusedPlates || []).map(num));
     const live = (plates || []).filter((p) => !isRetired(p));
-    const own = live.filter((p) => (soId && num(p.sourceSubOrder) === soId) || reused.has(num(p.id)));
+    const own = live.filter((p) => (soId && num(p.sourceSubOrder) === soId) || reused.has(setKey(p)));
     if (own.length || !so?.customer) return own;
+    // The whole design: a two-plate design runs on both its plates.
     const { shortlist } = repeatShortlist(so, live, 0);
-    return shortlist.length ? [shortlist[0].plate] : [];
+    return shortlist.length ? shortlist[0].plates : [];
 };
 
 // The pick list for a batch, in walking order: rack, then slot, then plate.
@@ -218,6 +278,15 @@ export const pickList = (jobs, plates) => {
     const lines = [];
     const missing = [];
     for (const job of jobs || []) {
+        // A model-design run prints with the company's plate for that design,
+        // not with any of its orders' own plates -- those are for the customer's
+        // print, which is a job of its own.
+        if (job.modelDesign) {
+            const own = companyPlatesFor(job.modelDesign, plates);
+            if (own.length === 0) missing.push({ job, so: null });
+            for (const plate of own) lines.push({ job, so: null, plate });
+            continue;
+        }
         const taken = new Set();
         for (const so of job.subOrders || []) {
             const own = platesForSubOrder(so, plates);
@@ -229,30 +298,42 @@ export const pickList = (jobs, plates) => {
             }
         }
     }
+    // A design short of a plate -- one damaged or discarded and no new one made
+    // yet -- is flagged, not filled in: registering a "new" plate for it would
+    // start a second set. Its new plate is recorded on /plates.
+    const short = setsOf(lines.map((l) => l.plate), plates)
+        .filter((set) => set.gaps.length)
+        .map((set) => ({ job: lines.find((l) => setKey(l.plate) === set.key).job, set }));
     // A plate with no slot yet sorts after the numbered ones on its rack.
     const slotOrder = (s) => slotNumber(s) ?? Infinity;
     lines.sort((a, b) => norm(a.plate.rack).localeCompare(norm(b.plate.rack))
         || slotOrder(a.plate.slot) - slotOrder(b.plate.slot)
         || num(a.plate.id) - num(b.plate.id));
-    return { lines, missing };
+    return { lines, missing, short };
 };
 
 // Which of a job's orders a plate printed, for the plate's order history.
 export const ordersServedBy = (job, plate) => (job?.subOrders || [])
-    .filter((so) => platesForSubOrder(so, [plate]).length)
+    .filter((so) => (job?.modelDesign
+        ? companyPlatesFor(job.modelDesign, [plate]).length
+        : platesForSubOrder(so, [plate]).length))
     .map((so) => so.id);
 
-// Plates a repeat order might reuse: the customer's own, still kept, and of the
-// kind the order prints with -- a stereo order cannot run on a plate, nor a
-// full-colour order on a single-colour plate (user, 5 Nov 2026). Plates that fit
-// the new bag come first, then the newest. The app only offers these -- a
-// person looks and confirms (user, 1 Nov 2026).
-export const repeatCandidates = (subOrder, plates) => (plates || [])
-    .filter((p) => num(p.customer) === num(subOrder?.customer) && !isRetired(p)
-        && norm(p.plateType) === kindOfOrder(subOrder))
-    .map((p) => ({ plate: p, fits: plateFits(p, subOrder) }))
+// Designs a repeat order might reuse: the customer's own, with a plate still
+// kept, and of the kind the order prints with -- a stereo order cannot run on a
+// plate, nor a full-colour order on a single-colour plate (user, 5 Nov 2026).
+// Designs that fit the new bag come first, then the newest. The app only offers
+// these -- a person looks and confirms (user, 1 Nov 2026).
+//
+// Each candidate is a design: `plate` speaks for it (its first live plate) and
+// `plates` are all its live plates, which the order reuses together. `gaps` are
+// places whose plate was retired and not yet replaced.
+export const repeatCandidates = (subOrder, plates) => plateSets((plates || [])
+    .filter((p) => num(p.customer) === num(subOrder?.customer) && norm(p.plateType) === kindOfOrder(subOrder)))
+    .filter((set) => set.live.length)
+    .map((set) => ({ plate: set.lead, plates: set.live, gaps: set.gaps, fits: plateFits(set.lead, subOrder) }))
     .sort((a, b) => Number(b.fits === true) - Number(a.fits === true)
-        || num(b.plate.id) - num(a.plate.id));
+        || setKey(b.plate) - setKey(a.plate));
 
 // The plate a repeat order should most likely reuse -- one, since an order runs
 // on a single plate (user, 5 Nov 2026).
@@ -262,7 +343,8 @@ export const repeatCandidates = (subOrder, plates) => (plates || [])
 //              plate on a bigger bag leaves more of the bag unprinted
 //   others     the rest: smaller plates that also fit, and too-big ones, kept
 //              for the person who knows better
-//   pick       the newest plate on the shortlist that has not expired, or none
+//   pick       the newest design on the shortlist with no plate expired, or
+//              none -- its design id, as Sub_Orders.Reused_Plates names it
 export const repeatShortlist = (subOrder, plates, today) => {
     const all = repeatCandidates(subOrder, plates);
     const [ba, bb] = dims(subOrder?.bagW, subOrder?.bagH);
@@ -277,9 +359,10 @@ export const repeatShortlist = (subOrder, plates, today) => {
         const best = Math.max(0, ...fitting.map(area));
         shortlist = best ? fitting.filter((c) => area(c) === best) : [];
     }
-    const chosen = new Set(shortlist.map((c) => c.plate.id));
-    const newestFirst = (a, b) => num(b.plate.madeOn) - num(a.plate.madeOn) || num(b.plate.id) - num(a.plate.id);
+    const chosen = new Set(shortlist.map((c) => setKey(c.plate)));
+    const newestFirst = (a, b) => num(b.plate.madeOn) - num(a.plate.madeOn) || setKey(b.plate) - setKey(a.plate);
     shortlist = [...shortlist].sort(newestFirst);
-    const pick = shortlist.find((c) => !isExpired(c.plate, today))?.plate.id ?? null;
-    return { shortlist, others: all.filter((c) => !chosen.has(c.plate.id)), pick };
+    // A design with any plate past its date is not picked for anyone.
+    const found = shortlist.find((c) => c.plates.every((p) => !isExpired(p, today)));
+    return { shortlist, others: all.filter((c) => !chosen.has(setKey(c.plate))), pick: found ? setKey(found.plate) : null };
 };

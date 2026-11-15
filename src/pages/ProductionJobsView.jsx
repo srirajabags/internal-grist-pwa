@@ -49,6 +49,7 @@ import {
     attrText, PIECES_PER_BUNDLE, countToKg, primaryUnitFor, SHEET_FORMS, countUnitFor, truthy
 } from '../domain/inventory/txnDisplay';
 import { readyDraw, takeUpTo } from '../domain/production/readyStock';
+import { printingPlan, outputSplit, quantityFields, roundCount, countDivisor } from '../domain/production/outputSplit';
 import { writableRecords } from '../grist/gristWrites';
 import { newJournal } from '../grist/writeJournal';
 import { jobLedger, batchLedger, outputBreakdown, drawnKg } from '../domain/production/jobLedger';
@@ -3562,58 +3563,6 @@ const collectedKgOf = (job) => {
     return items.reduce((t, it) => t + num(it.collectedKg), 0);
 };
 
-// Book a movement in the unit the godown actually handles that form: sheets and
-// patty are counted, rolls and finished bags are weighed. Writing both moves two
-// balances for one movement, and writing the wrong one moves neither -- which is
-// why bags-godown sheets read 0 kg against a real count.
-const quantityFields = ({ type, name, kg, count }) => {
-    // A counted form is booked by count even when the count is zero: falling back
-    // to a weight there would move a balance the godown does not keep for it.
-    if (primaryUnitFor(type, name) === 'count') {
-        return count == null ? { Weight_Kg_: roundWeight(kg) } : { Count_Bundles_: num(count) };
-    }
-    return { Weight_Kg_: roundWeight(kg) };
-};
-
-// How one produced output divides between the printing area and the shelf, in
-// both units. The modal shows exactly what the writer books, because they are the
-// same function -- apportioning it twice is how the counts drifted apart before.
-const outputSplit = (o) => {
-    const output = num(o.weight);
-    const planned = num(o.planned);
-    const surplus = o.allToPrinting ? 0 : Math.max(0, output - planned);
-    const printingQty = output - surplus;
-    const count = num(o.count) / countDivisor(o.outputType, o.unit);
-    const share = output > 0 ? printingQty / output : 1;
-    // Split the count the way the weight split, then take the remainder as the
-    // surplus so the two halves add back to exactly what was produced.
-    const printingCount = roundCount(o.outputType, count * share);
-    const halves = [
-        { location: PRINTING_AREA, kg: printingQty, count: printingCount },
-        ...(surplus > 0
-            ? [{ location: BAGS_GODOWN, kg: surplus, count: roundCount(o.outputType, count - printingCount) }]
-            : [])
-    ];
-    return halves
-        .map((h) => ({ ...h, fields: quantityFields({ type: o.outputType, kg: h.kg, count: h.count }) }))
-        // A half that rounds to nothing is not booked at all.
-        .filter((h) => num(h.fields.Count_Bundles_) !== 0 || num(h.fields.Weight_Kg_) !== 0);
-};
-
-// Sheets are counted one at a time, so their count has to be a whole number. A
-// bundle can be a fraction -- a pressing handle is never physically bundled, and
-// 8,065 pieces really is 80.65 bundles -- so those keep two decimals.
-const roundCount = (type, v) =>
-    (SHEET_FORMS.has(itemForm(type)) ? Math.round(num(v)) : Math.round(num(v) * 100) / 100);
-
-// Count_Bundles_ stores the godown's own unit. A count the app planned in pieces
-// has to be divided down to that unit before it is stored; a count already in
-// sheets or bundles goes in as it is.
-const countDivisor = (outputType, unit) => {
-    if (String(unit || '').trim().toLowerCase() !== 'pieces') return 1;
-    return PIECES_PER_BUNDLE[itemForm(outputType)] || 1;
-};
-
 // Which of the candidate item codes an output belongs to: the one whose
 // specification IS the article's, or none.
 //
@@ -3751,9 +3700,10 @@ const jobWorkPlan = (job) => {
     // being asked for; a line reading 2,640 against a job carrying roll for 4,400
     // is read as the answer and the rest of the run never happens.
     //
-    // The orders' own share is kept beside it. That is the part that goes to the
-    // printing area when the job is closed -- the surplus is nobody's order yet,
-    // and goes to the shelf.
+    // The orders' own share is kept beside it. All of the run goes to the printing
+    // area when the job is closed, because the model design is printed on every
+    // sheet of it; the printing job then sends the orders' share on and the rest
+    // back to the godown, printed (outputSplit.printingPlan, modelRuns).
     for (const g of map.values()) {
         g.minRuns = modelSheetRuns(jobType, g.rows.map(planShape), rate);
         g.orderQty = g.qty;
@@ -4077,7 +4027,7 @@ const JobDetail = ({ job, updating, onStart, onComplete, onViewForm, startBlock 
                                                 {r.orderSheets > 0
                                                     ? ` — ${r.orderSheets.toLocaleString('en-IN')} for the orders,`
                                                     : ' —'}
-                                                {' '}{r.extraSheets.toLocaleString('en-IN')} to stock
+                                                {' '}{r.extraSheets.toLocaleString('en-IN')} back to stock after printing
                                             </span>
                                         ))}
                                     </span>
@@ -4101,12 +4051,12 @@ const JobDetail = ({ job, updating, onStart, onComplete, onViewForm, startBlock 
 
                     {sizeGroups.some((g) => (g.minRuns || []).length > 0) && (
                         <p className="mt-3 text-[11px] text-violet-900 bg-violet-50 border border-violet-200 rounded-lg px-2.5 py-2">
-                            A model number is printed from a plate made for that customer, so the run is
-                            lifted to the fewest sheets worth setting the plate up for — which is why the
-                            line above asks for more than the orders do.
-                            <span className="font-semibold"> Cut the whole line total.</span> The orders take
-                            their share and the rest is booked into the bags godown, ready for that
-                            customer&apos;s next order.
+                            A model design is printed from the company&apos;s model plate, and the plate is only
+                            worth setting up for a full run — which is why the line above asks for more than
+                            the orders do. <span className="font-semibold">Cut the whole line total.</span> All
+                            of the run goes to the printing area for the model design on the multi-colour
+                            machine. After that the orders&apos; sheets go on to the customer&apos;s print and the
+                            rest come back to the bags godown, already printed, for the next order.
                         </p>
                     )}
 
@@ -4395,11 +4345,10 @@ const OutputModal = ({ job, updating, onClose, onSubmit, checkBooking }) => {
     // patty and sheets, whose movements book a count and carry no weight to scale
     // by.
     const outputs = sizeGroups.filter((g) => num(g.cutQty) > 0 || num(g.cutMade) > 0).map((g) => {
-        // The orders' share, not the whole run: what a model-number floor added is
-        // stock for next month, and outputSplit sends everything above `planned`
-        // to the bags godown, which is exactly where it belongs.
-        const planned = roundWeight(num(g.cutOrderQty));
-        const plannedCount = Math.ceil(num(g.cutOrderMade) - 1e-9);
+        // The orders' share and the whole of a model-number plate run: the run
+        // goes through the multi-colour machine before any of it is stock
+        // (printingPlan). Only over-cutting beyond that goes to the bags godown.
+        const { planned, plannedCount } = printingPlan(g);
         return {
             key: g.key,
             label: g.label,

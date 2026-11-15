@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-    STATUS, isReusable, kindOfOrder, expiry, expiresOn, isExpired, rackFor, plateFits, canDo, actionProblem, plateActionBundle,
+    STATUS, isReusable, kindOfOrder, expiry, expiresOn, isExpired, rackFor, plateFits, canDo, actionProblem, plateActionBundle, designActionBundle,
     afterJobAction, platesForSubOrder, ordersServedBy, pickList, repeatCandidates, repeatShortlist
 } from './printingPlates';
 
@@ -90,10 +90,14 @@ describe('plate actions — only moves that make sense on the floor', () => {
         expect(actionProblem(inRack, 'MOVED', { rack: 'K', slot: ' 3 ' })).toBeNull();
     });
 
-    it('writes the plate and its movement together', () => {
-        const bundle = plateActionBundle(inRack, 'ISSUED', { jobId: 41 });
+    // "Plate movements will always be at plate level not at individual side
+    // level" (user, 15 Nov 2026).
+    it('issues a plate whole: every side out with the job, one movement for the plate', () => {
+        const side2 = { ...inRack, id: 8, plateInSet: 2, designId: 7 };
+        const bundle = designActionBundle([{ ...inRack, designId: 7 }, side2], 'ISSUED', { jobId: 41 });
         expect(bundle).toEqual([
-            ['UpdateRecord', 'Printing_Plates', 7, { Status: STATUS.ISSUED, Issued_To_Job: 41 }],
+            ['UpdateRecord', 'Plate_Sides', 7, { Status: STATUS.ISSUED, Issued_To_Job: 41 }],
+            ['UpdateRecord', 'Plate_Sides', 8, { Status: STATUS.ISSUED, Issued_To_Job: 41 }],
             ['AddRecord', 'Printing_Plate_Movements', null, {
                 Plate: 7, Action: 'ISSUED', Status_After: STATUS.ISSUED,
                 Rack: 'K', Slot: 1290, Printing_Job: 41, Notes: ''
@@ -101,8 +105,25 @@ describe('plate actions — only moves that make sense on the floor', () => {
         ]);
     });
 
+    it('never moves, issues or returns one side on its own', () => {
+        expect(() => plateActionBundle(inRack, 'ISSUED', { jobId: 41 })).toThrow(/whole plate/);
+        expect(() => plateActionBundle(inRack, 'MOVED', { rack: 'B', slot: 1 })).toThrow(/whole plate/);
+        // ... nor checks a whole plate at once.
+        expect(() => designActionBundle([inRack], 'DAMAGED')).toThrow(/side by side/);
+        expect(() => designActionBundle([inRack, { ...inRack, id: 99, designId: 99 }], 'ISSUED', { jobId: 1 })).toThrow(/different plates/);
+    });
+
+    it('moves the plate\'s slot and leaves its sides as they are', () => {
+        expect(designActionBundle([inRack], 'MOVED', { rack: 'b', slot: '12' })).toEqual([
+            ['UpdateRecord', 'Printing_Plates', 7, { Rack: 'B', Slot: 12 }],
+            ['AddRecord', 'Printing_Plate_Movements', null, {
+                Plate: 7, Action: 'MOVED', Status_After: STATUS.IN_RACK, Rack: 'B', Slot: 12, Printing_Job: null, Notes: ''
+            }]
+        ]);
+    });
+
     it('clears the job once the plate is back, leaving its slot as it was', () => {
-        const [[, , , fields]] = plateActionBundle({ ...inRack, status: STATUS.ISSUED }, 'RETURNED', {});
+        const [[, , , fields]] = designActionBundle([{ ...inRack, status: STATUS.ISSUED }], 'RETURNED', {});
         expect(fields).toEqual({ Status: STATUS.IN_RACK, Issued_To_Job: null });
     });
 
@@ -116,10 +137,9 @@ describe('plate actions — only moves that make sense on the floor', () => {
         expect(move).toMatchObject({ Action: 'VERIFIED', Rack: 'A', Slot: null });
     });
 
-    it('records a stereo size measured during the check', () => {
-        const [[, , , fields]] = plateActionBundle({ ...inRack, status: STATUS.UNVERIFIED }, 'VERIFIED',
-            { rack: 'K', slot: 43, stereoSize: ' 10 x 12 ' });
-        expect(fields.Stereo_Size).toBe('10 x 12');
+    it('records a stereo size measured during the check, on the design -- both stereos are one size', () => {
+        const bundle = plateActionBundle({ ...inRack, status: STATUS.UNVERIFIED }, 'VERIFIED', { stereoSize: ' 10 x 12 ' });
+        expect(bundle[1]).toEqual(['UpdateRecord', 'Printing_Plates', 7, { Stereo_Size: '10 x 12' }]);
     });
 });
 

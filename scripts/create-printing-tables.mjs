@@ -5,7 +5,9 @@
 //   Printing_Job_Batches      one machine type, one day
 //   Printing_Jobs             one ink set on that machine, with its plates and wastage
 //   Printing_Job_Outputs      one shop's orders in a job, with what was printed
-//   Printing_Plates           every plate the factory keeps, and where it is
+//   Printing_Plates           every plate design the factory keeps, and where it is
+//   Plate_Sides               each physical plate or stereo of a design, with its
+//                             picture and the godown's checks (user, 15 Nov 2026)
 //   Printing_Plate_Movements  what happened to each plate, and who did it
 //
 //   Sub_Orders.Reused_Plates            old plates the office confirmed for a repeat
@@ -30,6 +32,7 @@
 import { MACHINE_LIST, OPERATOR_ROLES } from '../src/domain/printing/printingMachines.js';
 import { STATUS_LIST, ACTION_LIST, RACKS, PLATES_INCHARGE } from '../src/domain/printing/printingPlates.js';
 import { KIND } from '../src/domain/printing/rackCodes.js';
+import { DESIGN_STATUS_FORMULA } from './lib/plate-formulas.mjs';
 
 const PLATE_KINDS = [KIND.PLATE, KIND.DIGITAL, KIND.STEREO];
 
@@ -114,8 +117,10 @@ const TABLES = [
             col('Wastage_Weight_Kg_', 'Numeric'),
             // The plates the job ran with, fixed when the batch's plates are
             // picked, and those the operator marked worn out at completion.
-            col('Plates', 'RefList:Printing_Plates'),
-            col('Damaged_Plates', 'RefList:Printing_Plates'),
+            // Physical plates (sides). Were RefList:Printing_Plates until
+            // scripts/plate-sides.mjs --switch changed their type.
+            col('Plates', 'RefList:Plate_Sides'),
+            col('Damaged_Plates', 'RefList:Plate_Sides'),
             live('Job_ID', 'Any', 'f"{$Printing_Job_Batch.Job_Batch_ID} - {$Printing_Colours} - {$id}"'),
             col('Notes', 'Text')
         ]
@@ -142,7 +147,7 @@ const TABLES = [
         id: 'Printing_Plates',
         page: '🔖 Printing Plates',
         columns: [
-            // The number on the plate's label. Off the row id, which never changes.
+            // The design's number; its sides add -1, -2 (Plate_Sides.Plate_No).
             live('Plate_No', 'Text', 'f"PL-{$id:05d}"'),
             col('Customer', 'Ref:Customers'),
             col('Source_Sub_Order', 'Ref:Sub_Orders'),
@@ -190,12 +195,19 @@ const TABLES = [
             live('Rack_Code', 'Text',
                 'kind = {"STEREO": "S", "DIGITAL": "D"}.get($Plate_Type, "")\n'
                 + 'return "%s%s-%s" % ($Rack, kind, $Slot) if $Rack and $Slot else ""'),
-            choice('Status', STATUS_LIST),
-            col('Issued_To_Job', 'Ref:Printing_Jobs'),
-            // Set by the on-ground check, or the first time the plate is picked.
-            col('Verified', 'Bool'),
-            trigger('Verified_At', TZ, 'NOW() if $Verified else None', ['Verified']),
-            trigger('Verified_By', 'Ref:Team', 'user.Team if $Verified else None', ['Verified']),
+            // The design's status, from its sides (user, 15 Nov 2026): the same
+            // rule as designStatus in src/domain/printing/plateSets.js -- change
+            // both. It was a data column until scripts/plate-sides.mjs --switch;
+            // this script never turns a data column into a formula.
+            live('Status', 'Choice', DESIGN_STATUS_FORMULA),
+            // "1 in rack · 1 damaged": each side's state at a glance.
+            live('Sides_Summary', 'Text', [
+                'order = ["IN RACK", "ISSUED", "TO BE VERIFIED", "NOT FOUND", "DAMAGED", "DISCARDED"]',
+                'sides = Plate_Sides.lookupRecords(Design=$id)',
+                'counts = [(st, len([s for s in sides if s.Status == st])) for st in order]',
+                'return " · ".join("%d %s" % (n, st.lower()) for st, n in counts if n)'
+            ].join('\n')),
+            live('Sides', 'RefList:Plate_Sides', 'Plate_Sides.lookupRecords(Design=$id, sort_by="Side_No")'),
             trigger('Updated_At', TZ, 'NOW()', ['Status', 'Rack', 'Slot']),
             trigger('Updated_By', 'Ref:Team', 'user.Team', ['Status', 'Rack', 'Slot']),
             live('Movements', 'RefList:Printing_Plate_Movements',
@@ -204,10 +216,53 @@ const TABLES = [
         ]
     },
     {
+        // One row per physical plate or stereo of a design, "with just the
+        // image as the identifier and the actions that the godown team takes
+        // for each individual side" (user, 15 Nov 2026). Moves, issues and
+        // returns are the whole design's; checks are each side's.
+        id: 'Plate_Sides',
+        page: '🖼️ Plate Sides',
+        columns: [
+            col('Design', 'Ref:Printing_Plates'),
+            // Which plate of the design: 1, 2, ... A new plate made for a
+            // damaged one takes its place number.
+            col('Side_No', 'Int'),
+            // Same rule as sideNo in src/domain/printing/plateSets.js.
+            live('Plate_No', 'Text', [
+                'd = $Design',
+                'no = "PL-%05d" % (d.id if d else 0)',
+                'if d and (d.Plate_Count or 1) > 1:',
+                '  no += "-%d" % ($Side_No or 1)',
+                'return no + ("R" if $Replaces else "")'
+            ].join('\n')),
+            // What is printed on it: from its design file
+            // (scripts/plate-previews.mjs) or a photo the godown took.
+            col('Picture', 'Attachments'),
+            choice('Status', STATUS_LIST),
+            col('Issued_To_Job', 'Ref:Printing_Jobs'),
+            // Set by the on-ground check, or the first time it is picked.
+            col('Verified', 'Bool'),
+            trigger('Verified_At', TZ, 'NOW() if $Verified else None', ['Verified']),
+            trigger('Verified_By', 'Ref:Team', 'user.Team if $Verified else None', ['Verified']),
+            col('Replaces', 'Ref:Plate_Sides'),
+            // Blank: made with its design. A replacement dates from its own making
+            // (and so expires later: the app works it out, plateFromRow).
+            col('Made_On', 'Date'),
+            trigger('Updated_At', TZ, 'NOW()', ['Status', 'Picture', 'Verified']),
+            trigger('Updated_By', 'Ref:Team', 'user.Team', ['Status', 'Picture', 'Verified']),
+            live('Movements', 'RefList:Printing_Plate_Movements',
+                'Printing_Plate_Movements.lookupRecords(Side=$id, sort_by="-At")'),
+            col('Notes', 'Text')
+        ]
+    },
+    {
         id: 'Printing_Plate_Movements',
         page: '🔄 Printing Plate Movements',
         columns: [
+            // The design. Moves, issues and returns are the whole plate's.
             col('Plate', 'Ref:Printing_Plates'),
+            // The side, for its own checks; blank for a plate-level movement.
+            col('Side', 'Ref:Plate_Sides'),
             choice('Action', ACTION_LIST),
             choice('Status_After', STATUS_LIST),
             col('Rack', 'Text'),
@@ -242,7 +297,14 @@ const OBSOLETE_COLUMNS = [
     { table: 'Printing_Jobs', column: 'Printed_Weight_Kg_' },
     { table: 'Printing_Jobs', column: 'Misprint_Weight_Kg_' },
     { table: 'Printing_Jobs', column: 'Order_ID' },
-    { table: 'Printing_Jobs', column: 'Shop' }
+    { table: 'Printing_Jobs', column: 'Shop' },
+    // The one-row-per-plate plan (12 Nov 2026), replaced by Plate_Sides before
+    // anything was written to them (15 Nov 2026).
+    { table: 'Printing_Plates', column: 'Set_No' },
+    { table: 'Printing_Plates', column: 'Plate_In_Set' },
+    { table: 'Printing_Plates', column: 'Replaces' },
+    { table: 'Printing_Plates', column: 'Language' },
+    { table: 'Printing_Plates', column: 'Side_Name' }
 ];
 
 const EXTRA_CHOICES = [

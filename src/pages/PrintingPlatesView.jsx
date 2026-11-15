@@ -1,17 +1,17 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
     ArrowLeft, AlertCircle, Loader2, RefreshCw, Tag, Search, CheckCircle2, XCircle, Repeat, Grid3x3,
-    AlertTriangle, X, MoreHorizontal, Image as ImageIcon, ChevronLeft, ChevronRight
+    AlertTriangle, X, MoreHorizontal, Image as ImageIcon, ChevronLeft, ChevronRight, Camera
 } from 'lucide-react';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import WriteFailureModal from '../components/WriteFailureModal';
 import { newJournal } from '../grist/writeJournal';
 import {
-    STATUS, STATUS_LIST, RACKS, PLATES_INCHARGE, canDo, actionProblem, plateActionBundle,
-    repeatShortlist, isExpired, kindOfOrder
+    STATUS, STATUS_LIST, RACKS, PLATES_INCHARGE, canDo, actionProblem, plateActionBundle, designActionBundle,
+    repeatShortlist, isExpired, kindOfOrder, COMPANY_PLATE
 } from '../domain/printing/printingPlates';
-import { plateFromRow, subOrderFromRow } from '../domain/printing/printingJobs';
+import { plateFromRow, subOrderFromRow, SIDE_COLUMNS, SIDES_FROM } from '../domain/printing/printingJobs';
 import { KIND } from '../domain/printing/rackCodes';
 import { proofQuery, proofShots, isShowableProof, shotIndexFor } from '../domain/printing/finalisationProof';
 import ImagePreviewModal from '../components/ImagePreviewModal';
@@ -19,6 +19,13 @@ import { confirmPlateAction, confirmRepeatAnswer } from '../domain/printing/plat
 import {
     sharedCodes, filterPlates, sortForSheet, SECTIONS, rackLabel, slotsOfRack, designText, plateDetails
 } from '../domain/printing/plateTable';
+import {
+    plateSets, designRow, statusGroups, setExpiresOn, positionText, plateLabel, canReplace,
+    replacementActions, replacementMovement, setKey, picturesOf, platesTold, canTakePhoto,
+    photoActions, photoName
+} from '../domain/printing/plateSets';
+import { confirmReplacement, confirmPhoto } from '../domain/printing/plateConfirm';
+import { shrinkPhoto } from '../services/shrinkPhoto';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 
@@ -26,22 +33,28 @@ const DOC_ID = '8vRFY3UUf4spJroktByH4u';
 // Old_Plate_Available (access rule 106), so the same people answer it here.
 const REPEAT_CONFIRMERS = ['OWNER', 'FACTORY', PLATES_INCHARGE];
 
-const PLATE_COLUMNS = `id, Plate_No AS plate_no, Customer AS customer, Source_Sub_Order AS source_sub_order,
-    Plate_Type AS plate_type, Material AS material, Rack AS rack, Slot AS slot, Rack_Code AS rack_code,
-    Plate_Count AS plate_count, Stereo_Size AS stereo_size, Status AS status,
-    Issued_To_Job AS issued_to_job, Bag_Width AS bag_w, Bag_Height AS bag_h,
-    Bag_Model AS bag_model, Orders AS orders, Made_On AS made_on, Last_Used_On AS last_used_on,
-    Expires_On AS expires_on,
-    Shop AS shop, City AS city, Printing_Colours AS colours,
-    (SELECT c.Customer_ID FROM Customers c WHERE c.id = Printing_Plates.Customer) AS customer_no`;
+// A plate is one side (a physical plate or stereo) with its design's facts
+// (plateSets.js); the register adds what the table shows of the design.
+const PLATE_COLUMNS = `${SIDE_COLUMNS}, p.Reusable AS reusable, p.Print AS print, p.Bag_Model AS bag_model,
+    p.Shop AS shop, p.City AS city, p.Printing_Colours AS colours, c.Customer_ID AS customer_no`;
 
 // Notes are left out of the bulk read -- a sentence on every one of 5,000 rows
 // -- and fetched for the one plate whose dialog is open.
 const withDisplay = (r) => ({
     ...plateFromRow(r), shop: r.shop, city: r.city, colours: r.colours, bagModel: r.bag_model,
+    reusable: Boolean(r.reusable), print: r.print || '',
     // The customer ID the office quotes -- Customers.Customer_ID, not the row id.
     customerNo: r.customer_no ? String(r.customer_no) : ''
 });
+
+// `where` names the design as p and the side as s.
+// A join, not a lookup per row: Grist's /sql stops a slow statement at about a second.
+const readPlates = async (runSql, where, args = []) =>
+    (await runSql(`SELECT ${PLATE_COLUMNS} FROM ${SIDES_FROM} LEFT JOIN Customers c ON c.id = p.Customer ${where}`, args)).map(withDisplay);
+
+// The design a plate belongs to, as the register shows it, from the rows at hand.
+const designOf = (plate, rows) => designRow(plateSets((rows || []).filter((x) => setKey(x) === setKey(plate)))[0]
+    || plateSets([plate])[0]);
 
 // Today as a Grist Date (UTC midnight of the local day), for expiry.
 const todayEpoch = () => Date.parse(`${new Date().toLocaleDateString('en-CA')}T00:00:00Z`) / 1000;
@@ -116,6 +129,17 @@ const PrintingPlatesView = ({ onBack, getHeaders, getUrl, userRoles = [] }) => {
             const res = await fetch(getUrl(`/api/docs/${DOC_ID}/attachments/${id}/download`), { headers: await getHeaders() });
             if (!res.ok) throw new Error(`Attachment ${id}: ${res.status}`);
             return URL.createObjectURL(await res.blob());
+        },
+        // A file into Grist's attachments; its new id back.
+        upload: async (blob, name) => {
+            const headers = { ...(await getHeaders()) };
+            delete headers['Content-Type'];
+            const form = new FormData();
+            form.append('upload', blob, name);
+            const res = await fetch(getUrl(`/api/docs/${DOC_ID}/attachments`), { method: 'POST', headers, body: form });
+            if (!res.ok) throw new Error(`Uploading the photo failed: ${res.status}`);
+            const [id] = await res.json();
+            return id;
         }
     };
 
@@ -131,12 +155,14 @@ const PrintingPlatesView = ({ onBack, getHeaders, getUrl, userRoles = [] }) => {
     // One write, confirmed first, then journalled so a refusal is shown the
     // same way as on every other floor page. No write goes without a
     // confirmation: a call that brings none is refused outright.
+    // `actions` is one bundle, or a function given `apply` for a write that
+    // needs the ids an earlier one made.
     const save = async (title, label, actions, confirm) => {
         if (!confirm) throw new Error(`No confirmation for "${label}".`);
         if (!(await ask(confirm))) return false;
         const journal = newJournal();
         try {
-            await journal.run(label, () => apply(actions));
+            await journal.run(label, () => (typeof actions === 'function' ? actions(apply) : apply(actions)));
             return true;
         } catch (err) {
             setWriteFailure({ title, error: err.message, steps: journal.steps });
@@ -146,7 +172,7 @@ const PrintingPlatesView = ({ onBack, getHeaders, getUrl, userRoles = [] }) => {
 
     // The whole register, read once and filtered on the phone: 5,000 rows is a
     // small read, and every filter then answers at once.
-    const register = useLoader(async () => (await runSql(`SELECT ${PLATE_COLUMNS} FROM Printing_Plates`)).map(withDisplay), []);
+    const register = useLoader(async () => readPlates(runSql, ''), []);
 
     const tabs = [
         ['register', 'Register', <Tag key="i" size={14} />],
@@ -209,6 +235,7 @@ const ConfirmModal = ({ confirm, onAnswer }) => (
                     {confirm.subject && <p className="text-xs text-slate-500 mt-0.5">{confirm.subject}</p>}
                 </div>
             </div>
+            {confirm.image && <img src={confirm.image} alt="" className="w-full max-h-64 object-contain rounded-lg bg-slate-100" />}
             <ul className="rounded-lg bg-slate-50 border border-slate-200 p-2.5 space-y-1 text-sm text-slate-700">
                 {confirm.lines.map((l) => <li key={l}>{l}</li>)}
             </ul>
@@ -294,19 +321,48 @@ const LastUsed = ({ p }) => (
     </>
 );
 
+// A design's first plate to expire speaks for it: a new plate made for a
+// damaged one lasts longer than its partner.
+const expiresOf = (p) => (p.set ? setExpiresOn(p.set) : p.expiresOn);
+const expiredOf = (p, today) => (p.set ? p.set.live.some((x) => isExpired(x, today)) : isExpired(p, today));
+
 const Expires = ({ p, today }) => (
-    <span className={isExpired(p, today) ? 'text-rose-700 font-semibold' : ''}>
-        {p.plateType === KIND.STEREO ? <span className="text-slate-400">never</span> : (dateText(p.expiresOn) || '—')}
-        {isExpired(p, today) && <div className="text-[11px] font-normal">expired</div>}
+    <span className={expiredOf(p, today) ? 'text-rose-700 font-semibold' : ''}>
+        {p.plateType === KIND.STEREO ? <span className="text-slate-400">never</span> : (dateText(expiresOf(p)) || '—')}
+        {expiredOf(p, today) && <div className="text-[11px] font-normal">expired</div>}
     </span>
 );
 
-const Status = ({ p }) => (
+const PlateStatus = ({ p }) => (
     <>
         <Pill className={STATUS_STYLE[p.status] || ''}>{p.status}</Pill>
         {p.status === STATUS.ISSUED && p.issuedToJob ? <div className="text-[11px] text-fuchsia-700 mt-0.5">job {p.issuedToJob}</div> : null}
     </>
 );
+
+// A design's status: one pill when its plates agree, otherwise each plate's own
+// ("1 IN RACK", "2 DAMAGED"), and a flag when one needs a new plate.
+const Status = ({ p }) => {
+    if (!p.set) return <PlateStatus p={p} />;
+    const groups = statusGroups(p.set);
+    const many = p.set.plates.length > 1;
+    return (
+        <div className="flex flex-col items-start gap-0.5">
+            {groups.length === 1 && !p.set.gaps.length ? (
+                <PlateStatus p={groups[0].plates[0]} />
+            ) : groups.map((g) => (
+                <Pill key={g.status} className={STATUS_STYLE[g.status] || ''}>
+                    {many ? `${g.plates.map((x) => x.plateInSet || 1).join(', ')} · ` : ''}{g.status}
+                </Pill>
+            ))}
+            {p.set.gaps.length > 0 && (
+                <span className="text-[11px] text-rose-700 font-semibold whitespace-nowrap">
+                    needs new plate {p.set.gaps.map((g) => g.at).join(', ')}
+                </span>
+            )}
+        </div>
+    );
+};
 
 // Made, last used, expires and status as four labelled figures -- the second
 // row of a phone card, and the top of the plate sheet.
@@ -326,10 +382,10 @@ const Dates = ({ p, today }) => (
 // whose it is under that, and its dates as one quiet line at the foot -- the
 // rest is a tap away in the sheet.
 const PlateCard = ({ p, shared, today, onOpen }) => {
-    const expired = isExpired(p, today);
+    const expired = expiredOf(p, today);
     const made = dateText(p.madeOn) || (p.orders.length ? 'before Oct 25' : '—');
     const used = dateText(p.lastUsedOn);
-    const expires = p.plateType === KIND.STEREO ? 'never' : (dateText(p.expiresOn) || '—');
+    const expires = p.plateType === KIND.STEREO ? 'never' : (dateText(expiresOf(p)) || '—');
     const fact = (label, value, cls = 'text-slate-700') => (
         <span className="whitespace-nowrap">{label} <span className={`font-medium ${cls}`}>{value}</span></span>
     );
@@ -338,7 +394,7 @@ const PlateCard = ({ p, shared, today, onOpen }) => {
             className="w-full text-left bg-white rounded-xl border border-slate-200 px-3.5 py-3 active:bg-slate-50">
             <div className="flex items-start justify-between gap-3">
                 <div className="text-base leading-tight"><RackCode p={p} shared={shared} /></div>
-                <Pill className={STATUS_STYLE[p.status] || ''}>{p.status}</Pill>
+                <Status p={p} />
             </div>
             <div className="mt-1.5 font-medium text-slate-800 leading-snug line-clamp-2">{p.shop || 'Unknown shop'}</div>
             <div className="mt-0.5 text-xs text-slate-500 truncate">
@@ -369,9 +425,11 @@ const RegisterPanel = ({ register, save, runSql, attachments }) => {
     const [editing, setEditing] = useState(null);
 
     const shared = useMemo(() => sharedCodes(register.rows), [register.rows]);
+    // One line per design; its plates are inside it (plateSets.js).
+    const designs = useMemo(() => plateSets(register.rows).map(designRow), [register.rows]);
     const rows = useMemo(
-        () => sortForSheet(filterPlates(register.rows, { text, status, kind, rack })),
-        [register.rows, text, status, kind, rack]
+        () => sortForSheet(filterPlates(designs, { text, status, kind, rack })),
+        [designs, text, status, kind, rack]
     );
 
     const th = 'py-2 px-2.5 font-semibold align-top';
@@ -401,7 +459,7 @@ const RegisterPanel = ({ register, save, runSql, attachments }) => {
             </div>
             <Problem text={register.error} />
             <div className="text-xs text-slate-500">
-                {register.loading && !register.rows.length ? 'Loading the register…' : `${rows.length} of ${register.rows.length} plates`}
+                {register.loading && !register.rows.length ? 'Loading the register…' : `${rows.length} of ${designs.length} designs · ${register.rows.length} plates`}
             </div>
             {/* Phones: one card per design, no sideways scroll; tap for the sheet. */}
             <div className="md:hidden space-y-2">
@@ -438,7 +496,7 @@ const RegisterPanel = ({ register, save, runSql, attachments }) => {
                                 <td className={`${td} text-right tabular-nums text-slate-600 whitespace-nowrap`}><Expires p={p} today={today} /></td>
                                 <td className={td}><Status p={p} /></td>
                                 <td className="py-1 px-1.5">
-                                    <button type="button" onClick={() => setEditing(p)} title="Check, move or retire this plate"
+                                    <button type="button" onClick={() => setEditing(p)} title="Check, move or retire its plates"
                                         className="w-7 h-7 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 flex items-center justify-center">
                                         <MoreHorizontal size={14} />
                                     </button>
@@ -454,7 +512,7 @@ const RegisterPanel = ({ register, save, runSql, attachments }) => {
                 </Button>
             )}
             {editing && (
-                <PlateModal plate={editing} save={save} runSql={runSql} attachments={attachments} onClose={() => setEditing(null)}
+                <PlateModal design={editing} save={save} runSql={runSql} attachments={attachments} onClose={() => setEditing(null)}
                     onChanged={() => { setEditing(null); register.reload(); }} />
             )}
         </div>
@@ -463,9 +521,9 @@ const RegisterPanel = ({ register, save, runSql, attachments }) => {
 
 // The things a person can do to a plate from the register. Issuing and
 // returning belong to a printing batch and happen on /printing.
+// Each side's own checks. A move is the whole plate's (PlateMove).
 const MANUAL_ACTIONS = [
     ['VERIFIED', 'Found it'],
-    ['MOVED', 'Moved'],
     ['NOT_FOUND', 'Not found'],
     ['DAMAGED', 'Damaged'],
     ['DISCARDED', 'Discard']
@@ -609,61 +667,49 @@ const ProofCarousel = ({ orderIds, runSql, attachments, focus, onShots, onCurren
     );
 };
 
-const PlateModal = ({ plate, save, runSql, attachments, onClose, onChanged }) => {
+// A design's sheet: its finalised design and orders, then each of its plates
+// with its own status and buttons -- a two-plate design's plates are found,
+// missed, damaged and replaced one at a time (user, 12 Nov 2026).
+const PlateModal = ({ design, save, runSql, attachments, onClose, onChanged }) => {
     // Which orders have a screenshot in the carousel, which one it is showing,
     // and the last order row tapped.
     const [shotOrders, setShotOrders] = useState(() => new Set());
     const [showing, setShowing] = useState(null);
     const [focus, setFocus] = useState(null);
-    const [plateNote, setPlateNote] = useState('');
+    const [notesById, setNotesById] = useState({});
     const [orders, setOrders] = useState([]);
+    const set = design.set;
+    const ids = set.plates.map((x) => x.id);
     useEffect(() => {
-        runSql('SELECT Notes AS notes FROM Printing_Plates WHERE id = ?', [plate.id])
-            .then((r) => setPlateNote(r[0]?.notes || ''))
-            .catch(() => setPlateNote(''));
-        if (plate.orders.length) {
-            runSql(ordersSql(plate.orders), plate.orders).then(setOrders).catch(() => setOrders([]));
+        runSql(`SELECT id, Notes AS notes FROM Plate_Sides WHERE id IN (${ids.map(() => '?').join(',')})`, ids)
+            .then((r) => setNotesById(Object.fromEntries(r.map((x) => [x.id, x.notes || '']))))
+            .catch(() => setNotesById({}));
+        if (design.orders.length) {
+            runSql(ordersSql(design.orders), design.orders).then(setOrders).catch(() => setOrders([]));
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [plate.id]);
-    const [action, setAction] = useState(null);
-    const [rack, setRack] = useState(plate.rack);
-    const [slot, setSlot] = useState(plate.slot ? String(plate.slot) : '');
-    const [stereoSize, setStereoSize] = useState(plate.stereoSize || '');
-    const [notes, setNotes] = useState('');
-    const [busy, setBusy] = useState(false);
-    const problem = action ? actionProblem(plate, action, { rack, slot }) : null;
-    const isStereo = plate.plateType === KIND.STEREO;
-
-    const submit = async () => {
-        setBusy(true);
-        const ok = await save(`${plate.rackCode || plate.plateNo}: ${action}`, `Record ${action.toLowerCase()} for ${plate.plateNo}`,
-            plateActionBundle(plate, action, { rack, slot, notes, stereoSize: isStereo ? stereoSize : '' }),
-            confirmPlateAction(plate, action, { rack, slot, stereoSize: isStereo ? stereoSize : '' }));
-        setBusy(false);
-        if (ok) onChanged();
-    };
+    }, [ids.join(',')]);
 
     return (
         <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 sm:p-4" onClick={onClose}>
             <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl shadow-xl p-4 pt-2 sm:pt-4 space-y-3 max-h-[90vh] overflow-y-auto"
                 onClick={(e) => e.stopPropagation()}>
                 <div className="sm:hidden mx-auto w-10 h-1 rounded-full bg-slate-300" />
-                <ProofCarousel orderIds={plate.orders} runSql={runSql} attachments={attachments} focus={focus}
+                <ProofCarousel orderIds={design.orders} runSql={runSql} attachments={attachments} focus={focus}
                     onShots={(list) => setShotOrders(new Set(list.map((x) => x.subOrderId)))} onCurrent={setShowing} />
                 <div className="flex items-start gap-3">
                     <div className="min-w-0 flex-1">
-                        <div className="flex items-baseline gap-2"><RackCode p={plate} /></div>
-                        <ShopName p={plate} />
-                        <div className="text-xs text-slate-500">{plate.city}</div>
+                        <div className="flex items-baseline gap-2"><RackCode p={design} /></div>
+                        <ShopName p={design} />
+                        <div className="text-xs text-slate-500">{design.city}</div>
                     </div>
                     <button onClick={onClose} className="p-1 rounded hover:bg-slate-100"><X size={18} /></button>
                 </div>
                 <div className="rounded-lg border border-slate-200 p-2.5 space-y-2.5">
-                    <div className="text-sm"><Details p={plate} /></div>
-                    <Dates p={plate} today={todayEpoch()} />
-                    {plateNote && <div className="text-[11px] text-slate-400">{plateNote}</div>}
+                    <div className="text-sm"><Details p={design} /></div>
+                    <Dates p={design} today={todayEpoch()} />
                 </div>
+                <PlateStrip set={set} notesById={notesById} save={save} attachments={attachments} onChanged={onChanged} />
                 {orders.length > 0 && (
                     <div className="rounded-lg border border-slate-200 overflow-hidden">
                         <div className="px-2.5 py-1.5 bg-slate-50 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Orders printed with it</div>
@@ -686,38 +732,231 @@ const PlateModal = ({ plate, save, runSql, attachments, onClose, onChanged }) =>
                         </div>
                     </div>
                 )}
+            </div>
+        </div>
+    );
+};
+
+// A design's plates one under the other (user, 15 Nov 2026: "give the options
+// for both plates simultaneously as two different rows"): each row its own
+// picture, status and buttons, so both are checked without swiping.
+const PlateStrip = ({ set, notesById, save, attachments, onChanged }) => (
+    <div className="space-y-1.5">
+        <div className="flex items-center justify-between gap-2">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                {set.expected > 1 ? `${set.expected} plates · check each one` : 'The plate'}
+            </div>
+            <PlateMove set={set} save={save} onChanged={onChanged} />
+        </div>
+        {set.live.length > 1 && !platesTold(set) && (
+            <p className="text-[11px] text-amber-700">Take a photo of each plate, so the two can be told apart.</p>
+        )}
+        <div className="rounded-lg border border-slate-200 divide-y divide-slate-200 overflow-hidden">
+            {set.plates.map((plate) => (
+                <PlateRow key={plate.id} plate={plate} set={set} note={notesById[plate.id]} save={save} attachments={attachments} onChanged={onChanged} />
+            ))}
+        </div>
+    </div>
+);
+
+// The plate moved to another slot: all its sides together, one movement for
+// the plate (user, 15 Nov 2026: "plate movements will always be at plate level").
+const PlateMove = ({ set, save, onChanged }) => {
+    const sides = set.live.filter((p) => canDo(p, 'MOVED'));
+    const [open, setOpen] = useState(false);
+    const [rack, setRack] = useState(set.lead.rack || '');
+    const [slot, setSlot] = useState(set.lead.slot ? String(set.lead.slot) : '');
+    const [busy, setBusy] = useState(false);
+    if (!sides.length) return null;
+    const problem = actionProblem(sides[0], 'MOVED', { rack, slot });
+    const submit = async () => {
+        setBusy(true);
+        const ok = await save(`${set.lead.rackCode || set.lead.plateNo}: moved`, `Move ${set.lead.rackCode || set.lead.plateNo}`,
+            designActionBundle(sides, 'MOVED', { rack, slot }), confirmPlateAction(sides[0], 'MOVED', { rack, slot }));
+        setBusy(false);
+        if (ok) onChanged();
+    };
+    if (!open) {
+        return (
+            <button type="button" onClick={() => setOpen(true)} className="px-2.5 py-1 rounded-full text-xs font-semibold border bg-white text-slate-600 border-slate-200">
+                Moved to another slot
+            </button>
+        );
+    }
+    return (
+        <div className="flex items-center gap-1.5">
+            <select value={rack} onChange={(e) => setRack(e.target.value)} className="w-16 border border-slate-200 rounded-lg px-1 py-1 text-sm">
+                <option value="">Rack</option>
+                {RACKS.map((x) => <option key={x} value={x}>{x}</option>)}
+            </select>
+            <input value={slot} onChange={(e) => setSlot(e.target.value)} inputMode="numeric" placeholder="Slot"
+                className="w-16 border border-slate-200 rounded-lg px-2 py-1 text-sm" />
+            <button type="button" disabled={busy || Boolean(problem)} onClick={submit} title={problem || 'Save'}
+                className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-rose-700 text-white disabled:opacity-40">Save</button>
+            <button type="button" onClick={() => setOpen(false)} className="p-1 text-slate-400"><X size={14} /></button>
+        </div>
+    );
+};
+
+// A plate's picture -- from its design file, or a photo the godown took --
+// loaded when it is drawn, tapped for full screen.
+const PlatePicture = ({ id, attachments, label, className = 'h-40' }) => {
+    const [src, setSrc] = useState(null);
+    const [failed, setFailed] = useState(false);
+    const [full, setFull] = useState(false);
+    useEffect(() => {
+        let made = null;
+        let cancelled = false;
+        attachments.url(id).then((u) => { made = u; if (!cancelled) setSrc(u); }).catch(() => !cancelled && setFailed(true));
+        return () => { cancelled = true; if (made) URL.revokeObjectURL(made); };
+    }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+    return (
+        <>
+            <button type="button" onClick={() => src && setFull(true)} disabled={!src}
+                className={`${className} w-full rounded-md bg-slate-100 flex items-center justify-center overflow-hidden`}>
+                {src ? <img src={src} alt={label} className="w-full h-full object-contain" />
+                    : failed ? <span className="text-[11px] text-slate-400">Could not load the picture</span>
+                        : <Loader2 size={16} className="animate-spin text-slate-400" />}
+            </button>
+            {full && <ImagePreviewModal src={src} title={label} onClose={() => setFull(false)} />}
+        </>
+    );
+};
+
+// "Take photo" for a plate or stereo with no picture (user, 15 Nov 2026): the
+// camera opens, the photo is shrunk, shown in the confirmation, and only then
+// uploaded and kept as the plate's picture.
+const PhotoButton = ({ plate, save, attachments, onChanged, compact = false }) => {
+    const inputRef = useRef(null);
+    const [busy, setBusy] = useState(false);
+    const onFile = async (e) => {
+        const file = e.target.files?.[0];
+        e.target.value = '';
+        if (!file) return;
+        setBusy(true);
+        let preview = null;
+        try {
+            const blob = await shrinkPhoto(file);
+            preview = URL.createObjectURL(blob);
+            const ok = await save(`${plateLabel(plate)}: photo`, `Photo of ${plate.plateNo}`,
+                async (apply) => {
+                    const id = await attachments.upload(blob, photoName(plate));
+                    await apply(photoActions(plate, id));
+                },
+                { ...confirmPhoto(plate), image: preview });
+            if (ok) onChanged?.();
+        } catch (err) {
+            alert(err.message || 'Could not read the photo');
+        } finally {
+            if (preview) URL.revokeObjectURL(preview);
+            setBusy(false);
+        }
+    };
+    return (
+        <>
+            <input ref={inputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={onFile} />
+            <button type="button" disabled={busy} onClick={() => inputRef.current?.click()} title="Take a photo of this plate"
+                className={compact ? 'p-2 rounded-lg text-sky-700 bg-sky-50 disabled:opacity-40'
+                    : 'w-24 h-24 shrink-0 rounded-md border border-dashed border-sky-300 bg-sky-50/50 text-sky-800 text-[11px] font-semibold leading-tight text-center px-1 flex flex-col items-center justify-center gap-1 disabled:opacity-50'}>
+                {busy ? <Loader2 size={18} className="animate-spin" /> : <Camera size={18} />}
+                {!compact && 'Take photo'}
+            </button>
+        </>
+    );
+};
+
+// One physical plate of a design: which of the set it is, its own dates and
+// status, and what can be done to it. A damaged or discarded plate whose place
+// has no new plate yet offers "New plate made".
+const PlateRow = ({ plate, set, note, save, attachments, onChanged }) => {
+    const [action, setAction] = useState(null);
+    const [stereoSize, setStereoSize] = useState(plate.stereoSize || '');
+    const [notes, setNotes] = useState('');
+    const [busy, setBusy] = useState(false);
+    const replacing = action === 'REPLACE';
+    const pictures = picturesOf(plate);
+    const problem = action && !replacing ? actionProblem(plate, action) : null;
+    const isStereo = plate.plateType === KIND.STEREO;
+    const today = todayEpoch();
+    const retired = [STATUS.DAMAGED, STATUS.DISCARDED].includes(plate.status);
+    const replacedBy = set.plates.find((x) => x.replaces === plate.id);
+    const choices = [
+        ...MANUAL_ACTIONS.filter(([a]) => canDo(plate, a)),
+        ...(canReplace(plate, set) ? [['REPLACE', 'New plate made']] : [])
+    ];
+
+    const submit = async () => {
+        setBusy(true);
+        let ok;
+        if (replacing) {
+            ok = await save(`${plateLabel(plate)}: new plate`, `Record a new plate for ${plate.plateNo}`,
+                async (apply) => {
+                    const [newId] = await apply(replacementActions(plate, today));
+                    await apply(replacementMovement(newId, plate, notes));
+                },
+                confirmReplacement(plate));
+        } else {
+            ok = await save(`${plateLabel(plate)}: ${action}`, `Record ${action.toLowerCase()} for ${plate.plateNo}`,
+                plateActionBundle(plate, action, { notes, stereoSize: isStereo ? stereoSize : '' }),
+                confirmPlateAction(plate, action, { stereoSize: isStereo ? stereoSize : '' }));
+        }
+        setBusy(false);
+        if (ok) onChanged();
+    };
+
+    return (
+        <div className={`px-2.5 py-2 space-y-2 ${retired ? 'bg-slate-50/60' : ''}`}>
+            <div className="flex items-start gap-2.5">
+                {pictures.length > 0 && (
+                    <div className="w-24 shrink-0">
+                        <PlatePicture id={pictures[0].id} attachments={attachments} label={plateLabel(plate)} className="h-24" />
+                    </div>
+                )}
+                {canTakePhoto(plate) && (
+                    <PhotoButton plate={plate} save={save} attachments={attachments} onChanged={onChanged} />
+                )}
+                <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-2">
+                        <div className={`text-sm font-semibold ${retired ? 'text-slate-500' : 'text-slate-800'}`}>
+                            {positionText(plate) ? positionText(plate).replace(/^./, (c) => c.toUpperCase()) : 'Plate'}
+                            <span className="ml-1.5 text-[11px] font-normal text-slate-400 tabular-nums">{plate.plateNo}</span>
+                        </div>
+                        <div className="shrink-0 text-right"><PlateStatus p={plate} /></div>
+                    </div>
+                    <div className="text-[11px] text-slate-500 tabular-nums">
+                        {[
+                            plate.madeOn ? `made ${dateText(plate.madeOn)}` : null,
+                            plate.plateType !== KIND.STEREO && plate.expiresOn ? `${isExpired(plate, today) ? 'expired' : 'expires'} ${dateText(plate.expiresOn)}` : null,
+                            plate.replaces ? 'new plate' : null,
+                            replacedBy ? `replaced by ${replacedBy.plateNo}` : null
+                        ].filter(Boolean).join(' · ') || 'no date on record'}
+                    </div>
+                    {note && <div className="text-[11px] text-slate-400">{note}</div>}
+                </div>
+            </div>
+            {choices.length > 0 && (
                 <div className="flex flex-wrap gap-1">
-                    {MANUAL_ACTIONS.filter(([a]) => canDo(plate, a)).map(([a, label]) => (
+                    {choices.map(([a, label]) => (
                         <button key={a} onClick={() => setAction(action === a ? null : a)}
-                            className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${action === a ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200'}`}>
+                            className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${action === a ? 'bg-slate-800 text-white border-slate-800' : a === 'REPLACE' ? 'bg-white text-rose-700 border-rose-200' : 'bg-white text-slate-600 border-slate-200'}`}>
                             {label}
                         </button>
                     ))}
                 </div>
-                {action && (
-                    <div className="space-y-2">
-                        {action === 'MOVED' && (
-                            <div className="flex gap-2">
-                                <select value={rack} onChange={(e) => setRack(e.target.value)} className="w-24 border border-slate-200 rounded-lg px-2 py-2 text-sm">
-                                    <option value="">Rack</option>
-                                    {RACKS.map((r) => <option key={r} value={r}>{r}</option>)}
-                                </select>
-                                <input value={slot} onChange={(e) => setSlot(e.target.value)} inputMode="numeric" placeholder="Slot no."
-                                    className="w-28 border border-slate-200 rounded-lg px-2 py-2 text-sm" />
-                            </div>
-                        )}
-                        {isStereo && action === 'VERIFIED' && (
-                            <input value={stereoSize} onChange={(e) => setStereoSize(e.target.value)} placeholder="Stereo size (optional)"
-                                className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" />
-                        )}
-                        <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Note (optional)" className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" />
-                        {problem && <p className="text-xs text-rose-600">{problem}</p>}
-                        <Button className="w-full !bg-rose-700 hover:!bg-rose-800" disabled={busy || Boolean(problem)} onClick={submit} icon={busy ? Loader2 : CheckCircle2}>
-                            Save
-                        </Button>
-                    </div>
-                )}
-            </div>
+            )}
+            {action && (
+                <div className="space-y-2">
+                    {isStereo && action === 'VERIFIED' && (
+                        <input value={stereoSize} onChange={(e) => setStereoSize(e.target.value)} placeholder="Stereo size (optional)"
+                            className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" />
+                    )}
+                    <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Note (optional)" className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" />
+                    {problem && <p className="text-xs text-rose-600">{problem}</p>}
+                    <Button className="w-full !bg-rose-700 hover:!bg-rose-800" disabled={busy || Boolean(problem)} onClick={submit} icon={busy ? Loader2 : CheckCircle2}>
+                        Save
+                    </Button>
+                </div>
+            )}
         </div>
     );
 };
@@ -751,7 +990,7 @@ const RackPanel = ({ register, save, runSql, attachments }) => {
     const mark = async (plate, action) => {
         setBusyId(plate.id);
         const stereoSize = plate.plateType === KIND.STEREO ? sizes[plate.id] : '';
-        const ok = await save(`${plate.rackCode || plate.plateNo}: ${action}`, `Rack check ${plate.plateNo}`,
+        const ok = await save(`${plateLabel(plate)}: ${action}`, `Rack check ${plate.plateNo}`,
             plateActionBundle(plate, action, { notes: 'Rack check', stereoSize }),
             confirmPlateAction(plate, action, { stereoSize }));
         setBusyId(null);
@@ -795,9 +1034,15 @@ const RackPanel = ({ register, save, runSql, attachments }) => {
                             {g.plates.map((p) => {
                                 return (
                                     <div key={p.id} className="py-1.5 flex items-center gap-2">
+                                        {/* The picture is how the plate in hand is known. */}
+                                        {picturesOf(p).map((pic) => (
+                                            <div key={pic.id} className="w-14 shrink-0">
+                                                <PlatePicture id={pic.id} attachments={attachments} label={plateLabel({ ...p, plateInSet: pic.at })} className="h-14" />
+                                            </div>
+                                        ))}
                                         <button type="button" onClick={() => setOpen(p)} className="min-w-0 flex-1 text-left active:bg-slate-50 rounded">
                                             <div className="text-xs text-slate-700">
-                                                {[designText(p), ...plateDetails(p)].join(' · ')}
+                                                {[designText(p), positionText(p), ...plateDetails(p)].filter(Boolean).join(' · ')}
                                                 {p.plateNo && <span className="ml-1.5 text-[11px] text-slate-400 tabular-nums">{p.plateNo}</span>}
                                             </div>
                                             <div className="text-[11px] text-slate-400">
@@ -805,6 +1050,9 @@ const RackPanel = ({ register, save, runSql, attachments }) => {
                                                 {p.status !== STATUS.UNVERIFIED && <> · <span className="font-semibold">{p.status}</span></>}
                                             </div>
                                         </button>
+                                        {canTakePhoto(p) && (
+                                            <PhotoButton plate={p} save={save} attachments={attachments} onChanged={register.reload} compact />
+                                        )}
                                         {p.plateType === KIND.STEREO && (
                                             <input value={sizes[p.id] ?? p.stereoSize} onChange={(e) => setSizes((s) => ({ ...s, [p.id]: e.target.value }))}
                                                 placeholder="Size" className="w-20 border border-slate-200 rounded px-2 py-1.5 text-sm text-center" />
@@ -823,7 +1071,7 @@ const RackPanel = ({ register, save, runSql, attachments }) => {
                 ))}
             </div>
             {open && (
-                <PlateModal plate={open} save={save} runSql={runSql} attachments={attachments} onClose={() => setOpen(null)}
+                <PlateModal design={designOf(open, register.rows)} save={save} runSql={runSql} attachments={attachments} onClose={() => setOpen(null)}
                     onChanged={() => { setOpen(null); register.reload(); }} />
             )}
         </div>
@@ -850,10 +1098,9 @@ const RepeatPanel = ({ runSql, save, attachments }) => {
             WHERE so.Status = 'CHECKING FOR OLD PLATE'
             ORDER BY so.id`)).map(subOrderFromRow);
         const customers = [...new Set(orders.map((o) => o.customer).filter(Boolean))];
-        const plates = customers.length ? (await runSql(
-            `SELECT ${PLATE_COLUMNS} FROM Printing_Plates WHERE Customer IN (${customers.map(() => '?').join(',')})`,
-            customers
-        )).map(withDisplay) : [];
+        const plates = customers.length
+            ? await readPlates(runSql, `WHERE p.Customer IN (${customers.map(() => '?').join(',')})`, customers)
+            : [];
         return orders.map((so) => ({ so, plates: plates.filter((pl) => pl.customer === so.customer) }));
     }, []);
 
@@ -886,7 +1133,9 @@ const RepeatCard = ({ so, plates, save, onDone, runSql, attachments }) => {
     const answer = async (yes) => {
         setBusy(true);
         const fields = yes
-            ? { Reused_Plates: ['L', picked], Old_Plate_Available: 'YES' }
+            // Every live plate of the design: a two-plate design runs on both.
+            // Reused_Plates names the design; it runs on all its live sides.
+            ? { Reused_Plates: ['L', setKey(chosen.plate)], Old_Plate_Available: 'YES' }
             : { Old_Plate_Available: 'NO' };
         const ok = await save(`Old plate for ${so.shop}`,
             yes ? `Reuse ${chosen?.plate.rackCode || chosen?.plate.plateNo || 'the old plate'}` : 'No old plate',
@@ -897,7 +1146,7 @@ const RepeatCard = ({ so, plates, save, onDone, runSql, attachments }) => {
     };
 
     const kindWord = ({ STEREO: 'stereo', DIGITAL: 'digital plate' })[kindOfOrder(so)] || 'plate';
-    const row = ({ plate, fits }) => (
+    const row = ({ plate, fits, gaps }) => (
         <div key={plate.id} className="flex items-center gap-2 py-1">
             {/* The circle chooses; the plate itself opens its sheet. */}
             <label className="p-2 -ml-2 shrink-0 cursor-pointer">
@@ -912,6 +1161,11 @@ const RepeatCard = ({ so, plates, save, onDone, runSql, attachments }) => {
                     made for {sizeText(plate.bagW, plate.bagH) || 'unknown size'}
                     {plate.lastUsedOn ? ` · last used ${dateText(plate.lastUsedOn)}` : ''} · {plate.status}
                 </div>
+                {gaps?.length > 0 && (
+                    <div className="text-[11px] text-rose-700 font-semibold">
+                        {gaps.map((g) => `${positionText(g.plate)} ${String(g.plate.status).toLowerCase()}`).join(', ')} — needs a new plate
+                    </div>
+                )}
             </button>
             {isExpired(plate, today) && <Pill className="text-slate-600 bg-slate-100 ring-slate-200">expired</Pill>}
             {fits === false && <Pill className="text-rose-700 bg-rose-50 ring-rose-200">too big</Pill>}
@@ -957,7 +1211,7 @@ const RepeatCard = ({ so, plates, save, onDone, runSql, attachments }) => {
                 </Button>
             </div>
             {open && (
-                <PlateModal plate={open} save={save} runSql={runSql} attachments={attachments} onClose={() => setOpen(null)}
+                <PlateModal design={designOf(open, plates)} save={save} runSql={runSql} attachments={attachments} onClose={() => setOpen(null)}
                     onChanged={() => { setOpen(null); onDone(); }} />
             )}
         </Card>

@@ -3,6 +3,7 @@
 // stereo -- and the filters that narrow 5,000 rows to one rack or one shop.
 
 import { KIND } from './rackCodes.js';
+import { COMPANY_PLATE } from './printingPlates.js';
 
 const norm = (v) => String(v ?? '').trim().toUpperCase();
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
@@ -35,6 +36,7 @@ export const stereoText = (plate) => {
 export const designText = (plate) => {
     const n = num(plate?.plateCount);
     const many = (word) => (n ? ` · ${n} ${word}${n > 1 ? 's' : ''}` : '');
+    if (norm(plate?.plateType) === COMPANY_PLATE) return `Model ${String(plate?.modelDesign || '').trim() || '?'} plate`;
     if (norm(plate?.plateType) === KIND.STEREO) return `Stereo${many('stereo')}`;
     return `${norm(plate?.plateType) === KIND.DIGITAL ? 'Digital' : 'Plate'}${many('plate')}`;
 };
@@ -72,10 +74,13 @@ export const sharedCodes = (plates) => {
 export const filterPlates = (plates, { text = '', status = '', kind = '', rack = '' } = {}) => {
     const squash = (v) => norm(v).replace(/[\s-]+/g, '');
     const q = squash(text);
-    return (plates || []).filter((p) => (!status || norm(p.status) === status)
+    // A design (plateSets.js) matches a status when any of its plates is in it.
+    const hasStatus = (p) => (p.plates ? p.plates.some((x) => norm(x.status) === status) : norm(p.status) === status);
+    return (plates || []).filter((p) => (!status || hasStatus(p))
         && (!kind || norm(p.plateType) === kind)
         && (!rack || norm(p.rack) === rack)
-        && (!q || [p.shop, p.city, p.rackCode, p.plateNo, p.customerNo].some((v) => squash(v).includes(q))));
+        && (!q || [p.shop, p.city, p.rackCode, p.plateNo, p.customerNo, ...(p.plates || []).map((x) => x.plateNo)]
+            .some((v) => squash(v).includes(q))));
 };
 
 // Sheet order: rack, then slot, unnumbered plates last on their rack, then shop.

@@ -95,13 +95,23 @@ export const suggestedMachine = (so) => {
 // then ink set (a job), then shop (an output within the job). The busiest
 // machine comes first, its ink sets and shops in name order. Orders that are
 // plain or contradict themselves are returned apart, never grouped.
-export const groupQueue = (subOrders) => {
+//
+// `awaitingRun` holds the model-number orders whose model design is not printed
+// yet (modelRuns.ordersAwaitingRun): the customer's details go onto the printed
+// sheet, so there is nothing to print them on until the run is done.
+export const AWAITING_RUN = 'AWAITING RUN';
+
+export const groupQueue = (subOrders, awaitingRun = new Set()) => {
     const machines = new Map();
     const held = [];
     for (const so of subOrders || []) {
         const state = printingState(so);
         if (state !== 'PRINT') {
             held.push({ so, state });
+            continue;
+        }
+        if (awaitingRun.has(Number(so.id))) {
+            held.push({ so, state: AWAITING_RUN });
             continue;
         }
         const machine = suggestedMachine(so);

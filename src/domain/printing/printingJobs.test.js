@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     queueSql, batchesFromRows, batchStage, batchProblem, batchFields, batchPlan, jobFields, outputFields,
-    newPlateRecords, collectionProblems, collectionBundle, canStart,
+    newDesignRecord, newSideRecords, registrationSides, collectionProblems, collectionBundle, canStart,
     completionProblems, completionActions, canReturnPlates, returnPlan, returnPlanProblems, returnBundle,
     PRINTING_RELEASED_AT
 } from './printingJobs';
@@ -102,26 +102,42 @@ describe('batchStage — where a batch is on the floor', () => {
     });
 });
 
-describe('newPlateRecords — a new design\'s plates enter the register when picked', () => {
+describe('a new design\'s plates enter the register when picked', () => {
     const order = so({ id: 40, plateCount: 2, customer: 5, city: 'Kurnool', bagW: 12, bagH: 16, shop: 'New Shop TYPE-3 AFT', orderDate: 500 });
 
-    it('registers the set as one row counting its plates, already out with the job', () => {
-        const rows = newPlateRecords({ id: 12 }, order);
-        expect(rows).toHaveLength(1);
-        expect(rows[0]).toMatchObject({
-            Customer: 5, Source_Sub_Order: 40, Plate_Type: 'PLATE', Plate_Count: 2, Status: STATUS.ISSUED,
-            Issued_To_Job: 12, Rack: 'K', Slot: null, Reusable: true, Verified: true,
-            Orders: ['L', 40], Made_On: 500, Last_Used_On: 500
+    // 15 Nov 2026: one design row, one Plate_Sides row per physical plate, each
+    // checked, damaged and replaced on its own.
+    it('registers the design once, as the plate sheet has it', () => {
+        expect(newDesignRecord(order)).toMatchObject({
+            Customer: 5, Source_Sub_Order: 40, Plate_Type: 'PLATE', Plate_Count: 2,
+            Rack: 'K', Slot: null, Reusable: true, Orders: ['L', 40], Made_On: 500, Last_Used_On: 500
         });
+        // Its status is its sides' (plateSets.designStatus), never written.
+        expect(newDesignRecord(order)).not.toHaveProperty('Status');
+    });
+
+    it('gives it a side per plate, each its place, already out with the job', () => {
+        expect(newSideRecords({ id: 12 }, order, 900)).toEqual([
+            { Design: 900, Side_No: 1, Status: STATUS.ISSUED, Issued_To_Job: 12, Verified: true, Made_On: 500 },
+            { Design: 900, Side_No: 2, Status: STATUS.ISSUED, Issued_To_Job: 12, Verified: true, Made_On: 500 }
+        ]);
+        expect(newSideRecords({ id: 12 }, so({ plateCount: null }), 901)).toHaveLength(1);
+    });
+
+    it('builds every new design\'s sides from the ids that came back, remembering whose each is', () => {
+        const { actions, owners } = registrationSides([{ job: { id: 12 }, so: order }, { job: { id: 13 }, so: null }], [900, 901]);
+        expect(actions.map((a) => [a[1], a[3].Design, a[3].Side_No])).toEqual([['Plate_Sides', 900, 1], ['Plate_Sides', 900, 2], ['Plate_Sides', 901, 1]]);
+        expect(owners).toEqual([{ jobId: 12, designId: 900 }, { jobId: 12, designId: 900 }, { jobId: 13, designId: 901 }]);
+        expect(() => registrationSides([{ job: { id: 12 }, so: order }], [])).toThrow(/No design id/);
     });
 
     it('takes the slot the office already wrote into the shop name, of its own kind', () => {
         const stereo = so({ plate: 'STEREO', shop: 'Shop TYPE-3 AFT K-12 KS 4', city: 'Kurnool' });
-        expect(newPlateRecords({ id: 1 }, stereo)[0]).toMatchObject({ Plate_Type: 'STEREO', Rack: 'K', Slot: 4 });
+        expect(newDesignRecord(stereo)).toMatchObject({ Plate_Type: 'STEREO', Rack: 'K', Slot: 4 });
     });
 
     it('marks a plastic-cover plate single-use from the start', () => {
-        expect(newPlateRecords({ id: 1 }, so({ material: 'PLASTIC' }))[0].Reusable).toBe(false);
+        expect(newDesignRecord(so({ material: 'PLASTIC' })).Reusable).toBe(false);
     });
 });
 
@@ -139,10 +155,21 @@ describe('plate collection', () => {
     });
 
     it('issues each plate, tells the job, and marks the batch collected in one bundle', () => {
-        const bundle = collectionBundle({ id: 3 }, [{ job, plate: inRack }], [{ jobId: 12, plateId: 77 }]);
-        expect(bundle[0]).toEqual(['UpdateRecord', 'Printing_Plates', 5, { Status: STATUS.ISSUED, Issued_To_Job: 12 }]);
+        const bundle = collectionBundle({ id: 3 }, [{ job, plate: inRack }], [{ jobId: 12, plateId: 77, designId: 70 }]);
+        expect(bundle[0]).toEqual(['UpdateRecord', 'Plate_Sides', 5, { Status: STATUS.ISSUED, Issued_To_Job: 12 }]);
         expect(bundle).toContainEqual(['UpdateRecord', 'Printing_Jobs', 12, { Plates: ['L', 5, 77] }]);
         expect(bundle.at(-1)).toEqual(['UpdateRecord', 'Printing_Job_Batches', 3, { Plates_Collected: true }]);
+    });
+
+    // "Plate movements will always be at plate level" (user, 15 Nov 2026).
+    it('takes a two-plate design out whole: both sides with the job, one movement for the plate', () => {
+        const s1 = { ...inRack, id: 501, designId: 6124 };
+        const s2 = { ...s1, id: 502, plateInSet: 2 };
+        const bundle = collectionBundle({ id: 3 }, [{ job, plate: s1 }, { job, plate: s2 }],
+            [{ jobId: 12, plateId: 601, designId: 900 }, { jobId: 12, plateId: 602, designId: 900 }]);
+        const moves = bundle.filter((a) => a[1] === 'Printing_Plate_Movements').map((a) => a[3].Plate);
+        expect(moves).toEqual([6124, 900]);
+        expect(bundle).toContainEqual(['UpdateRecord', 'Printing_Jobs', 12, { Plates: ['L', 501, 502, 601, 602] }]);
     });
 
     it('does not issue a plate twice when a collection is retried', () => {
@@ -230,8 +257,18 @@ describe('plates back', () => {
     it('puts a plate back without asking for a slot, even one that never had a number', () => {
         const plan = returnPlan(batch([job()]), [{ ...kept, slot: null }]);
         expect(returnPlanProblems(plan)).toEqual([]);
-        expect(returnBundle({ id: 3 }, plan, 1000)[0]).toEqual(['UpdateRecord', 'Printing_Plates', 5,
+        expect(returnBundle({ id: 3 }, plan, 1000)[0]).toEqual(['UpdateRecord', 'Plate_Sides', 5,
             { Status: STATUS.IN_RACK, Issued_To_Job: null }]);
+    });
+
+    it('puts a two-plate design back whole, but retires the one side the operator marked damaged on its own', () => {
+        const s1 = { ...kept, id: 501, designId: 6124 };
+        const s2 = { ...s1, id: 502, plateInSet: 2 };
+        const s3 = { ...s1, id: 503, plateInSet: 3 };
+        const plan = returnPlan(batch([job({ plates: [501, 502, 503], damagedPlates: [503] })]), [s1, s2, s3]);
+        const moves = returnBundle({ id: 3 }, plan, 1000).filter((a) => a[1] === 'Printing_Plate_Movements').map((a) => a[3]);
+        expect(moves.map((m) => [m.Action, m.Side ?? null])).toEqual([['RETURNED', null], ['DAMAGED', 503]]);
+        expect(moves.every((m) => m.Plate === 6124 && m.Printing_Job === 1)).toBe(true);
     });
 
     it('records on the plate only the job\'s orders it printed, and today as its last use', () => {

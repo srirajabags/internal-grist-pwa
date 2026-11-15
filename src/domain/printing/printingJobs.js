@@ -20,9 +20,10 @@
 // with -- and plates cannot go back while a job is still running on them.
 
 import {
-    isReusable, kindOfOrder, rackFor, STATUS, afterJobAction, actionProblem, plateActionBundle,
-    ordersServedBy, PLATES_TABLE, MOVEMENTS_TABLE
+    isReusable, kindOfOrder, rackFor, STATUS, afterJobAction, actionProblem, plateActionBundle, designActionBundle,
+    ordersServedBy, PLATES_TABLE, SIDES_TABLE, MOVEMENTS_TABLE, COMPANY_PLATE, expiresOn
 } from './printingPlates.js';
+import { sideNo, sideRecords, setKey } from './plateSets.js';
 import { colourKey } from './printingMachines.js';
 import { parseRackCodes } from './rackCodes.js';
 
@@ -66,10 +67,13 @@ export const queueSql = () => `
         WHERE pj.Production_Completed = 1 AND pj.Production_Completed_At >= ${PRINTING_RELEASED_AT}
     ),
     src AS (SELECT so_id, MAX(job_id) AS job_id FROM done GROUP BY so_id),
+    -- A model-design run lists the orders it prints the design for, but the
+    -- customer's own print is still to come, so it takes none of them.
     taken AS (
         SELECT DISTINCT CAST(je.value AS INTEGER) AS so_id
         FROM ${JOBS_TABLE} j,
              json_each(CASE WHEN json_valid(j.Sub_Orders) THEN j.Sub_Orders ELSE '[]' END) je
+        WHERE COALESCE(j.Model_Design, '') = ''
     )
     SELECT ${SUB_ORDER_COLUMNS}, src.job_id AS source_job
     FROM src
@@ -90,7 +94,10 @@ export const treeSql = () => `
            j.id AS job_id, j.Printing_Colours AS colours, j.Sub_Orders AS sub_orders,
            j.Printing_Started AS started, j.Printing_Started_At AS started_at,
            j.Printing_Completed AS completed, j.Printing_Completed_At AS completed_at,
-           j.Wastage_Weight_Kg_ AS wastage_kg, j.Plates AS plates, j.Damaged_Plates AS damaged_plates
+           j.Wastage_Weight_Kg_ AS wastage_kg, j.Plates AS plates, j.Damaged_Plates AS damaged_plates,
+           j.Model_Design AS model_design, j.Sheet_Size AS sheet_size, j.Run_Sheets AS run_sheets,
+           j.Order_Sheets AS order_sheets, j.Plain_Item AS plain_item, j.Model_Item AS model_item,
+           j.Cut_Into AS cut_into
     FROM ${BATCHES_TABLE} b
     LEFT JOIN ${JOBS_TABLE} j ON j.Printing_Job_Batch = b.id
     WHERE COALESCE(b.Plates_Returned, 0) = 0 OR b.Date >= CAST(strftime('%s', 'now', '-14 days') AS INTEGER)
@@ -123,40 +130,60 @@ export const subOrdersQuery = (ids) => {
     };
 };
 
-// The register rows a batch's pick list needs: plates made for its orders, old
-// plates confirmed for its repeat orders, and -- for a repeat order that names
-// none -- its customers' plates to choose from.
-export const platesQuery = (subOrderIds, plateIds, customerIds = []) => {
-    const so = [...new Set((subOrderIds || []).map(num).filter(Boolean))];
-    const ids = [...new Set((plateIds || []).map(num).filter(Boolean))];
-    const cust = [...new Set((customerIds || []).map(num).filter(Boolean))];
-    if (!so.length && !ids.length && !cust.length) return null;
+// A plate as the app reads it: one Plate_Sides row (a physical plate or
+// stereo) with its design's facts from Printing_Plates (plateSets.js). Pages add
+// their own design columns after these, off the same `p` alias.
+export const SIDE_COLUMNS = `s.id AS id, s.Design AS design_id, s.Side_No AS side_no, s.Status AS status,
+    s.Issued_To_Job AS issued_to_job, s.Picture AS picture, s.Replaces AS replaces, s.Made_On AS side_made_on,
+    p.Customer AS customer, p.Source_Sub_Order AS source_sub_order, p.Plate_Type AS plate_type,
+    p.Material AS material, p.Rack AS rack, p.Slot AS slot, p.Rack_Code AS rack_code,
+    p.Plate_Count AS plate_count, p.Stereo_Size AS stereo_size, p.Orders AS orders, p.Made_On AS made_on,
+    p.Last_Used_On AS last_used_on, p.Bag_Width AS bag_w, p.Bag_Height AS bag_h, p.Model_Design AS model_design`;
+export const SIDES_FROM = `${SIDES_TABLE} s JOIN ${PLATES_TABLE} p ON p.id = s.Design`;
+
+// The plates a batch's pick list needs: those made for its orders, those of the
+// designs confirmed for its repeat orders, and -- for a repeat order that names
+// none -- its customers' plates to choose from. A design brings all its sides.
+// `models` are the designs of the batch's model runs, whose company plates are
+// found by design rather than by any customer. `sideIds` are plates a job
+// already holds (Printing_Jobs.Plates names sides).
+const uniq = (xs) => [...new Set((xs || []).map(num).filter(Boolean))];
+export const platesQuery = (subOrderIds, designIds, customerIds = [], models = [], sideIds = []) => {
+    const so = uniq(subOrderIds);
+    const ids = uniq(designIds);
+    const cust = uniq(customerIds);
+    const sides = uniq(sideIds);
+    const designs = [...new Set((models || []).map((m) => String(m ?? '').trim().toUpperCase()).filter(Boolean))];
+    if (!so.length && !ids.length && !cust.length && !designs.length && !sides.length) return null;
+    const marks = (xs) => xs.map(() => '?').join(',');
     const where = [
-        so.length ? `Source_Sub_Order IN (${so.map(() => '?').join(',')})` : null,
-        ids.length ? `id IN (${ids.map(() => '?').join(',')})` : null,
-        cust.length ? `Customer IN (${cust.map(() => '?').join(',')})` : null
+        so.length ? `p.Source_Sub_Order IN (${marks(so)})` : null,
+        ids.length ? `p.id IN (${marks(ids)})` : null,
+        cust.length ? `p.Customer IN (${marks(cust)})` : null,
+        designs.length ? `(p.Plate_Type = '${COMPANY_PLATE}' AND UPPER(TRIM(p.Model_Design)) IN (${marks(designs)}))` : null,
+        sides.length ? `s.id IN (${marks(sides)})` : null
     ].filter(Boolean).join(' OR ');
-    return {
-        sql: `SELECT id, Plate_No AS plate_no, Customer AS customer, Source_Sub_Order AS source_sub_order,
-                     Plate_Type AS plate_type, Material AS material, Rack AS rack, Slot AS slot,
-                     Rack_Code AS rack_code, Plate_Count AS plate_count, Stereo_Size AS stereo_size,
-                     Orders AS orders, Made_On AS made_on, Last_Used_On AS last_used_on, Expires_On AS expires_on,
-                     Status AS status, Issued_To_Job AS issued_to_job, Bag_Width AS bag_w, Bag_Height AS bag_h
-              FROM ${PLATES_TABLE} WHERE ${where}`,
-        args: [...so, ...ids, ...cust]
-    };
+    return { sql: `SELECT ${SIDE_COLUMNS} FROM ${SIDES_FROM} WHERE ${where}`, args: [...so, ...ids, ...cust, ...designs, ...sides] };
 };
 
 // Readers for the SQL rows above, so the page and the tests speak one shape.
-export const plateFromRow = (r) => ({
-    id: num(r.id), plateNo: r.plate_no, customer: num(r.customer),
-    sourceSubOrder: num(r.source_sub_order), plateType: r.plate_type, material: r.material,
-    rack: r.rack || '', slot: num(r.slot) || null, rackCode: r.rack_code || '', plateCount: num(r.plate_count),
-    stereoSize: r.stereo_size || '', orders: refList(r.orders),
-    madeOn: r.made_on || null, lastUsedOn: r.last_used_on || null, expiresOn: r.expires_on || null,
-    status: r.status, issuedToJob: num(r.issued_to_job),
-    bagW: r.bag_w, bagH: r.bag_h
-});
+// A side made later than its design (a replacement) dates from its own making,
+// so it expires later too.
+export const plateFromRow = (r) => {
+    const plate = {
+        id: num(r.id), designId: num(r.design_id), plateInSet: num(r.side_no) || 1,
+        customer: num(r.customer), sourceSubOrder: num(r.source_sub_order), plateType: r.plate_type, material: r.material,
+        rack: r.rack || '', slot: num(r.slot) || null, rackCode: r.rack_code || '', plateCount: num(r.plate_count),
+        stereoSize: r.stereo_size || '', orders: refList(r.orders),
+        madeOn: r.side_made_on || r.made_on || null, lastUsedOn: r.last_used_on || null,
+        status: r.status, issuedToJob: num(r.issued_to_job),
+        bagW: r.bag_w, bagH: r.bag_h, modelDesign: r.model_design || '',
+        replaces: num(r.replaces) || null,
+        // Its picture: from its design file (scripts/plate-previews.mjs) or a photo.
+        preview: refList(r.picture)
+    };
+    return { ...plate, plateNo: sideNo(plate), expiresOn: expiresOn(plate) };
+};
 
 export const subOrderFromRow = (r) => ({
     id: num(r.so_id ?? r.id), model: r.model, print: r.print, plate: r.plate, material: r.material,
@@ -200,7 +227,11 @@ export const batchesFromRows = (rows, outputRows = [], subOrders = []) => {
             outputs: outputsByJob.get(num(r.job_id)) || [],
             started: truthy(r.started), startedAt: r.started_at,
             completed: truthy(r.completed), completedAt: r.completed_at,
-            wastageKg: r.wastage_kg, plates: refList(r.plates), damagedPlates: refList(r.damaged_plates)
+            wastageKg: r.wastage_kg, plates: refList(r.plates), damagedPlates: refList(r.damaged_plates),
+            // A model-design run (modelRuns.js); blank on an ink-set job.
+            modelDesign: String(r.model_design || '').trim(), sheetSize: r.sheet_size || '',
+            runSheets: num(r.run_sheets), orderSheets: num(r.order_sheets), cutInto: num(r.cut_into) || 1,
+            plainItem: num(r.plain_item) || null, modelItem: num(r.model_item) || null
         });
     }
     return [...byId.values()];
@@ -267,14 +298,14 @@ export const outputFields = (jobId, output) => ({
 
 // An order with no plate in the register: a new design, its plates fresh from
 // the vendor. They are registered as they are picked -- the first time anyone
-// has them in hand -- as one row, like every other set in a slot, counting how
-// many plates the order was made with. If the office has already written a code
-// of this kind into the shop's name, that is its slot; otherwise it has none
-// yet.
-export const newPlateRecords = (job, so) => {
+// has them in hand: one design row, then a side for each plate the order was
+// made with, out with this job (newSideRecords, once the design's id is known).
+// If the office has already written a code of this kind into the shop's name,
+// that is its slot; otherwise it has none yet.
+export const newDesignRecord = (so) => {
     const kind = kindOfOrder(so) || 'PLATE';
     const code = parseRackCodes(so.shop).find((c) => c.kind === kind);
-    return [{
+    return {
         Customer: so.customer || null,
         Source_Sub_Order: so.id,
         Plate_Type: kind,
@@ -291,11 +322,35 @@ export const newPlateRecords = (job, so) => {
         Reusable: isReusable({ material: so.material, plateType: kind }),
         Rack: code?.rack || rackFor(so.city),
         Slot: code?.slot || null,
-        Status: STATUS.ISSUED,
-        Issued_To_Job: job.id,
-        Verified: true,
         Notes: 'Registered when first picked'
-    }];
+    };
+};
+
+export const newSideRecords = (job, so, designId) => sideRecords(designId, so.plateCount, {
+    Status: STATUS.ISSUED,
+    Issued_To_Job: job.id,
+    Verified: true,
+    Made_On: so.orderDate || null
+});
+
+// The side rows for designs registered moments ago, one entry of `missing`
+// ({ job, so }; so is null for a model run's company plate) per design, given
+// the design ids that came back in the same order. Returns the actions and,
+// for each side, the job and design it belongs to -- collectionBundle's
+// `newPlates` once the side ids are known.
+export const registrationSides = (missing, designIds, companySide = (job) => ({ Status: STATUS.ISSUED, Issued_To_Job: job.id, Verified: true })) => {
+    const actions = [];
+    const owners = [];
+    (missing || []).forEach(({ job, so }, i) => {
+        const designId = num(designIds?.[i]);
+        if (!designId) throw new Error(`No design id came back for ${so ? `order ${so.id}` : `job ${job.id}`}.`);
+        const rows = so ? newSideRecords(job, so, designId) : sideRecords(designId, 1, companySide(job));
+        for (const fields of rows) {
+            actions.push(['AddRecord', SIDES_TABLE, null, fields]);
+            owners.push({ jobId: job.id, designId });
+        }
+    });
+    return { actions, owners };
 };
 
 // What stops the plates going out. A plate already out with another job is on
@@ -304,25 +359,36 @@ export const collectionProblems = (lines) => lines
     .filter(({ job, plate }) => plate.status === STATUS.ISSUED && plate.issuedToJob && plate.issuedToJob !== job.id)
     .map(({ plate }) => `${plate.rackCode || plate.plateNo || `Plate ${plate.id}`} is out with job ${plate.issuedToJob}.`);
 
-// Every listed plate issued to its job, each job told which plates it runs
-// with, and the batch marked collected -- one bundle. `newPlates` are the ids of
-// plates registered moments ago for orders that had none.
+// Every listed plate issued to its job, each job told which plates (sides) it
+// runs with, and the batch marked collected -- one bundle. `newPlates` are
+// { jobId, plateId, designId }: sides registered moments ago for orders that
+// had none.
+// A plate goes out whole: each design's sides for a job are issued together,
+// with one movement for the plate.
 export const collectionBundle = (batch, lines, newPlates = []) => {
     const actions = [];
     const byJob = new Map();
+    const toIssue = new Map();
     for (const { job, plate } of lines) {
         if (!byJob.has(job.id)) byJob.set(job.id, []);
         byJob.get(job.id).push(plate.id);
         // A plate already issued to this job (a retried collection) is not
         // issued twice.
         if (plate.status === STATUS.ISSUED && plate.issuedToJob === job.id) continue;
-        actions.push(...plateActionBundle(plate, 'ISSUED', { jobId: job.id }));
+        const key = `${job.id}:${setKey(plate)}`;
+        if (!toIssue.has(key)) toIssue.set(key, { job, sides: [] });
+        toIssue.get(key).sides.push(plate);
     }
-    for (const { jobId, plateId } of newPlates) {
+    for (const { job, sides } of toIssue.values()) actions.push(...designActionBundle(sides, 'ISSUED', { jobId: job.id }));
+    const newDesigns = new Map();
+    for (const { jobId, plateId, designId } of newPlates) {
         if (!byJob.has(jobId)) byJob.set(jobId, []);
         byJob.get(jobId).push(plateId);
+        newDesigns.set(`${jobId}:${designId}`, { jobId, designId });
+    }
+    for (const { jobId, designId } of newDesigns.values()) {
         actions.push(['AddRecord', MOVEMENTS_TABLE, null, {
-            Plate: plateId, Action: 'ISSUED', Status_After: STATUS.ISSUED,
+            Plate: designId, Action: 'ISSUED', Status_After: STATUS.ISSUED,
             Printing_Job: jobId, Notes: 'New plate, registered when first picked'
         }]);
     }
@@ -414,16 +480,31 @@ export const returnPlanProblems = (plan) => plan
     .filter((p) => p.action === 'RETURNED' && actionProblem(p.plate, 'RETURNED', p))
     .map((p) => `${p.plate.rackCode || p.plate.plateNo || `Plate ${p.plate.id}`} cannot go back: ${actionProblem(p.plate, 'RETURNED', p)}`);
 
-// Each plate's move, and for every plate that ran -- kept or not -- the orders
-// of its job it printed added to its history and `today` (a Grist Date, epoch
-// seconds) as its last use.
-export const returnBundle = (batch, plan, today) => [
-    ...plan.flatMap((p) => [
-        ...plateActionBundle(p.plate, p.action, { jobId: p.job.id }),
-        ['UpdateRecord', PLATES_TABLE, p.plate.id, {
-            Last_Used_On: today,
-            Orders: ['L', ...new Set([...(p.plate.orders || []), ...ordersServedBy(p.job, p.plate)])]
-        }]
-    ]),
-    ['UpdateRecord', BATCHES_TABLE, batch.id, { Plates_Returned: true }]
-];
+// Each plate's move, and for every design that ran -- kept or not -- the orders
+// of its jobs it printed added to its history and `today` (a Grist Date, epoch
+// seconds) as its last use: once per design, however many of its sides ran.
+export const returnBundle = (batch, plan, today) => {
+    const designs = new Map();
+    for (const p of plan) {
+        const key = setKey(p.plate);
+        const orders = designs.get(key) || new Set(p.plate.orders || []);
+        for (const id of ordersServedBy(p.job, p.plate)) orders.add(id);
+        designs.set(key, orders);
+    }
+    // Back on the rack the plate goes whole: one movement per design per job
+    // for the sides returned. A side retired at the end of the job is its own.
+    const returned = new Map();
+    const retired = [];
+    for (const p of plan) {
+        if (p.action !== 'RETURNED') { retired.push(...plateActionBundle(p.plate, p.action, { jobId: p.job.id })); continue; }
+        const key = `${p.job.id}:${setKey(p.plate)}`;
+        if (!returned.has(key)) returned.set(key, { job: p.job, sides: [] });
+        returned.get(key).sides.push(p.plate);
+    }
+    return [
+        ...[...returned.values()].flatMap(({ job, sides }) => designActionBundle(sides, 'RETURNED', { jobId: job.id })),
+        ...retired,
+        ...[...designs].map(([id, orders]) => ['UpdateRecord', PLATES_TABLE, id, { Last_Used_On: today, Orders: ['L', ...orders] }]),
+        ['UpdateRecord', BATCHES_TABLE, batch.id, { Plates_Returned: true }]
+    ];
+};

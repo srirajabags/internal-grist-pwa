@@ -8,12 +8,18 @@ import Button from '../components/Button';
 import WriteFailureModal from '../components/WriteFailureModal';
 import { newJournal } from '../grist/writeJournal';
 import { choiceText } from '../grist/gristValues';
-import { MACHINE_LIST, groupQueue, machinesFor, operatorRoleFor, suggestedMachine, SUPERVISOR_ROLES } from '../domain/printing/printingMachines';
-import { pickList, PLATES_INCHARGE, STATUS } from '../domain/printing/printingPlates';
+import { MACHINE_LIST, groupQueue, machinesFor, operatorRoleFor, suggestedMachine, SUPERVISOR_ROLES, AWAITING_RUN } from '../domain/printing/printingMachines';
+import { pickList, PLATES_INCHARGE, STATUS, COMPANY_PLATE } from '../domain/printing/printingPlates';
+import {
+    runQueueSql, madeRunsSql, jobStockQuery, modelItemsQuery, waitingRuns, ordersAwaitingRun,
+    runBatchProblem, runBatchFields, runJobFields, runOutputFields, companyPlateRecord, companySideFields,
+    runCompletionProblems, runCompletionActions, runSplit, MODEL_RUN_MACHINE
+} from '../domain/printing/modelRuns';
 import { designText } from '../domain/printing/plateTable';
+import { plateLabel, positionText } from '../domain/printing/plateSets';
 import {
     queueSql, treeSql, outputsQuery, subOrdersQuery, platesQuery, plateFromRow, subOrderFromRow, batchesFromRows,
-    batchStage, batchProblem, batchFields, batchPlan, jobFields, outputFields, newPlateRecords, collectionProblems,
+    batchStage, batchProblem, batchFields, batchPlan, jobFields, outputFields, newDesignRecord, registrationSides, collectionProblems,
     collectionBundle, canStart, completionProblems, completionActions, canReturnPlates, returnPlan,
     returnPlanProblems, returnBundle, BATCHES_TABLE, JOBS_TABLE, OUTPUTS_TABLE
 } from '../domain/printing/printingJobs';
@@ -80,6 +86,9 @@ const PrintingJobsView = ({ onBack, getHeaders, getUrl, userRoles = [] }) => {
     const [tab, setTab] = useState('batches');
     const [batches, setBatches] = useState([]);
     const [queue, setQueue] = useState([]);
+    // Model-design runs waiting to be printed, and the orders held until theirs is.
+    const [runs, setRuns] = useState([]);
+    const [awaiting, setAwaiting] = useState(() => new Set());
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [selectedId, setSelectedId] = useState(null);
@@ -136,6 +145,20 @@ const PrintingJobsView = ({ onBack, getHeaders, getUrl, userRoles = [] }) => {
             const subOrders = soQ ? (await runSql(soQ.sql, soQ.args)).map(subOrderFromRow) : [];
             setBatches(batchesFromRows(tree, outputs, subOrders));
             setQueue(waiting.map(subOrderFromRow));
+            if (isSupervisor) {
+                const [subOrderRows, madeRuns] = await Promise.all([runSql(runQueueSql()), runSql(madeRunsSql())]);
+                const stockQ = jobStockQuery(subOrderRows.map((r) => r.job_id));
+                const modelQ = modelItemsQuery(subOrderRows.map((r) => {
+                    try { return JSON.parse(r.Bag_Colour || '[]')[0]; } catch { return r.Bag_Colour; }
+                }));
+                const [stockRows, modelItemRows] = await Promise.all([
+                    stockQ ? runSql(stockQ.sql, stockQ.args) : [],
+                    modelQ ? runSql(modelQ.sql, modelQ.args) : []
+                ]);
+                const waitingList = waitingRuns({ subOrderRows, stockRows, modelItemRows, madeRuns });
+                setRuns(waitingList);
+                setAwaiting(ordersAwaitingRun(waitingList, madeRuns));
+            }
         } catch (err) {
             setError(err.message);
         } finally {
@@ -213,7 +236,7 @@ const PrintingJobsView = ({ onBack, getHeaders, getUrl, userRoles = [] }) => {
                     <>
                         {isSupervisor && (
                             <div className="flex gap-2">
-                                {[['batches', `Batches (${visible.length})`], ['queue', `Queue (${queue.length})`]].map(([key, label]) => (
+                                {[['batches', `Batches (${visible.length})`], ['queue', `Queue (${queue.length + runs.length})`]].map(([key, label]) => (
                                     <button
                                         key={key}
                                         onClick={() => setTab(key)}
@@ -225,7 +248,7 @@ const PrintingJobsView = ({ onBack, getHeaders, getUrl, userRoles = [] }) => {
                             </div>
                         )}
                         {tab === 'queue' && isSupervisor ? (
-                            <QueuePanel queue={queue} apply={apply} runSteps={runSteps} onCreated={() => setTab('batches')} />
+                            <QueuePanel queue={queue} runs={runs} awaiting={awaiting} apply={apply} runSteps={runSteps} onCreated={() => setTab('batches')} />
                         ) : (
                             <BatchList batches={(isSupervisor || isPlatesIncharge) ? batches : visible} onOpen={setSelectedId} />
                         )}
@@ -284,11 +307,11 @@ const BatchList = ({ batches, onOpen }) => {
 
 // What production has cut and printing has not taken, laid out the way a batch
 // will be: machine, then ink colour (a job), then shop (an output).
-const QueuePanel = ({ queue, apply, runSteps, onCreated }) => {
-    const { machines, held } = useMemo(() => groupQueue(queue), [queue]);
+const QueuePanel = ({ queue, runs, awaiting, apply, runSteps, onCreated }) => {
+    const { machines, held } = useMemo(() => groupQueue(queue, awaiting), [queue, awaiting]);
     const [open, setOpen] = useState(null);
 
-    if (queue.length === 0) {
+    if (queue.length === 0 && runs.length === 0) {
         return (
             <Card className="p-8 text-center text-slate-500">
                 <Inbox className="mx-auto mb-2 text-slate-300" size={32} />
@@ -299,9 +322,11 @@ const QueuePanel = ({ queue, apply, runSteps, onCreated }) => {
 
     const plain = held.filter((h) => h.state === 'PLAIN');
     const conflicts = held.filter((h) => h.state === 'CONFLICT');
+    const waitingForRun = held.filter((h) => h.state === AWAITING_RUN);
 
     return (
         <div className="space-y-2">
+            {runs.length > 0 && <ModelRunQueue runs={runs} apply={apply} runSteps={runSteps} onCreated={onCreated} />}
             {machines.map((m) => (
                 <MachineQueue
                     key={m.machine}
@@ -320,6 +345,16 @@ const QueuePanel = ({ queue, apply, runSteps, onCreated }) => {
                     {conflicts.map(({ so }) => <ShopOutput key={so.id} shop={so.shop} city={so.city} subOrders={[so]} />)}
                 </Card>
             )}
+            {waitingForRun.length > 0 && (
+                <Card className="p-3 space-y-1">
+                    <div className="text-sm font-semibold text-slate-700">Waiting for the model design ({waitingForRun.length})</div>
+                    <p className="text-xs text-slate-500">
+                        The customer&apos;s details go on sheets that carry the model design. These come here to be batched
+                        once their model run is completed.
+                    </p>
+                    {waitingForRun.map(({ so }) => <ShopOutput key={so.id} shop={so.shop} city={so.city} subOrders={[so]} />)}
+                </Card>
+            )}
             {plain.length > 0 && (
                 <Card className="p-3 space-y-1">
                     <div className="text-sm font-semibold text-slate-700">Plain bags, no printing ({plain.length})</div>
@@ -328,6 +363,80 @@ const QueuePanel = ({ queue, apply, runSteps, onCreated }) => {
                 </Card>
             )}
         </div>
+    );
+};
+
+// Model designs to print before any customer's details go on: one run per
+// production job and design, all on the multi-colour machine off the company's
+// plate (modelRuns.js).
+const ModelRunQueue = ({ runs, apply, runSteps, onCreated }) => {
+    const [picked, setPicked] = useState(() => new Set(runs.filter((r) => !r.problem).map((r) => r.key)));
+    const [date, setDate] = useState(todayStr());
+    const [busy, setBusy] = useState(false);
+    const chosen = runs.filter((r) => picked.has(r.key));
+    const problem = runBatchProblem(chosen);
+    const toggle = (key) => setPicked((prev) => {
+        const next = new Set(prev);
+        if (next.has(key)) next.delete(key); else next.add(key);
+        return next;
+    });
+
+    const create = async () => {
+        setBusy(true);
+        let batchId = null;
+        let jobIds = [];
+        const ok = await runSteps(`Create ${MODEL_RUN_MACHINE} batch for model designs`, [
+            ['Create the batch', async () => {
+                [batchId] = await apply([['AddRecord', BATCHES_TABLE, null, runBatchFields({ date: dateToEpoch(date) })]]);
+            }],
+            [`Add ${plural(chosen.length, 'model run')}`, async () => {
+                jobIds = await apply(chosen.map((run) => ['AddRecord', JOBS_TABLE, null, runJobFields(batchId, run)]));
+            }],
+            ['Add their outputs', () => apply(chosen.map((run, i) => ['AddRecord', OUTPUTS_TABLE, null, runOutputFields(jobIds[i], run)]))]
+        ]);
+        setBusy(false);
+        if (ok) onCreated();
+    };
+
+    return (
+        <Card className="p-3 space-y-3 border-violet-200">
+            <div>
+                <div className="font-semibold text-slate-800">Model designs to print ({runs.length})</div>
+                <p className="text-xs text-slate-500">
+                    On the {MODEL_RUN_MACHINE.toLowerCase()} machine, from the company plate. The whole run is printed; the
+                    orders&apos; sheets go on to the customer&apos;s print and the rest come back to the bags godown printed.
+                </p>
+            </div>
+            <div className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+                {runs.map((run) => (
+                    <label key={run.key} className="flex items-start gap-3 px-3 py-2">
+                        <input type="checkbox" checked={picked.has(run.key)} onChange={() => toggle(run.key)} className="w-4 h-4 mt-0.5" disabled={Boolean(run.problem)} />
+                        <div className="min-w-0 flex-1">
+                            <div className="text-sm font-semibold text-slate-800">
+                                {run.model} · {run.sheetSize} · {run.runSheets.toLocaleString('en-IN')} sheets
+                                {run.cutInto > 1 && ` → cut into ${(run.runSheets * run.cutInto).toLocaleString('en-IN')} × ${run.finishedSize}`}
+                            </div>
+                            <div className="text-xs text-violet-700">
+                                {run.orderSheets.toLocaleString('en-IN')} for the orders
+                                {run.stockSheets > 0 && `, ${run.stockSheets.toLocaleString('en-IN')} to the bags godown`}
+                                {run.readySheets > 0 && ` · ${run.readySheets.toLocaleString('en-IN')} already printed off the shelf`}
+                            </div>
+                            <div className="text-[11px] text-slate-500 truncate">
+                                Production job {run.sourceJob} · {run.subOrders.map((so) => so.shop).join(', ')}
+                            </div>
+                            {run.problem && <div className="text-xs text-rose-600">{run.problem}</div>}
+                        </div>
+                    </label>
+                ))}
+            </div>
+            <label className="block text-xs text-slate-500">Date
+                <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="mt-1 w-full border border-slate-200 rounded-lg px-2 py-2 text-sm text-slate-800" />
+            </label>
+            {problem && <p className="text-xs text-rose-600">{problem}</p>}
+            <Button className="w-full !bg-violet-600 hover:!bg-violet-700" disabled={busy || Boolean(problem)} onClick={create} icon={busy ? Loader2 : Layers}>
+                Create batch · {plural(chosen.length, 'model run')}
+            </Button>
+        </Card>
     );
 };
 
@@ -439,8 +548,10 @@ const BatchDetail = ({ batch, runSql, apply, runSteps, canHandlePlates, canRun }
         const subOrders = batch.jobs.flatMap((j) => j.subOrders);
         const q = platesQuery(
             subOrders.map((so) => so.id),
-            [...subOrders.flatMap((so) => so.reusedPlates), ...batch.jobs.flatMap((j) => j.plates)],
-            subOrders.map((so) => so.customer)
+            subOrders.flatMap((so) => so.reusedPlates),
+            subOrders.map((so) => so.customer),
+            batch.jobs.map((j) => j.modelDesign),
+            batch.jobs.flatMap((j) => j.plates)
         );
         if (!q) { setPlates([]); return; }
         try {
@@ -464,11 +575,13 @@ const BatchDetail = ({ batch, runSql, apply, runSteps, canHandlePlates, canRun }
         const steps = [];
         if (pick.missing.length) {
             steps.push([`Register new plates for ${plural(pick.missing.length, 'order')}`, async () => {
-                const actions = pick.missing.flatMap(({ job, so }) => newPlateRecords(job, so)
-                    .map((fields) => ['AddRecord', 'Printing_Plates', null, fields]));
-                const owners = pick.missing.map(({ job }) => job.id);
-                const ids = await apply(actions);
-                ids.forEach((plateId, i) => newPlates.push({ jobId: owners[i], plateId }));
+                // One design row each -- a model run's plate is the company's,
+                // registered by its design -- then a side per physical plate.
+                const designIds = await apply(pick.missing.map(({ job, so }) =>
+                    ['AddRecord', 'Printing_Plates', null, so ? newDesignRecord(so) : companyPlateRecord(job)]));
+                const { actions, owners } = registrationSides(pick.missing, designIds, companySideFields);
+                const sideIds = await apply(actions);
+                sideIds.forEach((plateId, i) => newPlates.push({ ...owners[i], plateId }));
             }]);
         }
         steps.push(['Take the plates out and mark the batch collected', () => apply(collectionBundle(batch, pick.lines, newPlates))]);
@@ -487,7 +600,9 @@ const BatchDetail = ({ batch, runSql, apply, runSteps, canHandlePlates, canRun }
     const complete = async (job, form) => {
         setBusy(`complete-${job.id}`);
         const ok = await runSteps(`Complete ${job.colours}`, [
-            ['Record every shop\'s output and the job\'s wastage', () => apply(completionActions(job, form))]
+            job.modelDesign
+                ? ['Record the run, book its sheets and close the job', () => apply(runCompletionActions(job, form, Date.now() / 1000))]
+                : ['Record every shop\'s output and the job\'s wastage', () => apply(completionActions(job, form))]
         ]);
         setBusy(null);
         if (ok) setCompleting(null);
@@ -521,12 +636,12 @@ const BatchDetail = ({ batch, runSql, apply, runSteps, canHandlePlates, canRun }
                         {pick.lines.map(({ job, so, plate }) => (
                             <div key={`${job.id}-${plate.id}`} className="py-2 flex items-center gap-3">
                                 <div className="w-20 shrink-0">
-                                    <div className="text-base font-bold text-rose-700 tabular-nums">{plate.rackCode || plate.rack || '?'}</div>
+                                    <div className="text-base font-bold text-rose-700 tabular-nums">{plate.rackCode || plate.rack || (plate.plateType === COMPANY_PLATE ? 'Company' : '?')}</div>
                                     {plate.plateNo && <div className="text-[11px] text-slate-400 tabular-nums">{plate.plateNo}</div>}
                                 </div>
                                 <div className="min-w-0 flex-1">
-                                    <div className="text-sm font-semibold text-slate-800">{designText(plate)}</div>
-                                    <div className="text-xs text-slate-500 truncate">{so.shop} · {job.colours}</div>
+                                    <div className="text-sm font-semibold text-slate-800">{[designText(plate), positionText(plate)].filter(Boolean).join(' · ')}</div>
+                                    <div className="text-xs text-slate-500 truncate">{so ? so.shop : 'Company plate'} · {job.colours}</div>
                                 </div>
                                 {plate.status !== STATUS.IN_RACK && <Pill className="text-amber-700 bg-amber-50 ring-amber-200">{plate.status}</Pill>}
                             </div>
@@ -535,9 +650,15 @@ const BatchDetail = ({ batch, runSql, apply, runSteps, canHandlePlates, canRun }
                     {pick.missing.length > 0 && (
                         <div className="p-2 rounded-lg bg-sky-50 text-sky-800 text-xs">
                             {plural(pick.missing.length, 'order')} have no plate in the register yet — new designs, fresh from the vendor.
-                            Their plates are registered as you collect them: {[...new Set(pick.missing.map(({ so }) => so.shop))].join(', ')}.
+                            Their plates are registered as you collect them: {[...new Set(pick.missing.map(({ job, so }) => (so ? so.shop : `${job.modelDesign} company plate`)))].join(', ')}.
                         </div>
                     )}
+                    {pick.short.map(({ set }) => (
+                        <div key={set.key} className="p-2 rounded-lg bg-amber-50 text-amber-800 text-xs">
+                            {set.lead.rackCode || set.lead.plateNo} · {set.lead.shop || 'this design'}: {set.gaps.map((g) => `${positionText(g.plate) || 'its plate'} is ${String(g.plate.status).toLowerCase()}`).join(', ')}, with no new plate made yet.
+                            Record the new plate on Printing Plates before running this design.
+                        </div>
+                    ))}
                     {blockers.map((b) => <p key={b} className="text-xs text-rose-600">{b}</p>)}
                     {canHandlePlates ? (
                         <Button className="w-full" disabled={Boolean(busy) || blockers.length > 0} onClick={collect} icon={busy === 'collect' ? Loader2 : PackageCheck}>
@@ -556,9 +677,17 @@ const BatchDetail = ({ batch, runSql, apply, runSteps, canHandlePlates, canRun }
                         <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 flex items-center gap-2">
                             <div className="min-w-0 flex-1">
                                 <div className="font-semibold text-slate-800">{job.colours}</div>
+                                {job.modelDesign && (
+                                    <div className="text-xs text-violet-700">
+                                        {job.sheetSize} · print {job.runSheets.toLocaleString('en-IN')} sheets
+                                        {job.cutInto > 1 && `, each cut in ${job.cutInto}`} —{' '}
+                                        {job.orderSheets.toLocaleString('en-IN')} for the orders
+                                        {job.runSheets * job.cutInto > job.orderSheets && `, ${(job.runSheets * job.cutInto - job.orderSheets).toLocaleString('en-IN')} to the bags godown`}
+                                    </div>
+                                )}
                                 <div className="text-[11px] text-slate-500">
                                     Job {job.id} · {plural(job.outputs.length, 'shop')}
-                                    {job.plates.length > 0 && ` · plates ${job.plates.map((id) => plateById.get(id)?.rackCode || plateById.get(id)?.plateNo || id).join(', ')}`}
+                                    {job.plates.length > 0 && ` · plates ${job.plates.map((id) => (plateById.get(id) ? plateLabel(plateById.get(id)) : id)).join(', ')}`}
                                 </div>
                             </div>
                             <JobStatus job={job} />
@@ -567,7 +696,7 @@ const BatchDetail = ({ batch, runSql, apply, runSteps, canHandlePlates, canRun }
                             {job.outputs.map((out) => (
                                 <div key={out.id} className="px-3 py-2">
                                     <ShopOutput
-                                        shop={out.shop}
+                                        shop={out.shop || (job.modelDesign ? `${job.modelDesign} design, for ${plural(out.subOrders.length, 'order')}` : '')}
                                         city={out.city}
                                         subOrders={out.subOrders}
                                         right={job.completed ? (
@@ -584,7 +713,7 @@ const BatchDetail = ({ batch, runSql, apply, runSteps, canHandlePlates, canRun }
                         {job.completed && (
                             <div className="px-3 py-1.5 border-t border-slate-100 text-xs text-slate-500">
                                 Wastage {num(job.wastageKg).toFixed(2)} kg
-                                {job.damagedPlates.length > 0 && ` · damaged ${job.damagedPlates.map((id) => plateById.get(id)?.rackCode || id).join(', ')}`}
+                                {job.damagedPlates.length > 0 && ` · damaged ${job.damagedPlates.map((id) => (plateById.get(id) ? plateLabel(plateById.get(id)) : id)).join(', ')}`}
                             </div>
                         )}
                         {canRun && !job.completed && (
@@ -634,7 +763,16 @@ const BatchDetail = ({ batch, runSql, apply, runSteps, canHandlePlates, canRun }
                 </Card>
             )}
 
-            {completing && (
+            {completing && completing.modelDesign && (
+                <RunCompleteModal
+                    job={completing}
+                    plates={completing.plates.map((id) => plateById.get(id)).filter(Boolean)}
+                    busy={busy === `complete-${completing.id}`}
+                    onClose={() => setCompleting(null)}
+                    onSubmit={(form) => complete(completing, form)}
+                />
+            )}
+            {completing && !completing.modelDesign && (
                 <CompleteModal
                     job={completing}
                     plates={completing.plates.map((id) => plateById.get(id)).filter(Boolean)}
@@ -700,7 +838,7 @@ const CompleteModal = ({ job, plates, busy, onClose, onSubmit }) => {
                             {plates.map((p) => (
                                 <button key={p.id} type="button" onClick={() => toggleDamaged(p.id)}
                                     className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${damaged.has(p.id) ? 'bg-rose-600 text-white border-rose-600' : 'bg-white text-slate-600 border-slate-200'}`}>
-                                    {p.rackCode || p.plateNo}{damaged.has(p.id) ? ' · damaged' : ''}
+                                    {plateLabel(p)}{damaged.has(p.id) ? ' · damaged' : ''}
                                 </button>
                             ))}
                         </div>
@@ -711,6 +849,80 @@ const CompleteModal = ({ job, plates, busy, onClose, onSubmit }) => {
                     onClick={() => { setTried(true); if (problems.length === 0) onSubmit(form); }}
                     icon={busy ? Loader2 : CheckCircle2}>
                     Complete
+                </Button>
+            </div>
+        </div>
+    );
+};
+
+// Completing a model-design run: plain sheets in, good printed sheets out, and
+// where those go -- shown before saving, because saving books them.
+const RunCompleteModal = ({ job, plates, busy, onClose, onSubmit }) => {
+    const [form, setForm] = useState({ sheetsUsed: String(job.runSheets || ''), printedCount: '', printedKg: '', misprintKg: '', wastageKg: '' });
+    const [damaged, setDamaged] = useState(() => new Set());
+    const [tried, setTried] = useState(false);
+    const full = { ...form, damaged: [...damaged] };
+    const problems = runCompletionProblems(job, full);
+    const split = runSplit(job, form.printedCount);
+    const set = (key) => (e) => setForm((prev) => ({ ...prev, [key]: e.target.value }));
+    const toggleDamaged = (id) => setDamaged((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id); else next.add(id);
+        return next;
+    });
+    const input = 'mt-1 w-full border border-slate-200 rounded-lg px-2 py-2 text-base text-slate-800';
+    const fmt = (n) => num(n).toLocaleString('en-IN');
+
+    return (
+        <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 sm:p-4" onClick={onClose}>
+            <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl shadow-xl p-4 space-y-3 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-between">
+                    <h2 className="font-semibold text-slate-800">Complete {job.colours} · {job.sheetSize}</h2>
+                    <button onClick={onClose} className="p-1 rounded hover:bg-slate-100"><X size={18} /></button>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                    <label className="text-[11px] text-slate-500">Plain sheets used
+                        <input inputMode="numeric" value={form.sheetsUsed} onChange={set('sheetsUsed')} className={input} />
+                    </label>
+                    <label className="text-[11px] text-slate-500">Good sheets printed{job.cutInto > 1 ? ' (before cutting)' : ''}
+                        <input inputMode="numeric" value={form.printedCount} onChange={set('printedCount')} className={input} />
+                    </label>
+                    <label className="text-[11px] text-slate-500">Printed kg
+                        <input inputMode="decimal" value={form.printedKg} onChange={set('printedKg')} className={input} />
+                    </label>
+                    <label className="text-[11px] text-slate-500">Misprint kg
+                        <input inputMode="decimal" value={form.misprintKg} onChange={set('misprintKg')} className={input} />
+                    </label>
+                </div>
+                <label className="block text-xs text-slate-500">Wastage for the run (kg)
+                    <input inputMode="decimal" value={form.wastageKg} onChange={set('wastageKg')} className={input} />
+                </label>
+                {num(form.printedCount) > 0 && (
+                    <div className="rounded-lg bg-violet-50 border border-violet-200 p-2.5 text-xs text-violet-900 space-y-0.5">
+                        <div>{fmt(form.sheetsUsed)} plain sheets out of the printing area</div>
+                        <div>{fmt(split.toOrders)} {job.modelDesign} sheets stay in the printing area for the customer print</div>
+                        {split.toStock > 0 && <div>{fmt(split.toStock)} {job.modelDesign} sheets to the bags godown</div>}
+                        {split.short > 0 && <div className="text-rose-700">{fmt(split.short)} short of what the orders need</div>}
+                    </div>
+                )}
+                {plates.length > 0 && (
+                    <div>
+                        <div className="text-xs text-slate-500 mb-1">Tap the plate if it cannot be used again</div>
+                        <div className="flex flex-wrap gap-1.5">
+                            {plates.map((p) => (
+                                <button key={p.id} type="button" onClick={() => toggleDamaged(p.id)}
+                                    className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${damaged.has(p.id) ? 'bg-rose-600 text-white border-rose-600' : 'bg-white text-slate-600 border-slate-200'}`}>
+                                    {plateLabel(p)}{damaged.has(p.id) ? ' · damaged' : ''}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                )}
+                {tried && problems.map((p) => <p key={p} className="text-xs text-rose-600">{p}</p>)}
+                <Button className="w-full !bg-violet-600 hover:!bg-violet-700" disabled={busy}
+                    onClick={() => { setTried(true); if (problems.length === 0) onSubmit(full); }}
+                    icon={busy ? Loader2 : CheckCircle2}>
+                    Complete and book the sheets
                 </Button>
             </div>
         </div>

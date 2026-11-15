@@ -89,7 +89,7 @@ const rowFrom = ({ customer, kind, design, rack, slot, notes }) => {
         Rack: rack,
         Slot: slot || null,
         Reusable: isReusable({ material: latest.material, plateType: kind }),
-        Status: STATUS.UNVERIFIED,
+        // No Status: a design's is its sides' (Plate_Sides, scripts/plate-sides.mjs).
         Notes: notes
     };
 };
@@ -122,7 +122,7 @@ export const registerRows = ({ customer, shop, city, subOrders }) => {
                 Customer: customer, Source_Sub_Order: null, Orders: null, Plate_Type: kind,
                 Material: '', Print: '', Printing_Colours: '', Bag_Width: null, Bag_Height: null,
                 Plate_Count: null, Bag_Model: '', Made_On: null, Last_Used_On: null,
-                Rack: code.rack, Slot: code.slot, Reusable: true, Status: STATUS.UNVERIFIED,
+                Rack: code.rack, Slot: code.slot, Reusable: true,
                 Notes: `Slot from the shop name (${code.code}); no order on record — check what is in it`
             });
         }

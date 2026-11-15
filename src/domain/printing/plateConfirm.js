@@ -7,14 +7,17 @@
 // plate or order it is about, what will change, the button that writes, and
 // whether the change takes a plate out of use.
 
-import { ACTIONS, STATUS, isRetired } from './printingPlates.js';
+import { ACTIONS, STATUS, isRetired, isPlateLevel } from './printingPlates.js';
 import { rackCode } from './rackCodes.js';
 import { designText } from './plateTable.js';
+import { plateLabel, positionText } from './plateSets.js';
 
 const norm = (v) => String(v ?? '').trim().toUpperCase();
 const size = (w, h) => (w && h ? `${w}x${h}` : '');
 
-const nameOf = (plate) => plate?.rackCode || plate?.plateNo || 'this plate';
+// Which plate of a set it is goes in the name: A-284 holds both plates of a
+// two-plate design, and a tap on the wrong one is exactly what this guards.
+const nameOf = (plate) => (plate ? plateLabel(plate) : 'this plate');
 const subjectOf = (plate) => [designText(plate), plate?.shop].filter(Boolean).join(' · ');
 
 const WORDING = {
@@ -29,7 +32,8 @@ export const confirmPlateAction = (plate, action, { rack, slot, stereoSize } = {
     const rule = ACTIONS[action];
     const words = WORDING[action];
     if (!rule || !words) throw new Error(`No confirmation for ${action}.`);
-    const name = nameOf(plate);
+    // A move is the whole plate's, so it is named by its slot alone.
+    const name = isPlateLevel(action) ? (plate?.rackCode || plate?.plateNo || 'this plate') : nameOf(plate);
     const to = rule.needsPlace
         ? rackCode({ rack: norm(rack), kind: plate?.plateType, slot: String(slot ?? '').trim() })
         : '';
@@ -58,17 +62,43 @@ export const confirmRepeatAnswer = (so, chosen) => {
             danger: false
         };
     }
-    const { plate, fits } = chosen;
+    const { plate, fits, gaps = [] } = chosen;
+    const code = plate?.rackCode || plate?.plateNo || 'this plate';
     const lines = [
         'Old plate available: YES',
-        `Reuse ${nameOf(plate)} · ${designText(plate)}${size(plate.bagW, plate.bagH) ? ` · made for ${size(plate.bagW, plate.bagH)}` : ''}`
+        `Reuse ${code} · ${designText(plate)}${size(plate.bagW, plate.bagH) ? ` · made for ${size(plate.bagW, plate.bagH)}` : ''}`
     ];
     if (fits === false) lines.push('This plate was made for a bigger bag than this order.');
+    // A design short of a plate runs short until its new plate is recorded.
+    for (const g of gaps) lines.push(`${plateLabel(g.plate)} is ${norm(g.plate.status).toLowerCase()} — a new one is needed.`);
     return {
-        heading: `Reuse ${nameOf(plate)} for ${so?.shop || 'this order'}?`,
+        heading: `Reuse ${code} for ${so?.shop || 'this order'}?`,
         subject: order,
         lines,
         confirmLabel: 'Yes, reuse it',
         danger: false
+    };
+};
+
+// A new plate made for a damaged or discarded one of a set (plateSets.js).
+export const confirmReplacement = (old) => ({
+    heading: `Record a new plate for ${nameOf(old)}?`,
+    subject: subjectOf(old),
+    lines: [
+        `A new plate goes in ${old?.rackCode || 'its slot'} as ${positionText(old) || 'the design\'s plate'}, made today, IN RACK.`,
+        `${old?.plateNo || 'The old plate'} stays ${norm(old?.status) || 'retired'}.`
+    ],
+    confirmLabel: 'Yes, the new plate is here',
+    danger: false
+});
+
+// A photo of a plate kept as its picture. Which plate of the set it shows is
+// said in words, so a photo of plate 1 is not filed as plate 2.
+export const confirmPhoto = (plate) => {
+    return {
+        heading: `Save this photo as the picture of ${nameOf(plate)}?`,
+        subject: subjectOf(plate),
+        lines: ['Everyone checking this plate will match it to this photo.'],
+        confirmLabel: 'Save photo'
     };
 };
