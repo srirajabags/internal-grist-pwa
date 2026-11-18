@@ -10,7 +10,7 @@ import { num, fmtKg, attrText } from '../domain/inventory/txnDisplay';
 import {
     MOVEMENT_SQL, UNACKED_SQL, movementArgs, dayStart, dayAfter,
     defaultWindow, withClosing, byImpact, totals, zipName,
-    movementsCsv, csvName
+    movementsCsv, csvName, VIEWS, inView
 } from '../domain/production/rollMovements';
 
 const DOC_ID = '8vRFY3UUf4spJroktByH4u';
@@ -106,6 +106,7 @@ const RollMovementsModal = ({ onClose, getHeaders, getUrl }) => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [q, setQ] = useState('');
+    const [view, setView] = useState('all');
     const [bulk, setBulk] = useState(null);      // { done, total }
     const [oneLabel, setOneLabel] = useState(null);
 
@@ -155,11 +156,17 @@ const RollMovementsModal = ({ onClose, getHeaders, getUrl }) => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [from, to]);
 
+    const counts = useMemo(
+        () => Object.fromEntries(VIEWS.map((v) => [v.id, inView(rows, v.id).length])),
+        [rows]
+    );
+    const viewRows = useMemo(() => inView(rows, view), [rows, view]);
+
     const listed = useMemo(() => {
         const needle = q.trim().toUpperCase();
-        if (!needle) return rows;
-        return rows.filter((r) => `${r.iid} ${r.mat} ${r.col} ${r.gsm} ${r.w}`.toUpperCase().includes(needle));
-    }, [rows, q]);
+        if (!needle) return viewRows;
+        return viewRows.filter((r) => `${r.iid} ${r.mat} ${r.col} ${r.gsm} ${r.w}`.toUpperCase().includes(needle));
+    }, [viewRows, q]);
 
     const sums = useMemo(() => totals(listed), [listed]);
 
@@ -196,7 +203,7 @@ const RollMovementsModal = ({ onClose, getHeaders, getUrl }) => {
         }
         // text/csv rather than a download attribute alone: some Android browsers
         // save an unnamed .bin otherwise, and the file has to open in a spreadsheet.
-        save(new Blob([movementsCsv(listed)], { type: 'text/csv;charset=utf-8' }), csvName(from, to));
+        save(new Blob([movementsCsv(listed)], { type: 'text/csv;charset=utf-8' }), csvName(from, to, view));
     };
 
     const downloadZip = async () => {
@@ -210,7 +217,7 @@ const RollMovementsModal = ({ onClose, getHeaders, getUrl }) => {
             const zip = await makeLabelsZip(
                 items,
                 (done, total) => setBulk({ done, total }),
-                { filename: zipName(from, to) }
+                { filename: zipName(from, to, view) }
             );
             save(zip.blob, zip.filename);
             if (items.length < listed.length) {
@@ -278,9 +285,35 @@ const RollMovementsModal = ({ onClose, getHeaders, getUrl }) => {
                     </label>
                 </div>
 
-                {!loading && !badRange && rows.length > 0 && (
+                <div className="px-4 pt-2 border-b border-slate-200 shrink-0 flex gap-1" role="tablist">
+                    {VIEWS.map((v) => {
+                        const on = view === v.id;
+                        return (
+                            <button
+                                key={v.id}
+                                type="button"
+                                role="tab"
+                                aria-selected={on}
+                                onClick={() => setView(v.id)}
+                                className={`px-3 py-1.5 -mb-px text-sm font-semibold border-b-2 inline-flex items-center gap-1.5 ${on
+                                    ? 'border-teal-600 text-teal-700'
+                                    : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+                            >
+                                {v.id === 'new' && <Sparkles size={13} />}
+                                {v.label}
+                                {!loading && (
+                                    <span className={`text-[11px] px-1.5 rounded-full tabular-nums ${on ? 'bg-teal-50 text-teal-700' : 'bg-slate-100 text-slate-500'}`}>
+                                        {counts[v.id] ?? 0}
+                                    </span>
+                                )}
+                            </button>
+                        );
+                    })}
+                </div>
+
+                {!loading && !badRange && viewRows.length > 0 && (
                     <div className="px-4 py-2.5 border-b border-slate-100 shrink-0 grid grid-cols-4 gap-2">
-                        <Figure label="Rolls touched" value={sums.rolls} unit="" />
+                        <Figure label={view === 'new' ? 'New rolls' : 'Rolls touched'} value={sums.rolls} unit="" />
                         <Figure label="Came in" value={fmtKg(sums.inKg)} unit="kg" tone="text-emerald-700" />
                         <Figure label="Went out" value={fmtKg(sums.outKg)} unit="kg" tone="text-amber-700" />
                         <Figure
@@ -318,8 +351,8 @@ const RollMovementsModal = ({ onClose, getHeaders, getUrl }) => {
                     )}
                     {!loading && !badRange && listed.length === 0 && (
                         <p className="text-sm text-slate-500 text-center py-10 px-6">
-                            {rows.length === 0
-                                ? 'No roll moved in this window.'
+                            {viewRows.length === 0
+                                ? (view === 'new' ? 'No new stock came in during this window.' : 'No roll moved in this window.')
                                 : 'No roll matches that filter.'}
                         </p>
                     )}

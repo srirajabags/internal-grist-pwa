@@ -116,8 +116,22 @@ export const totals = (rows) => rows.reduce((acc, r) => ({
     arrived: acc.arrived + (r.isNew ? 1 : 0)
 }), { rolls: 0, inKg: 0, outKg: 0, delta: 0, moves: 0, emptied: 0, arrived: 0 });
 
-// A window's worth of labels wants a name that says which window.
-export const zipName = (from, to) => `roll-labels_${from}_to_${to}.zip`;
+// The two ways of looking at a window. "New stock" is the rolls that arrived in it
+// (a NEW STOCK entry inside the window), which is the list wanted when fresh rolls
+// have to be labelled and shelved, without every roll a job merely drew from.
+export const VIEWS = [
+    { id: 'all', label: 'All movements', keep: () => true },
+    { id: 'new', label: 'New stock', keep: (r) => num(r.isNew) > 0 }
+];
+export const inView = (rows, id) => {
+    const view = VIEWS.find((v) => v.id === id) || VIEWS[0];
+    return rows.filter(view.keep);
+};
+
+// A window's worth of labels wants a name that says which window -- and, for the
+// new-stock list, that it is only the arrivals.
+const filePrefix = (view) => (view === 'new' ? 'new-stock' : 'roll');
+export const zipName = (from, to, view = 'all') => `${filePrefix(view)}-labels_${from}_to_${to}.zip`;
 
 // ---- CSV ----------------------------------------------------------------
 // The same rows the view shows, for a spreadsheet. Deliberately plain: one line
@@ -171,4 +185,5 @@ export const movementsCsv = (rows) => {
     return `\uFEFF${lines.join('\r\n')}\r\n`;
 };
 
-export const csvName = (from, to) => `roll-movements_${from}_to_${to}.csv`;
+export const csvName = (from, to, view = 'all') =>
+    `${view === 'new' ? 'new-stock' : 'roll-movements'}_${from}_to_${to}.csv`;
