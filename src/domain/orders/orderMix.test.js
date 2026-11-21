@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
     orderKind, buildOrderMix, monthRange, monthBounds, monthLabel, istMonth, NEW, REGULAR, OTHER, NO_AREA,
     parseAreas, areasParam, areasLabel,
-    targetMap, targetProgress, rangeTarget, monthsBetween, percentText
+    targetMap, targetProgress, kindShares, rangeTarget, monthsBetween, percentText
 } from './orderMix';
 
 const row = (month, areaId, area, repeat, category, orders, value) => ({ month, areaId, area, repeat, category, orders, value });
@@ -135,6 +135,14 @@ describe('targets — Regular + Other value against the month\'s target', () => 
         const p = targetProgress(nov, 6930000);
         expect(p.achieved).toBe(3672943 + 677675);
         expect(percentText(p.share)).toBe('62.8%');
+    });
+    it('gives Regular, Other and New each their own share; only Regular + Other make up the reached figure', () => {
+        const shares = kindShares(nov, 6930000);
+        expect(percentText(shares[REGULAR])).toBe('53.0%');
+        expect(percentText(shares[OTHER])).toBe('9.8%');
+        expect(percentText(shares[NEW])).toBe('11.7%');
+        expect(shares[REGULAR] + shares[OTHER]).toBeCloseTo(targetProgress(nov, 6930000).share, 10);
+        expect(kindShares(nov, 0)).toBeNull();
     });
     it('matches the October salary figure: ₹63.8L of ₹80L is 79.8%', () => {
         const oct = buildOrderMix([row('2026-10', 1, 'Adoni', 1, 'REGULAR', 456, 6382690)]).months[0];

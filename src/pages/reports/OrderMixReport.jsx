@@ -5,7 +5,7 @@ import Card from '../../components/Card';
 import {
     ORDER_MIX_SQL, buildOrderMix, monthRange, monthBounds, monthLabel, istMonth, KINDS, KIND_LABEL,
     parseAreas, areasParam, areasLabel,
-    TARGETS_SQL, targetMap, targetProgress, rangeTarget, percentText
+    TARGETS_SQL, targetMap, targetProgress, kindShares, rangeTarget, percentText, NEW
 } from '../../domain/orders/orderMix';
 import { rupees, compactRupees } from '../../utils/money';
 import { shareElementImage, copyElementImage } from '../../services/shareImage';
@@ -37,9 +37,19 @@ const Money = ({ value }) => (
     </>
 );
 
+// Under a figure: its share of the month's target. New is grey and marked, as
+// the target leaves new customers out and it does not count towards it.
+const Share = ({ share, kind }) => (kind === NEW ? (
+    <div className="text-[10px] text-slate-400" title="Not counted towards the target">
+        {percentText(share)}<span className="hidden sm:inline"> · not in target</span>
+    </div>
+) : (
+    <div className="text-[10px] font-semibold text-amber-700" title="Share of the month's target">{percentText(share)}</div>
+));
+
 // One figure: the value, with the order count under it. Blank when nothing.
 // A rule on its left keeps the columns apart.
-const Cell = ({ figure, strong }) => (
+const Cell = ({ figure, strong, share, kind }) => (
     <td className={`pl-1 sm:pl-2 ${strong ? 'pr-3 sm:pr-3' : 'pr-1 sm:pr-2'} py-2 text-right tabular-nums align-top whitespace-nowrap border-l border-emerald-300`}>
         {figure.orders ? (
             <>
@@ -47,6 +57,7 @@ const Cell = ({ figure, strong }) => (
                 <div className="text-[10px] text-slate-500">
                     {figure.orders}<span className="hidden sm:inline"> order{figure.orders === 1 ? '' : 's'}</span>
                 </div>
+                {share != null && <Share share={share} kind={kind} />}
             </>
         ) : <span className="text-slate-300">–</span>}
     </td>
@@ -89,6 +100,7 @@ const Progress = ({ progress }) => {
             <div className="text-[10px] leading-tight">
                 <span className={`font-bold ${met ? 'text-emerald-700' : 'text-amber-700'}`}>{percentText(progress.share)}</span>
                 <span className="text-slate-500"> of {compactRupees(progress.target)}</span>
+                <span className="hidden sm:inline text-slate-500"> · Regular + Other</span>
             </div>
             <div className="mt-1 h-1 w-full max-w-[7rem] rounded-full bg-slate-200 overflow-hidden">
                 <div className={`h-full rounded-full ${met ? 'bg-emerald-600' : 'bg-amber-500'}`} style={{ width: `${pct}%` }} />
@@ -97,7 +109,9 @@ const Progress = ({ progress }) => {
     );
 };
 
-const Line = ({ label, line, onClick, active, foot, striped, progress }) => (
+const Line = ({ label, line, onClick, active, foot, striped, progress }) => {
+    const shares = progress ? kindShares(line, progress.target) : null;
+    return (
     <tr
         onClick={onClick}
         className={`${foot ? 'border-t-2 border-emerald-400' : 'border-t border-emerald-100'} ${rowBg({ foot, active, striped })} ${onClick ? 'cursor-pointer hover:bg-amber-50' : ''}`}
@@ -106,14 +120,17 @@ const Line = ({ label, line, onClick, active, foot, striped, progress }) => (
             {label}
             {progress && <Progress progress={progress} />}
         </td>
-        {KINDS.map((k) => <Cell key={k} figure={line[k]} />)}
+        {KINDS.map((k) => <Cell key={k} figure={line[k]} kind={k} share={shares?.[k]} />)}
         <Cell figure={line.total} strong />
     </tr>
-);
+    );
+};
 
 // Under the card title on a phone: how to read a cell.
-const PhoneKey = () => (
-    <p className="sm:hidden text-[10px] text-slate-500">Each cell: value (L = lakh, Cr = crore), order count below.</p>
+const PhoneKey = ({ targets }) => (
+    <p className="sm:hidden text-[10px] text-slate-500">
+        Each cell: value (L = lakh, Cr = crore), order count below{targets ? ', then % of the month\u2019s target (New in grey: not counted)' : ''}.
+    </p>
 );
 
 // Top right of a card: the card as a picture, copied (for WhatsApp Web or
@@ -365,7 +382,7 @@ const OrderMixReport = ({ getHeaders, getUrl }) => {
                         {areas.length > 0 && targets.size > 0 && sharing !== 'month' && (
                             <p className="text-[11px] text-slate-500">Targets are for the whole business; clear Area groups to see them.</p>
                         )}
-                        <PhoneKey />
+                        <PhoneKey targets={showTargets} />
                     </div>
                     {mix.months.length === 0 ? (
                         <p className="px-4 py-6 text-center text-sm text-slate-500">
@@ -437,7 +454,8 @@ const OrderMixReport = ({ getHeaders, getUrl }) => {
                     Regular now. The category is read as it stands today, so a customer tagged Regular this week shows as Regular in earlier months too.
                     Orders are dated by Order Form Date and placed by the order&rsquo;s Area Group. The percentage under a month is Regular + Other value
                     (every order except new customers&rsquo; first orders, salesmen&rsquo;s included) against that month&rsquo;s value target in Grist&rsquo;s
-                    Sales Targets table; a month with no target there shows none, and the Total shows one only when every month in the range has a target. Tap a month to see its area groups; Area groups narrows both
+                    Sales Targets table. Under each figure is that column&rsquo;s own share of the same target: Regular and Other add up to the month&rsquo;s
+                    figure, and New is shown in grey for reference only, as the target leaves new customers out; a month with no target there shows none, and the Total shows one only when every month in the range has a target. Tap a month to see its area groups; Area groups narrows both
                     tables. Copy puts a table on the clipboard as one picture, to paste in WhatsApp; Share sends it through the phone&rsquo;s share sheet (on a computer
                     without one, the picture is saved instead).
                 </p>

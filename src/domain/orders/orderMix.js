@@ -197,6 +197,14 @@ export const targetProgress = (line, target) => {
     return { achieved, target, share: achieved / target };
 };
 
+// Each kind as its own share of the target: Regular and Other add up to the
+// figure above; New is beside it for reference only, as the target leaves new
+// customers out. Null with no target.
+export const kindShares = (line, target) => {
+    if (!line || !(target > 0)) return null;
+    return Object.fromEntries(KINDS.map((k) => [k, line[k].value / target]));
+};
+
 // Every month from `from` to `to`, oldest first.
 export const monthsBetween = ({ from, to }) => {
     const out = [];
