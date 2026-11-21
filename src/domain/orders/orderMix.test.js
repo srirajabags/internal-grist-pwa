@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
     orderKind, buildOrderMix, monthRange, monthBounds, monthLabel, istMonth, NEW, REGULAR, OTHER, NO_AREA,
-    parseAreas, areasParam, areasLabel
+    parseAreas, areasParam, areasLabel,
+    targetMap, targetProgress, rangeTarget, monthsBetween, percentText
 } from './orderMix';
 
 const row = (month, areaId, area, repeat, category, orders, value) => ({ month, areaId, area, repeat, category, orders, value });
@@ -118,5 +119,50 @@ describe('area group filter', () => {
         expect(areasLabel([])).toBe('All area groups');
         expect(areasLabel(['Adoni', 'Guntur'])).toBe('Adoni, Guntur');
         expect(areasLabel(['Adoni', 'Guntur', 'Kolar', 'Ongole'])).toBe('Adoni, Guntur +2 more');
+    });
+});
+
+describe('targets — Regular + Other value against the month\'s target', () => {
+    // November 2026 as the report showed it on 21 Nov: Regular ₹36,72,943,
+    // Other ₹6,77,675, New ₹8,08,425, against the ₹69.3L target sheet.
+    const nov = buildOrderMix([
+        row('2026-11', 1, 'Adoni', 1, 'REGULAR', 223, 3672943),
+        row('2026-11', 1, 'Adoni', 1, '', 66, 677675),
+        row('2026-11', 1, 'Adoni', 0, 'REGULAR', 64, 808425)
+    ]).months[0];
+
+    it('leaves new customers\' orders out, as the target sheet does', () => {
+        const p = targetProgress(nov, 6930000);
+        expect(p.achieved).toBe(3672943 + 677675);
+        expect(percentText(p.share)).toBe('62.8%');
+    });
+    it('matches the October salary figure: ₹63.8L of ₹80L is 79.8%', () => {
+        const oct = buildOrderMix([row('2026-10', 1, 'Adoni', 1, 'REGULAR', 456, 6382690)]).months[0];
+        expect(percentText(targetProgress(oct, 8000000).share)).toBe('79.8%');
+    });
+    it('shows nothing for a month without a target, never 0%', () => {
+        expect(targetProgress(nov, undefined)).toBeNull();
+        expect(targetProgress(nov, 0)).toBeNull();
+    });
+    it('treats a blank or zero target row as no target, and lets a later row correct an earlier one', () => {
+        const map = targetMap([
+            { month: '2026-09', target: null },
+            { month: '2026-10', target: 0 },
+            { month: '2026-11', target: 7000000 },
+            { month: '2026-11', target: 6930000 }
+        ]);
+        expect([...map.entries()]).toEqual([['2026-11', 6930000]]);
+    });
+    it('totals a range only when every month in it has a target', () => {
+        const targets = targetMap([{ month: '2026-10', target: 8000000 }, { month: '2026-11', target: 6930000 }]);
+        expect(rangeTarget({ from: '2026-10', to: '2026-11' }, targets)).toBe(14930000);
+        expect(rangeTarget({ from: '2026-09', to: '2026-11' }, targets)).toBeNull();
+    });
+    it('walks months across a year end', () => {
+        expect(monthsBetween({ from: '2026-11', to: '2027-02' })).toEqual(['2026-11', '2026-12', '2027-01', '2027-02']);
+    });
+    it('rounds to one decimal and can pass 100%', () => {
+        expect(percentText(0.62849)).toBe('62.8%');
+        expect(percentText(1.2)).toBe('120.0%');
     });
 });

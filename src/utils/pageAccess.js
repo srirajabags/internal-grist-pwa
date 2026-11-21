@@ -25,7 +25,7 @@ export const PAGE_ROLE_REQUIREMENTS = {
   stitching: ['FACTORY STITCHING'],
   // Reports are gated folder by folder (SUBPAGE_ROLE_REQUIREMENTS); this is the
   // union, so each folder's people reach the hub.
-  reports: ['FACTORY PRODUCTION', 'FACTORY INVENTORY', 'SENIOR TELECALLER'],
+  reports: ['FACTORY PRODUCTION', 'FACTORY INVENTORY', 'SENIOR TELECALLER', 'TELECALLER'],
 };
 
 // Subpages with their own roles, keyed "page/subpage" from the first two path
@@ -43,8 +43,9 @@ export const SUBPAGE_ROLE_REQUIREMENTS = {
   'reports/production': ['FACTORY PRODUCTION', 'FACTORY INVENTORY'],
   // Every telecaller's conversion side by side is a supervisor's view.
   'reports/telecalling': ['SENIOR TELECALLER'],
-  // Order value by area group and month is the business's sales figure.
-  'reports/sales': ['SENIOR TELECALLER'],
+  // Order value by area group and month, against the month's target. Every
+  // telecaller sees it: their target pay is worked out from this figure.
+  'reports/sales': ['SENIOR TELECALLER', 'TELECALLER'],
 };
 
 // The page and (if any) subpage rule an address falls under.

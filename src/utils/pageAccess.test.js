@@ -65,6 +65,11 @@ describe('reports — each folder has its own people', () => {
     expect(canAccessPath('/reports/production/batch', ['SENIOR TELECALLER'])).toBe(false);
     expect(canAccessPath('/reports/telecalling/inbound-calls', ['FACTORY PRODUCTION'])).toBe(false);
   });
+  it('shows the sales report to every telecaller, as their target pay comes from it (21 Nov 2026)', () => {
+    expect(canAccessPath('/reports', ['TELECALLER'])).toBe(true);
+    expect(canAccessPath('/reports/sales/order-mix', ['TELECALLER'])).toBe(true);
+    expect(canAccessPath('/reports/production/batch', ['TELECALLER'])).toBe(false);
+  });
   it('lets the owner into both', () => {
     expect(canAccessPath('/reports/telecalling/inbound-calls', ['OWNER'])).toBe(true);
     expect(canAccessPath('/reports/production/batch', ['OWNER'])).toBe(true);

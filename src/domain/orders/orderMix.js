@@ -161,3 +161,56 @@ export const areasLabel = (areas) => {
     if (areas.length <= 3) return areas.join(', ');
     return `${areas.slice(0, 2).join(', ')} +${areas.length - 2} more`;
 };
+
+// ---- Targets ----------------------------------------------------------------
+
+// Each month's value target (Grist Sales_Targets, one row per month, Month the
+// first day). The target covers every order except new customers' first
+// orders, salesmen's included, so what counts against it is Regular + Other.
+// It is the same figure the telecallers' target pay is worked out from.
+export const TARGETS_SQL = `
+    SELECT strftime('%Y-%m', Month, 'unixepoch') AS month, Value_Target AS target
+    FROM Sales_Targets
+    WHERE Month >= ? AND Month < ?`;
+
+// Month → target. A blank or zero target is no target (a row typed in ahead of
+// time and not filled yet must not show 0% or divide by zero). Two rows for one
+// month: the later one wins, as it is the correction.
+export const targetMap = (rows = []) => {
+    const map = new Map();
+    for (const r of rows) {
+        const target = num(r.target);
+        if (r.month && target > 0) map.set(r.month, target);
+    }
+    return map;
+};
+
+// The value that counts against the target: everything but new orders.
+export const targetValue = (line) => line[REGULAR].value + line[OTHER].value;
+
+// A line against its target: what counts, the target, and the share reached
+// (0.628 for 62.8%). Null with no target, so the page shows nothing rather
+// than a made-up 0%.
+export const targetProgress = (line, target) => {
+    if (!line || !(target > 0)) return null;
+    const achieved = targetValue(line);
+    return { achieved, target, share: achieved / target };
+};
+
+// Every month from `from` to `to`, oldest first.
+export const monthsBetween = ({ from, to }) => {
+    const out = [];
+    for (let m = from; m <= to && out.length < 1200; m = shiftMonth(m, 1)) out.push(m);
+    return out;
+};
+
+// The range's total target, only when every month in it has one: adding up
+// two months' targets against three months' orders would flatter the figure.
+export const rangeTarget = (range, targets) => {
+    const months = monthsBetween(range);
+    if (!months.length || months.some((m) => !targets.has(m))) return null;
+    return months.reduce((sum, m) => sum + targets.get(m), 0);
+};
+
+// "62.8%": one decimal, so a month that is close shows its last lakh moving.
+export const percentText = (share) => `${(Math.round(share * 1000) / 10).toFixed(1)}%`;

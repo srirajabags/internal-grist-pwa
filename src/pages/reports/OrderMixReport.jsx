@@ -4,7 +4,8 @@ import { Loader2, AlertCircle, RefreshCw, Share2, Copy, MapPin, ChevronDown, X }
 import Card from '../../components/Card';
 import {
     ORDER_MIX_SQL, buildOrderMix, monthRange, monthBounds, monthLabel, istMonth, KINDS, KIND_LABEL,
-    parseAreas, areasParam, areasLabel
+    parseAreas, areasParam, areasLabel,
+    TARGETS_SQL, targetMap, targetProgress, rangeTarget, percentText
 } from '../../domain/orders/orderMix';
 import { rupees, compactRupees } from '../../utils/money';
 import { shareElementImage, copyElementImage } from '../../services/shareImage';
@@ -78,12 +79,33 @@ const rowBg = ({ foot, active, striped }) => {
     return striped ? 'bg-emerald-100/70' : 'bg-white';
 };
 
-const Line = ({ label, line, onClick, active, foot, striped }) => (
+// Under a month's name: Regular + Other value as a share of the month's target,
+// with a bar (full at 100%).
+const Progress = ({ progress }) => {
+    const pct = Math.max(0, Math.min(100, progress.share * 100));
+    const met = progress.share >= 1;
+    return (
+        <div className="mt-0.5 font-normal" title={`Regular + Other ${rupees(progress.achieved)} of ${rupees(progress.target)} target`}>
+            <div className="text-[10px] leading-tight">
+                <span className={`font-bold ${met ? 'text-emerald-700' : 'text-amber-700'}`}>{percentText(progress.share)}</span>
+                <span className="text-slate-500"> of {compactRupees(progress.target)}</span>
+            </div>
+            <div className="mt-1 h-1 w-full max-w-[7rem] rounded-full bg-slate-200 overflow-hidden">
+                <div className={`h-full rounded-full ${met ? 'bg-emerald-600' : 'bg-amber-500'}`} style={{ width: `${pct}%` }} />
+            </div>
+        </div>
+    );
+};
+
+const Line = ({ label, line, onClick, active, foot, striped, progress }) => (
     <tr
         onClick={onClick}
         className={`${foot ? 'border-t-2 border-emerald-400' : 'border-t border-emerald-100'} ${rowBg({ foot, active, striped })} ${onClick ? 'cursor-pointer hover:bg-amber-50' : ''}`}
     >
-        <td className={`pl-2.5 sm:pl-3 pr-1 py-2 align-top break-words ${foot || active ? 'font-bold text-slate-900' : 'text-slate-800'}`}>{label}</td>
+        <td className={`pl-2.5 sm:pl-3 pr-1 py-2 align-top break-words ${foot || active ? 'font-bold text-slate-900' : 'text-slate-800'}`}>
+            {label}
+            {progress && <Progress progress={progress} />}
+        </td>
         {KINDS.map((k) => <Cell key={k} figure={line[k]} />)}
         <Cell figure={line.total} strong />
     </tr>
@@ -133,6 +155,7 @@ const OrderMixReport = ({ getHeaders, getUrl }) => {
     const range = monthRange(params.get('from'), params.get('to'));
     const current = istMonth();
     const [rows, setRows] = useState(null);
+    const [targetRows, setTargetRows] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
     const [reloadKey, setReloadKey] = useState(0);
@@ -144,8 +167,16 @@ const OrderMixReport = ({ getHeaders, getUrl }) => {
             setError(null);
             try {
                 const b = monthBounds(range);
-                const result = await sql(getHeaders, getUrl, ORDER_MIX_SQL, [b.from, b.to]);
-                if (live) setRows(result);
+                // Targets are an extra: if Sales_Targets cannot be read, the
+                // orders still show, just without percentages.
+                const [result, targets] = await Promise.all([
+                    sql(getHeaders, getUrl, ORDER_MIX_SQL, [b.from, b.to]),
+                    sql(getHeaders, getUrl, TARGETS_SQL, [b.from, b.to]).catch(() => [])
+                ]);
+                if (live) {
+                    setRows(result);
+                    setTargetRows(targets);
+                }
             } catch (err) {
                 if (live) setError(err.message || String(err));
             } finally {
@@ -167,6 +198,12 @@ const OrderMixReport = ({ getHeaders, getUrl }) => {
         return [...names, ...areas.filter((a) => !names.includes(a))];
     }, [rows, areas]);
     const [filterOpen, setFilterOpen] = useState(false);
+    // Targets are for the whole business, so they show only with every area
+    // group in; against a few area groups the share would mean nothing.
+    const targets = useMemo(() => targetMap(targetRows), [targetRows]);
+    const showTargets = !areas.length && targets.size > 0;
+    const totalTarget = showTargets ? rangeTarget(range, targets) : null;
+    const totalProgress = mix && totalTarget ? targetProgress(mix.total, totalTarget) : null;
 
     const setParam = (changes) => {
         const next = new URLSearchParams(params);
@@ -318,7 +355,16 @@ const OrderMixReport = ({ getHeaders, getUrl }) => {
                         <p className="text-xs text-slate-500">
                             {rangeText} · {mix.total.total.orders} orders · {rupees(mix.total.total.value)}
                         </p>
+                        {totalProgress && (
+                            <p className="text-xs text-slate-700">
+                                Target {rupees(totalProgress.target)} · Regular + Other {rupees(totalProgress.achieved)} ·{' '}
+                                <span className={`font-bold ${totalProgress.share >= 1 ? 'text-emerald-700' : 'text-amber-700'}`}>{percentText(totalProgress.share)} reached</span>
+                            </p>
+                        )}
                         {areas.length > 0 && sharing !== 'month' && <p className="text-xs font-semibold text-emerald-700">{areasLabel(areas)}</p>}
+                        {areas.length > 0 && targets.size > 0 && sharing !== 'month' && (
+                            <p className="text-[11px] text-slate-500">Targets are for the whole business; clear Area groups to see them.</p>
+                        )}
                         <PhoneKey />
                     </div>
                     {mix.months.length === 0 ? (
@@ -332,11 +378,12 @@ const OrderMixReport = ({ getHeaders, getUrl }) => {
                             <tbody>
                                 {mix.months.map((m, i) => (
                                     <Line key={m.month} striped={i % 2 === 1} label={monthLabel(m.month)} line={m} active={month?.month === m.month}
+                                        progress={showTargets ? targetProgress(m, targets.get(m.month)) : null}
                                         onClick={() => pick(month?.month === m.month ? ALL : m.month)} />
                                 ))}
                             </tbody>
                             {mix.months.length > 1 && (
-                                <tfoot><Line label="Total" line={mix.total} foot /></tfoot>
+                                <tfoot><Line label="Total" line={mix.total} foot progress={totalProgress} /></tfoot>
                             )}
                         </table>
                     )}
@@ -388,7 +435,9 @@ const OrderMixReport = ({ getHeaders, getUrl }) => {
                     New is an order with Is Repeat Order unticked: the customer&rsquo;s first order. Every other order is Regular when the customer&rsquo;s
                     Temp Fallback Sales Category is REGULAR, and Other when it is anything else or blank. A first order counts as New even if that customer is
                     Regular now. The category is read as it stands today, so a customer tagged Regular this week shows as Regular in earlier months too.
-                    Orders are dated by Order Form Date and placed by the order&rsquo;s Area Group. Tap a month to see its area groups; Area groups narrows both
+                    Orders are dated by Order Form Date and placed by the order&rsquo;s Area Group. The percentage under a month is Regular + Other value
+                    (every order except new customers&rsquo; first orders, salesmen&rsquo;s included) against that month&rsquo;s value target in Grist&rsquo;s
+                    Sales Targets table; a month with no target there shows none, and the Total shows one only when every month in the range has a target. Tap a month to see its area groups; Area groups narrows both
                     tables. Copy puts a table on the clipboard as one picture, to paste in WhatsApp; Share sends it through the phone&rsquo;s share sheet (on a computer
                     without one, the picture is saved instead).
                 </p>
