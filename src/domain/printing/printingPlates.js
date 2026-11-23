@@ -338,11 +338,11 @@ export const repeatCandidates = (subOrder, plates) => plateSets((plates || [])
 // The plate a repeat order should most likely reuse -- one, since an order runs
 // on a single plate (user, 5 Nov 2026).
 //
-//   shortlist  plates made for exactly the order's bag; failing that, the
-//              closest fit -- the biggest plate that still fits -- as a smaller
-//              plate on a bigger bag leaves more of the bag unprinted
-//   others     the rest: smaller plates that also fit, and too-big ones, kept
-//              for the person who knows better
+//   shortlist  plates made for exactly the order's bag size, and only those:
+//              a different size is a different plate (user, 23 Nov 2026: "for
+//              different sizes different plates are done")
+//   others     the rest, other sizes included, kept for the person who knows
+//              better
 //   pick       the newest design on the shortlist with no plate expired, or
 //              none -- its design id, as Sub_Orders.Reused_Plates names it
 export const repeatShortlist = (subOrder, plates, today) => {
@@ -353,12 +353,6 @@ export const repeatShortlist = (subOrder, plates, today) => {
         return pa && pa === ba && pb === bb;
     });
     let shortlist = exact;
-    if (!shortlist.length) {
-        const fitting = all.filter((c) => c.fits === true);
-        const area = ({ plate }) => num(plate.bagW) * num(plate.bagH);
-        const best = Math.max(0, ...fitting.map(area));
-        shortlist = best ? fitting.filter((c) => area(c) === best) : [];
-    }
     const chosen = new Set(shortlist.map((c) => setKey(c.plate)));
     const newestFirst = (a, b) => num(b.plate.madeOn) - num(a.plate.madeOn) || setKey(b.plate) - setKey(a.plate);
     shortlist = [...shortlist].sort(newestFirst);

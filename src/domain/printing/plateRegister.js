@@ -11,7 +11,10 @@
 //
 // A design is born when an order makes a plate for it: Design_Version NEW or
 // CHANGE. An OLD order prints with a design already made -- the one of its
-// kind whose plate fits its bag, the closest fit if several do. An OLD order
+// kind made for exactly its bag size, the latest used if there are two. A
+// different size is a different plate (user, 23 Nov 2026: "for different sizes
+// different plates are done"), so a repeat in a size with no design of its own
+// reaches back before the records, like any other unmatched repeat. An OLD order
 // whose plate was not found (Old_Plate_Available NO) had the plate made again
 // from the old file: same design, a new plate, so the design's made date moves
 // to that order. An OLD order with no design of its kind on record reaches back
@@ -31,8 +34,7 @@ export const REACHED_FACTORY = 'UPDATED TO FACTORY';
 
 // Sizes as smaller x bigger, the way the factory writes them.
 const dims = (o) => [num(o.bagW), num(o.bagH)].sort((a, b) => a - b);
-const area = ([a, b]) => a * b;
-const fits = (plate, bag) => plate[0] > 0 && bag[0] > 0 && plate[0] <= bag[0] && plate[1] <= bag[1];
+const sameSize = (plate, bag) => plate[0] > 0 && plate[0] === bag[0] && plate[1] === bag[1];
 
 const byDate = (a, b) => num(a.orderDate) - num(b.orderDate) || num(a.id) - num(b.id);
 
@@ -49,8 +51,8 @@ export const designsFromOrders = (orders) => {
             continue;
         }
         const match = designs
-            .filter((d) => fits(d.size, size))
-            .sort((a, b) => area(b.size) - area(a.size) || num(b.orders.at(-1).orderDate) - num(a.orders.at(-1).orderDate))[0];
+            .filter((d) => sameSize(d.size, size))
+            .sort((a, b) => num(b.orders.at(-1).orderDate) - num(a.orders.at(-1).orderDate))[0];
         if (!match) {
             // A design older than the records -- unless this order is the one
             // that had its plate made again, in which case the plate on the rack
@@ -66,6 +68,22 @@ export const designsFromOrders = (orders) => {
         }
     }
     return designs;
+};
+
+// One registered design's orders regrouped one design per bag size (the
+// register before 23 Nov 2026 put repeats of a bigger bag on a smaller plate;
+// 772 designs held more than one size). The group holding the design's own
+// plate order stays on it -- or, failing that, the group of its own size, then
+// the first; every other group is a design of its own. `design` is
+// { sourceSubOrder, bagW, bagH }; `orders` its sub-orders as the register reads them.
+export const splitBySize = (design, orders) => {
+    const groups = designsFromOrders(orders || []);
+    const own = dims({ bagW: design?.bagW, bagH: design?.bagH });
+    const keep = groups.find((g) => g.orders.some((o) => num(o.id) === num(design?.sourceSubOrder)))
+        || groups.find((g) => sameSize(g.size, own))
+        || groups[0]
+        || null;
+    return { keep, split: groups.filter((g) => g !== keep) };
 };
 
 const rowFrom = ({ customer, kind, design, rack, slot, notes }) => {

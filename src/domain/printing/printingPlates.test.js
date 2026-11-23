@@ -296,11 +296,15 @@ describe('repeatShortlist — one plate per repeat order, matched by size (user,
         expect(repeatShortlist(order(18, 14), k79, today).pick).toBe(1);
     });
 
-    it('falls back to the closest fit when no plate was made for this bag', () => {
-        // 13x17: the 12x16 plate is the biggest that still fits.
+    // "For different sizes different plates are done" (user, 23 Nov 2026,
+    // PL-00114): a smaller plate that would fit is not this order's plate. It
+    // stays under "others" for the person who knows better, never picked.
+    it('shortlists and picks nothing when no plate was made for this bag size', () => {
+        // 13x17: the 12x16 plate would fit, but it is another size's plate.
         const out = repeatShortlist(order(13, 17), k79, today);
-        expect(out.shortlist.map((c) => c.plate.id)).toEqual([2]);
-        expect(out.pick).toBe(2);
+        expect(out.shortlist).toEqual([]);
+        expect(out.pick).toBeNull();
+        expect(out.others.map((c) => c.plate.id).sort()).toEqual([1, 2, 3]);
     });
 
     it('shortlists an expired plate but does not pick it', () => {

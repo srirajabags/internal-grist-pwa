@@ -64,9 +64,14 @@ describe('confirmRepeatAnswer — the old-plate answer for a repeat order', () =
         expect(c.lines).toEqual(['Old plate available: YES', 'Reuse K-79 · Plate · 1 plate · made for 12x18']);
     });
 
-    it('repeats the too-big warning on the confirmation', () => {
+    // Different sizes are different plates (user, 23 Nov 2026): a plate of any
+    // other size -- bigger, or smaller and "fitting" -- is warned about.
+    it('warns when the plate was made for another bag size', () => {
         expect(confirmRepeatAnswer(so, { plate: plate({ bagW: 14, bagH: 20 }), fits: false }).lines)
-            .toContain('This plate was made for a bigger bag than this order.');
+            .toContain('This plate was made for a 14x20 bag, not this order\'s 12x18 — each size has its own plate.');
+        expect(confirmRepeatAnswer(so, { plate: plate({ bagW: 10, bagH: 14 }), fits: true }).lines)
+            .toContain('This plate was made for a 10x14 bag, not this order\'s 12x18 — each size has its own plate.');
+        expect(confirmRepeatAnswer(so, { plate: plate({ bagW: 18, bagH: 12 }), fits: true }).lines.join(' ')).not.toContain('own plate');
     });
 
     it('says a new plate will be made when there is no old one', () => {

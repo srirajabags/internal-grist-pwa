@@ -1204,7 +1204,10 @@ const RepeatCard = ({ so, plates, save, onDone, runSql, attachments }) => {
     };
 
     const kindWord = ({ STEREO: 'stereo', DIGITAL: 'digital plate' })[kindOfOrder(so)] || 'plate';
-    const row = ({ plate, fits, gaps }) => (
+    // The shortlist is the plates made for this bag size; any other is another
+    // size's plate (user, 23 Nov 2026: "for different sizes different plates are done").
+    const exactIds = new Set(shortlist.map((c) => c.plate.id));
+    const row = ({ plate, gaps }) => (
         <div key={plate.id} className="flex items-center gap-2 py-1">
             {/* The circle chooses; the plate itself opens its sheet. */}
             <label className="p-2 -ml-2 shrink-0 cursor-pointer">
@@ -1226,7 +1229,7 @@ const RepeatCard = ({ so, plates, save, onDone, runSql, attachments }) => {
                 )}
             </button>
             {isExpired(plate, today) && <Pill className="text-slate-600 bg-slate-100 ring-slate-200">expired</Pill>}
-            {fits === false && <Pill className="text-rose-700 bg-rose-50 ring-rose-200">too big</Pill>}
+            {!exactIds.has(plate.id) && sizeText(plate.bagW, plate.bagH) && <Pill className="text-rose-700 bg-rose-50 ring-rose-200">other size</Pill>}
         </div>
     );
 
@@ -1245,7 +1248,7 @@ const RepeatCard = ({ so, plates, save, onDone, runSql, attachments }) => {
                     {shortlist.length > 0 ? (
                         <div className="divide-y divide-slate-100">{shortlist.map(row)}</div>
                     ) : (
-                        <p className="text-xs text-amber-700">No {kindWord} of this customer's fits a {sizeText(so.bagW, so.bagH)} bag.</p>
+                        <p className="text-xs text-amber-700">No {kindWord} of this customer's was made for a {sizeText(so.bagW, so.bagH)} bag — each size has its own plate.</p>
                     )}
                     {others.length > 0 && (
                         <>
@@ -1257,8 +1260,8 @@ const RepeatCard = ({ so, plates, save, onDone, runSql, attachments }) => {
                     )}
                 </>
             )}
-            {chosen?.fits === false && (
-                <p className="text-xs text-rose-600">The chosen plate was made for a bigger bag than this order.</p>
+            {chosen && !exactIds.has(chosen.plate.id) && sizeText(chosen.plate.bagW, chosen.plate.bagH) && (
+                <p className="text-xs text-rose-600">The chosen plate was made for a {sizeText(chosen.plate.bagW, chosen.plate.bagH)} bag, not this order's {sizeText(so.bagW, so.bagH)} — each size has its own plate.</p>
             )}
             <div className="flex gap-2">
                 <Button className="flex-1" disabled={busy || !chosen} onClick={() => answer(true)} icon={busy ? Loader2 : CheckCircle2}>

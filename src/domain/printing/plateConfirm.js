@@ -62,13 +62,17 @@ export const confirmRepeatAnswer = (so, chosen) => {
             danger: false
         };
     }
-    const { plate, fits, gaps = [] } = chosen;
+    const { plate, gaps = [] } = chosen;
     const code = plate?.rackCode || plate?.plateNo || 'this plate';
     const lines = [
         'Old plate available: YES',
         `Reuse ${code} · ${designText(plate)}${size(plate.bagW, plate.bagH) ? ` · made for ${size(plate.bagW, plate.bagH)}` : ''}`
     ];
-    if (fits === false) lines.push('This plate was made for a bigger bag than this order.');
+    // Each bag size has its own plate (user, 23 Nov 2026): warn about any other size.
+    const sizeKey = (w, h) => [Number(w) || 0, Number(h) || 0].sort((a, b) => a - b).join('x');
+    if (size(plate.bagW, plate.bagH) && size(so?.bagW, so?.bagH) && sizeKey(plate.bagW, plate.bagH) !== sizeKey(so.bagW, so.bagH)) {
+        lines.push(`This plate was made for a ${size(plate.bagW, plate.bagH)} bag, not this order's ${size(so.bagW, so.bagH)} — each size has its own plate.`);
+    }
     // A design short of a plate runs short until its new plate is recorded.
     for (const g of gaps) lines.push(`${plateLabel(g.plate)} is ${norm(g.plate.status).toLowerCase()} — a new one is needed.`);
     return {
