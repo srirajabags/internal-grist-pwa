@@ -292,8 +292,11 @@ describe('repeatShortlist — one plate per repeat order, matched by size (user,
         expect(out.pick).toBe(1);
     });
 
-    it('matches a size written the other way round', () => {
-        expect(repeatShortlist(order(18, 14), k79, today).pick).toBe(1);
+    // 12x14 and 14x12 are different plates (user, 23 Nov 2026).
+    it('does not match a size written the other way round', () => {
+        const out = repeatShortlist(order(18, 14), k79, today);
+        expect(out.shortlist).toEqual([]);
+        expect(out.pick).toBeNull();
     });
 
     // "For different sizes different plates are done" (user, 23 Nov 2026,

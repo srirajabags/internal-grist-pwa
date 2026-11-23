@@ -347,11 +347,9 @@ export const repeatCandidates = (subOrder, plates) => plateSets((plates || [])
 //              none -- its design id, as Sub_Orders.Reused_Plates names it
 export const repeatShortlist = (subOrder, plates, today) => {
     const all = repeatCandidates(subOrder, plates);
-    const [ba, bb] = dims(subOrder?.bagW, subOrder?.bagH);
-    const exact = all.filter(({ plate }) => {
-        const [pa, pb] = dims(plate.bagW, plate.bagH);
-        return pa && pa === ba && pb === bb;
-    });
+    // Width and height as written: 12x14 and 14x12 are different plates (user, 23 Nov 2026).
+    const [ba, bb] = [num(subOrder?.bagW), num(subOrder?.bagH)];
+    const exact = all.filter(({ plate }) => num(plate.bagW) > 0 && num(plate.bagW) === ba && num(plate.bagH) === bb);
     let shortlist = exact;
     const chosen = new Set(shortlist.map((c) => setKey(c.plate)));
     const newestFirst = (a, b) => num(b.plate.madeOn) - num(a.plate.madeOn) || setKey(b.plate) - setKey(a.plate);

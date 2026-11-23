@@ -32,8 +32,9 @@ const norm = (v) => String(v ?? '').trim().toUpperCase();
 
 export const REACHED_FACTORY = 'UPDATED TO FACTORY';
 
-// Sizes as smaller x bigger, the way the factory writes them.
-const dims = (o) => [num(o.bagW), num(o.bagH)].sort((a, b) => a - b);
+// A plate's size is the bag's width x height as written, never turned round:
+// 12x14 and 14x12 are different plates (user, 23 Nov 2026).
+const dims = (o) => [num(o.bagW), num(o.bagH)];
 const sameSize = (plate, bag) => plate[0] > 0 && plate[0] === bag[0] && plate[1] === bag[1];
 
 const byDate = (a, b) => num(a.orderDate) - num(b.orderDate) || num(a.id) - num(b.id);

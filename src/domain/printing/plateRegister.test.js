@@ -70,12 +70,22 @@ describe('designsFromOrders — one row per design', () => {
         const ds = designsFromOrders([
             order({ id: 1, orderDate: 1, bagW: 12, bagH: 14 }),
             order({ id: 2, orderDate: 2, bagW: 14, bagH: 18, designVersion: 'OLD' }),
-            order({ id: 3, orderDate: 3, bagW: 14, bagH: 12, designVersion: 'OLD' })
+            order({ id: 3, orderDate: 3, bagW: 12, bagH: 14, designVersion: 'OLD' })
         ]);
-        // The 14x18 repeat starts a design older than the records; the 14x12
-        // repeat (12x14 written the other way round) is the first plate's.
         expect(ds.map((d) => d.orders.map((o) => o.id))).toEqual([[1, 3], [2]]);
         expect(ds[1]).toMatchObject({ madeOn: null, size: [14, 18] });
+    });
+
+    // "12x14 and 14x12 these sizes consider as different" (user, 23 Nov 2026):
+    // width and height as written, never turned round.
+    it('keeps 12x14 and 14x12 as different plates, each as written', () => {
+        const ds = designsFromOrders([
+            order({ id: 1, orderDate: 1, bagW: 12, bagH: 14 }),
+            order({ id: 2, orderDate: 2, bagW: 14, bagH: 12, designVersion: 'OLD' })
+        ]);
+        expect(ds.map((d) => [d.size, d.orders.map((o) => o.id)])).toEqual([[[12, 14], [1]], [[14, 12], [2]]]);
+        const rows = registerRows({ customer: 7, shop: 'Shop AFT K-9', city: 'Kurnool', subOrders: [order({ id: 5, bagW: 14, bagH: 12 })] });
+        expect(rows[0]).toMatchObject({ Bag_Width: 14, Bag_Height: 12 });
     });
 
     it('puts an OLD order on the latest-used design of its size when there are two', () => {
@@ -188,7 +198,7 @@ describe('splitBySize — one design per bag size', () => {
     });
 
     it("falls back to the design's own size when its plate order is not among them", () => {
-        const { keep } = splitBySize({ sourceSubOrder: 999, bagW: 18, bagH: 14 }, pl114);
+        const { keep } = splitBySize({ sourceSubOrder: 999, bagW: 14, bagH: 18 }, pl114);
         expect(keep.orders.map((o) => o.id)).toEqual([11, 13]);
     });
 });

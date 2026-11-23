@@ -4,7 +4,8 @@
 //
 // The register built before then put a repeat order of a bigger bag on a
 // smaller plate that "fits" it, so 772 designs held orders of more than one
-// size (PL-00114: its 12x14 orders and the 14x18 ones). This splits each such
+// size (PL-00114: its 12x14 orders and the 14x18 ones) -- and 12x14 with 14x12,
+// which are different plates too (user, 23 Nov 2026). This splits each such
 // design: the group of orders holding its own plate order stays on it, every
 // other size becomes a new design in the same slot (splitBySize in
 // src/domain/printing/plateRegister.js). The new designs' facts -- size,
@@ -81,7 +82,13 @@ say(`${designs.length} designs with orders; ${updates.length} hold more than one
 for (const line of report.slice(0, 8)) say(`  ${line}`);
 const pl114 = report.find((l) => l.startsWith('PL-00114'));
 if (pl114) say(`  ... ${pl114}`);
-if (DRY_RUN) { say('Nothing written.'); process.exit(0); }
+if (DRY_RUN) {
+    const sized = await sql(`SELECT COUNT(*) AS n FROM Printing_Plates p JOIN Sub_Orders so ON so.id = p.Source_Sub_Order
+        WHERE so.Bag_Width > 0 AND so.Bag_Height > 0 AND (p.Bag_Width IS NOT so.Bag_Width OR p.Bag_Height IS NOT so.Bag_Height)`);
+    say(`${sized[0].n} designs' size differs from their plate order's width x height (fixed after the split)`);
+    say('Nothing written.');
+    process.exit(0);
+}
 
 // The new designs first, then the old ones narrowed: a failure part-way leaves
 // orders on two designs at worst, never on none. Run again to finish.
@@ -94,4 +101,13 @@ for (let i = 0; i < updates.length; i += CHUNK) {
     await api('POST', '/apply', updates.slice(i, i + CHUNK));
     say(`  designs narrowed: ${Math.min(i + CHUNK, updates.length)}/${updates.length}`);
 }
+// Every design's size as its plate order wrote it: width x height, never turned
+// round -- 12x14 and 14x12 are different plates (user, 23 Nov 2026). The old
+// register wrote the smaller side first.
+const sized = await sql(`SELECT p.id, p.Bag_Width AS w, p.Bag_Height AS h, so.Bag_Width AS sw, so.Bag_Height AS sh
+    FROM Printing_Plates p JOIN Sub_Orders so ON so.id = p.Source_Sub_Order`);
+const turned = sized.filter((r) => Number(r.sw) > 0 && Number(r.sh) > 0 && (Number(r.w) !== Number(r.sw) || Number(r.h) !== Number(r.sh)))
+    .map((r) => ['UpdateRecord', 'Printing_Plates', r.id, { Bag_Width: Number(r.sw), Bag_Height: Number(r.sh) }]);
+say(`${turned.length} designs' size set to their plate order's width x height`);
+for (let i = 0; i < turned.length; i += CHUNK) await api('POST', '/apply', turned.slice(i, i + CHUNK));
 say('Done. Now run scripts/plate-sides.mjs to give the new designs their sides.');

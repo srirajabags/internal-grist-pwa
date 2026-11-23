@@ -71,7 +71,10 @@ describe('confirmRepeatAnswer — the old-plate answer for a repeat order', () =
             .toContain('This plate was made for a 14x20 bag, not this order\'s 12x18 — each size has its own plate.');
         expect(confirmRepeatAnswer(so, { plate: plate({ bagW: 10, bagH: 14 }), fits: true }).lines)
             .toContain('This plate was made for a 10x14 bag, not this order\'s 12x18 — each size has its own plate.');
-        expect(confirmRepeatAnswer(so, { plate: plate({ bagW: 18, bagH: 12 }), fits: true }).lines.join(' ')).not.toContain('own plate');
+        // 18x12 is not 12x18: width and height as written (user, 23 Nov 2026).
+        expect(confirmRepeatAnswer(so, { plate: plate({ bagW: 18, bagH: 12 }), fits: true }).lines)
+            .toContain('This plate was made for a 18x12 bag, not this order\'s 12x18 — each size has its own plate.');
+        expect(confirmRepeatAnswer(so, { plate: plate({ bagW: 12, bagH: 18 }), fits: true }).lines.join(' ')).not.toContain('own plate');
     });
 
     it('says a new plate will be made when there is no old one', () => {

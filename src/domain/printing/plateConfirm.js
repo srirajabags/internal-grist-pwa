@@ -68,8 +68,9 @@ export const confirmRepeatAnswer = (so, chosen) => {
         'Old plate available: YES',
         `Reuse ${code} · ${designText(plate)}${size(plate.bagW, plate.bagH) ? ` · made for ${size(plate.bagW, plate.bagH)}` : ''}`
     ];
-    // Each bag size has its own plate (user, 23 Nov 2026): warn about any other size.
-    const sizeKey = (w, h) => [Number(w) || 0, Number(h) || 0].sort((a, b) => a - b).join('x');
+    // Each bag size has its own plate, width x height as written -- 12x14 and
+    // 14x12 are different (user, 23 Nov 2026): warn about any other size.
+    const sizeKey = (w, h) => `${Number(w) || 0}x${Number(h) || 0}`;
     if (size(plate.bagW, plate.bagH) && size(so?.bagW, so?.bagH) && sizeKey(plate.bagW, plate.bagH) !== sizeKey(so.bagW, so.bagH)) {
         lines.push(`This plate was made for a ${size(plate.bagW, plate.bagH)} bag, not this order's ${size(so.bagW, so.bagH)} — each size has its own plate.`);
     }
