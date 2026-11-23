@@ -297,21 +297,21 @@ const ShopName = ({ p }) => (
 );
 
 // `leftOut`: the customer's plastic or BOPP plate orders, for a slot no order
-// explains (leftOutOrders) -- their material and plate type stand in for
-// "nothing on record".
+// explains (leftOutOrders) -- why nothing is on record. Those plates are
+// discarded, so the slot holds an older plate, never the order shown.
 const Details = ({ p, leftOut = [] }) => (
     <>
         <div className="font-medium text-slate-700 whitespace-nowrap">{designText(p)}</div>
         {plateDetails(p).length === 0 && leftOut.length > 0 ? (
             <>
-                <div className="flex flex-wrap gap-1 mt-1">
-                    {leftOutText(leftOut[0]).map((d) => (
-                        <span key={d} className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-[11px] font-medium text-amber-800 whitespace-nowrap">{d}</span>
-                    ))}
-                </div>
+                {/* Plastic and BOPP plates are always discarded, never stored (user, 23 Nov 2026):
+                    the order is not what is in the slot, only why nothing is on record. */}
                 <div className="text-[11px] text-slate-500 mt-1">
-                    From order {leftOut[0].order_id || leftOut[0].id}{leftOut[0].orderDate ? ` · ${dateText(leftOut[0].orderDate)}` : ''}
-                    {leftOut.length > 1 ? ` (latest of ${leftOut.length})` : ''} — not on record, as plastic and BOPP plates are not kept after the run
+                    Latest order {leftOut[0].order_id || leftOut[0].id}{leftOut[0].orderDate ? ` (${dateText(leftOut[0].orderDate)})` : ''} was{' '}
+                    {leftOutText(leftOut[0]).map((d) => (
+                        <span key={d} className="mx-0.5 px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 font-medium text-amber-800 whitespace-nowrap">{d}</span>
+                    ))}
+                    {' '}— discarded after the run. This slot holds an older plate: check what is in it.
                 </div>
             </>
         ) : plateDetails(p).length > 0 ? (

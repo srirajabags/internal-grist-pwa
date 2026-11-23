@@ -113,9 +113,10 @@ export const slotsOfRack = (plates) => {
     return [...groups.values()];
 };
 
-// A slot the office numbered on a shop's name that no order explains is often a
-// plastic or BOPP plate: the register leaves those out, as they are binned
-// after the run (PL-06086, JK Fashions A-86, 23 Nov 2026: its one order was a
+// A slot the office numbered on a shop's name that no order explains: when the
+// customer's orders were plastic or BOPP plates, that is why -- those are always
+// discarded after the run, never stored (user, 23 Nov 2026), so the register
+// leaves them out and the slot holds an older plate (PL-06086, JK Fashions A-86, 23 Nov 2026: its one order was a
 // PL HM plate). These are the customer's orders it left out for that reason,
 // latest first -- what the card can say about the slot. `subOrders` are the
 // customer's: { id, orderDate, material, plate, print, status, cancelled }.
