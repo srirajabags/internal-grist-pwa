@@ -142,3 +142,21 @@ export const leftOutText = (o) => [
     MATERIAL_TEXT[norm(o?.material)] || String(o?.material ?? '').trim(),
     kindOfOrder(o) === KIND.DIGITAL ? 'Digital plate' : 'Plate'
 ].filter(Boolean);
+
+// The other bag sizes a design's plate printed, smallest first: one plate, made
+// for the smallest bag, prints any bag at least its size, so a 12x14 plate also
+// prints the order's 14x18 bags (PL-00114, 23 Nov 2026). `orders` are its
+// sub-orders as the card reads them ({ bag_w, bag_h }). Sizes smaller x bigger.
+export const otherBagSizes = (design, orders) => {
+    const key = (w, h) => {
+        const [a, b] = [num(w), num(h)].sort((x, y) => x - y);
+        return a && b ? `${a}x${b}` : '';
+    };
+    const own = key(design?.bagW, design?.bagH);
+    const sizes = new Map();
+    for (const o of orders || []) {
+        const k = key(o.bag_w, o.bag_h);
+        if (k && k !== own) sizes.set(k, num(o.bag_w) * num(o.bag_h));
+    }
+    return [...sizes].sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0])).map(([k]) => k);
+};

@@ -17,7 +17,7 @@ import { proofQuery, proofShots, isShowableProof, shotIndexFor } from '../domain
 import ImagePreviewModal from '../components/ImagePreviewModal';
 import { confirmPlateAction, confirmRepeatAnswer } from '../domain/printing/plateConfirm';
 import {
-    sharedCodes, filterPlates, sortForSheet, SECTIONS, rackLabel, slotsOfRack, designText, plateDetails, leftOutOrders, leftOutText } from '../domain/printing/plateTable';
+    sharedCodes, filterPlates, sortForSheet, SECTIONS, rackLabel, slotsOfRack, designText, plateDetails, leftOutOrders, leftOutText, otherBagSizes } from '../domain/printing/plateTable';
 import {
     plateSets, designRow, statusGroups, setExpiresOn, positionText, plateLabel, canReplace,
     replacementActions, replacementMovement, setKey, picturesOf, platesTold, canTakePhoto,
@@ -299,7 +299,9 @@ const ShopName = ({ p }) => (
 // `leftOut`: the customer's plastic or BOPP plate orders, for a slot no order
 // explains (leftOutOrders) -- why nothing is on record. Those plates are
 // discarded, so the slot holds an older plate, never the order shown.
-const Details = ({ p, leftOut = [] }) => (
+// `alsoSizes`: the other bag sizes its one plate printed (otherBagSizes) --
+// PL-00114's 12x14 plate also printed the order's 14x18 bags.
+const Details = ({ p, leftOut = [], alsoSizes = [] }) => (
     <>
         <div className="font-medium text-slate-700 whitespace-nowrap">{designText(p)}</div>
         {plateDetails(p).length === 0 && leftOut.length > 0 ? (
@@ -318,6 +320,10 @@ const Details = ({ p, leftOut = [] }) => (
             <div className="flex flex-wrap gap-1 mt-1">
                 {plateDetails(p).map((d) => (
                     <span key={d} className="px-1.5 py-0.5 rounded bg-slate-100 text-[11px] text-slate-600 whitespace-nowrap">{d}</span>
+                ))}
+                {alsoSizes.map((size) => (
+                    <span key={`also-${size}`} title="The same plate printed these bags too"
+                        className="px-1.5 py-0.5 rounded bg-sky-50 border border-sky-200 text-[11px] text-sky-800 whitespace-nowrap">also {size} bag</span>
                 ))}
             </div>
         ) : (
@@ -728,7 +734,7 @@ const PlateModal = ({ design, save, runSql, attachments, onClose, onChanged }) =
                     <button onClick={onClose} className="p-1 rounded hover:bg-slate-100"><X size={18} /></button>
                 </div>
                 <div className="rounded-lg border border-slate-200 p-2.5 space-y-2.5">
-                    <div className="text-sm"><Details p={design} leftOut={leftOut} /></div>
+                    <div className="text-sm"><Details p={design} leftOut={leftOut} alsoSizes={otherBagSizes(design, orders)} /></div>
                     <Dates p={design} today={todayEpoch()} />
                 </div>
                 <PlateStrip set={set} notesById={notesById} save={save} attachments={attachments} onChanged={onChanged} />

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-    plateCountText, stereoText, sharedCodes, filterPlates, sortForSheet, rackLabel, slotsOfRack, designText, plateDetails, leftOutOrders, leftOutText
+    plateCountText, stereoText, sharedCodes, filterPlates, sortForSheet, rackLabel, slotsOfRack, designText, plateDetails, leftOutOrders, leftOutText, otherBagSizes
 } from './plateTable';
 
 describe('plateCountText and stereoText — the sheet\'s PLATE and STEREO columns', () => {
@@ -139,5 +139,24 @@ describe('leftOutOrders', () => {
         expect(leftOutOrders({ ...slot, sourceSubOrder: 9 }, [plastic])).toEqual([]);
         expect(leftOutOrders({ ...slot, orders: [9] }, [plastic])).toEqual([]);
         expect(leftOutOrders({ ...slot, plateType: 'STEREO' }, [plastic])).toEqual([]);
+    });
+});
+
+// PL-00114 (Sri Venkateswara Creations, A-143, 23 Nov 2026): one plate, made
+// for a 12x14 bag, also printed the order's 14x18 bags -- a plate fits any bag
+// at least its size. The card said only "12x14 bag".
+describe('otherBagSizes', () => {
+    const design = { bagW: 12, bagH: 14 };
+    it('names the other bag sizes the plate printed, smallest first, once each', () => {
+        const orders = [
+            { bag_w: 12, bag_h: 14 }, { bag_w: 18, bag_h: 14 }, { bag_w: 14, bag_h: 18 }, { bag_w: 16, bag_h: 20 }
+        ];
+        expect(otherBagSizes(design, orders)).toEqual(['14x18', '16x20']);
+    });
+
+    it('says nothing when every order was the plate\'s own size, or sizes are missing', () => {
+        expect(otherBagSizes(design, [{ bag_w: 14, bag_h: 12 }])).toEqual([]);
+        expect(otherBagSizes(design, [{ bag_w: null, bag_h: 18 }])).toEqual([]);
+        expect(otherBagSizes({}, [{ bag_w: 14, bag_h: 18 }])).toEqual(['14x18']);
     });
 });
