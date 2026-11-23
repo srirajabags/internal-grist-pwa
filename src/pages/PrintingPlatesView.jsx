@@ -995,16 +995,27 @@ const PlateRow = ({ plate, set, note, save, attachments, onChanged }) => {
 // kind; each design is ticked found or not here. The checker only verifies:
 // the slot is the register's, never typed (user, 5 Nov 2026). A stereo's size
 // can be noted while it is in hand.
+//
+// Or the checker searches a shop (user, 23 Nov 2026: "give a search option shop
+// wise"): its slots in every rack and section, checked the same way.
+const IN_GODOWN = [STATUS.UNVERIFIED, STATUS.NOT_FOUND, STATUS.IN_RACK];
 const RackPanel = ({ register, save, runSql, attachments }) => {
     const [open, setOpen] = useState(null);
     const [kind, setKind] = useState(KIND.PLATE);
     const [rack, setRack] = useState('');
+    const [search, setSearch] = useState('');
     const [sizes, setSizes] = useState({});
     const [busyId, setBusyId] = useState(null);
 
-    const onRack = useMemo(() => register.rows.filter((p) => p.rack === rack && p.plateType === kind
-        && [STATUS.UNVERIFIED, STATUS.NOT_FOUND, STATUS.IN_RACK].includes(p.status)), [register.rows, rack, kind]);
-    const groups = useMemo(() => slotsOfRack(onRack), [onRack]);
+    const searching = search.trim().length >= 2;
+    const onRack = useMemo(() => (searching
+        ? filterPlates(register.rows.filter((p) => IN_GODOWN.includes(p.status)), { text: search })
+        : register.rows.filter((p) => p.rack === rack && p.plateType === kind && IN_GODOWN.includes(p.status))),
+    [register.rows, rack, kind, search, searching]);
+    const allGroups = useMemo(() => slotsOfRack(onRack), [onRack]);
+    // A one-letter-ish search can match hundreds of shops: show the first ones.
+    const SHOWN = 60;
+    const groups = allGroups.slice(0, SHOWN);
     const label = rack ? rackLabel(rack, kind) : '';
 
     const counts = {
@@ -1025,9 +1036,19 @@ const RackPanel = ({ register, save, runSql, attachments }) => {
 
     return (
         <div className="space-y-3">
-            <div className="flex gap-2 max-w-xl">
+            <div className="relative max-w-xl">
+                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input value={search} onChange={(e) => setSearch(e.target.value)} type="search"
+                    placeholder="Search a shop, customer ID or rack code"
+                    className="w-full border border-slate-200 rounded-lg pl-9 pr-9 py-2.5 text-sm bg-white" />
+                {search && (
+                    <button type="button" onClick={() => setSearch('')} aria-label="Clear search"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-slate-400 hover:bg-slate-100"><X size={16} /></button>
+                )}
+            </div>
+            <div className={`flex gap-2 max-w-xl ${searching ? 'opacity-50' : ''}`}>
                 {SECTIONS.map((sec) => (
-                    <button key={sec.kind} onClick={() => setKind(sec.kind)}
+                    <button key={sec.kind} onClick={() => { setSearch(''); setKind(sec.kind); }}
                         className={`flex-1 py-2 px-1 rounded-lg border flex flex-col items-center justify-center leading-tight ${kind === sec.kind ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200'}`}>
                         {/* Name over range on every button, so they line up whether or not the name would wrap. */}
                         <span className="text-sm font-semibold whitespace-nowrap">{sec.label}</span>
@@ -1035,18 +1056,21 @@ const RackPanel = ({ register, save, runSql, attachments }) => {
                     </button>
                 ))}
             </div>
-            <div className="grid grid-cols-7 sm:grid-cols-[repeat(13,minmax(0,1fr))] gap-1 max-w-xl">
+            <div className={`grid grid-cols-7 sm:grid-cols-[repeat(13,minmax(0,1fr))] gap-1 max-w-xl ${searching ? 'opacity-50' : ''}`}>
                 {RACKS.map((r) => (
-                    <button key={r} onClick={() => setRack(r)}
-                        className={`py-2 rounded-lg text-sm font-bold border ${rack === r ? 'bg-rose-700 text-white border-rose-700' : 'bg-white text-slate-700 border-slate-200'}`}>
+                    <button key={r} onClick={() => { setSearch(''); setRack(r); }}
+                        className={`py-2 rounded-lg text-sm font-bold border ${rack === r && !searching ? 'bg-rose-700 text-white border-rose-700' : 'bg-white text-slate-700 border-slate-200'}`}>
                         {rackLabel(r, kind)}
                     </button>
                 ))}
             </div>
             <Problem text={register.error} />
-            {rack && (
-                <Card className="p-3 text-sm text-slate-600 flex justify-between max-w-3xl">
-                    <span className="font-semibold">Rack {label} · {groups.length} slot(s)</span>
+            {(rack || searching) && (
+                <Card className="p-3 text-sm text-slate-600 flex flex-wrap gap-x-3 justify-between max-w-3xl">
+                    <span className="font-semibold">
+                        {searching ? `${allGroups.length} slot(s) for “${search.trim()}”` : `Rack ${label} · ${groups.length} slot(s)`}
+                        {searching && allGroups.length > SHOWN && <span className="font-normal text-slate-400"> · first {SHOWN} shown, type more to narrow</span>}
+                    </span>
                     <span>{counts.left} to check · {counts.found} found · {counts.missing} not found</span>
                 </Card>
             )}
@@ -1054,7 +1078,9 @@ const RackPanel = ({ register, save, runSql, attachments }) => {
                 {groups.map((g) => (
                     <Card key={g.key} className="p-3 space-y-2">
                         <div className="text-sm font-semibold text-slate-800">
-                            <span className="text-rose-700 tabular-nums">{g.rackCode || 'no slot number'}</span> · {g.shop}
+                            <span className="text-rose-700 tabular-nums">
+                                {g.rackCode || (searching ? `${rackLabel(g.plates[0].rack || '?', g.plates[0].plateType)}, no slot number` : 'no slot number')}
+                            </span> · {g.shop}
                         </div>
                         <div className="divide-y divide-slate-100">
                             {g.plates.map((p) => {

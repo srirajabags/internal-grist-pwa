@@ -78,6 +78,17 @@ describe('rack check sections — A, AS and AD are three different racks', () =>
         expect(groups.map((g) => [g.rackCode || g.shop, g.plates.map((p) => p.id)]))
             .toEqual([['A-9', [2]], ['A-502', [1, 3]], ['No code', [4]]]);
     });
+
+    // Shop search on the rack check (user, 23 Nov 2026) lists a shop's slots
+    // across every rack and section: its A-86, K-86 and AS-86 are three slots.
+    it('keeps the same slot number on different racks or sections apart', () => {
+        const groups = slotsOfRack([
+            { id: 1, customer: 5, shop: 'JK', rack: 'A', plateType: 'PLATE', slot: 86, rackCode: 'A-86' },
+            { id: 2, customer: 5, shop: 'JK', rack: 'K', plateType: 'PLATE', slot: 86, rackCode: 'K-86' },
+            { id: 3, customer: 5, shop: 'JK', rack: 'A', plateType: 'STEREO', slot: 86, rackCode: 'AS-86' }
+        ]);
+        expect(groups.map((g) => g.rackCode).sort()).toEqual(['A-86', 'AS-86', 'K-86']);
+    });
 });
 
 describe('designText and plateDetails — one column for what is known of a design', () => {

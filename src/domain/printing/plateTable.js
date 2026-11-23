@@ -102,11 +102,14 @@ export const SECTIONS = [
 export const rackLabel = (rack, kind) => `${rack}${SECTIONS.find((s) => s.kind === kind)?.suffix ?? ''}`;
 
 // One rack's plates as the checker meets them: slot by slot, each shop's slot
-// holding all its designs. Plates with no slot number come last, by shop.
+// holding all its designs. Plates with no slot number come last, by shop. The
+// rack and section are part of a slot, so a shop search across racks (user,
+// 23 Nov 2026) keeps its A-86 and K-86 apart.
 export const slotsOfRack = (plates) => {
     const groups = new Map();
     for (const p of sortForSheet(plates)) {
-        const key = num(p.slot) ? `slot-${num(p.slot)}-${num(p.customer)}` : `none-${num(p.customer)}`;
+        const place = `${norm(p.rack)}-${norm(p.plateType)}`;
+        const key = num(p.slot) ? `${place}-slot-${num(p.slot)}-${num(p.customer)}` : `${place}-none-${num(p.customer)}`;
         if (!groups.has(key)) groups.set(key, { key, slot: num(p.slot) || null, rackCode: p.rackCode, shop: p.shop, customer: num(p.customer), plates: [] });
         groups.get(key).plates.push(p);
     }
@@ -116,8 +119,8 @@ export const slotsOfRack = (plates) => {
 // A slot the office numbered on a shop's name that no order explains: when the
 // customer's orders were plastic or BOPP plates, that is why -- those are always
 // discarded after the run, never stored (user, 23 Nov 2026), so the register
-// leaves them out and the slot holds an older plate (PL-06086, JK Fashions A-86, 23 Nov 2026: its one order was a
-// PL HM plate). These are the customer's orders it left out for that reason,
+// leaves them out and the slot holds an older plate (PL-06086, JK Fashions
+// A-86, 23 Nov 2026: its one order was a PL HM plate). These are the customer's orders it left out for that reason,
 // latest first -- what the card can say about the slot. `subOrders` are the
 // customer's: { id, orderDate, material, plate, print, status, cancelled }.
 export const leftOutOrders = (design, subOrders) => {
