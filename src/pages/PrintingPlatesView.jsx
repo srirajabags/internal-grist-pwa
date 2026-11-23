@@ -17,8 +17,7 @@ import { proofQuery, proofShots, isShowableProof, shotIndexFor } from '../domain
 import ImagePreviewModal from '../components/ImagePreviewModal';
 import { confirmPlateAction, confirmRepeatAnswer } from '../domain/printing/plateConfirm';
 import {
-    sharedCodes, filterPlates, sortForSheet, SECTIONS, rackLabel, slotsOfRack, designText, plateDetails
-} from '../domain/printing/plateTable';
+    sharedCodes, filterPlates, sortForSheet, SECTIONS, rackLabel, slotsOfRack, designText, plateDetails, leftOutOrders, leftOutText } from '../domain/printing/plateTable';
 import {
     plateSets, designRow, statusGroups, setExpiresOn, positionText, plateLabel, canReplace,
     replacementActions, replacementMovement, setKey, picturesOf, platesTold, canTakePhoto,
@@ -297,10 +296,25 @@ const ShopName = ({ p }) => (
     </>
 );
 
-const Details = ({ p }) => (
+// `leftOut`: the customer's plastic or BOPP plate orders, for a slot no order
+// explains (leftOutOrders) -- their material and plate type stand in for
+// "nothing on record".
+const Details = ({ p, leftOut = [] }) => (
     <>
         <div className="font-medium text-slate-700 whitespace-nowrap">{designText(p)}</div>
-        {plateDetails(p).length > 0 ? (
+        {plateDetails(p).length === 0 && leftOut.length > 0 ? (
+            <>
+                <div className="flex flex-wrap gap-1 mt-1">
+                    {leftOutText(leftOut[0]).map((d) => (
+                        <span key={d} className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-[11px] font-medium text-amber-800 whitespace-nowrap">{d}</span>
+                    ))}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1">
+                    From order {leftOut[0].order_id || leftOut[0].id}{leftOut[0].orderDate ? ` · ${dateText(leftOut[0].orderDate)}` : ''}
+                    {leftOut.length > 1 ? ` (latest of ${leftOut.length})` : ''} — not on record, as plastic and BOPP plates are not kept after the run
+                </div>
+            </>
+        ) : plateDetails(p).length > 0 ? (
             <div className="flex flex-wrap gap-1 mt-1">
                 {plateDetails(p).map((d) => (
                     <span key={d} className="px-1.5 py-0.5 rounded bg-slate-100 text-[11px] text-slate-600 whitespace-nowrap">{d}</span>
@@ -678,6 +692,7 @@ const PlateModal = ({ design, save, runSql, attachments, onClose, onChanged }) =
     const [focus, setFocus] = useState(null);
     const [notesById, setNotesById] = useState({});
     const [orders, setOrders] = useState([]);
+    const [leftOut, setLeftOut] = useState([]);
     const set = design.set;
     const ids = set.plates.map((x) => x.id);
     useEffect(() => {
@@ -686,6 +701,13 @@ const PlateModal = ({ design, save, runSql, attachments, onClose, onChanged }) =
             .catch(() => setNotesById({}));
         if (design.orders.length) {
             runSql(ordersSql(design.orders), design.orders).then(setOrders).catch(() => setOrders([]));
+        } else if (design.customer && !design.sourceSubOrder) {
+            // A slot no order explains: the customer's plastic or BOPP plate orders say what it likely holds.
+            runSql(`SELECT so.id, o.Order_ID AS order_id, so.Order_Form_Date AS orderDate, so.Material AS material,
+                    so.Plate AS plate, so.Print AS print, so.Status AS status, so.Cancelled AS cancelled
+                FROM Sub_Orders so LEFT JOIN Orders o ON o.id = so."Order" WHERE so.Customer = ?`, [design.customer])
+                .then((rows) => setLeftOut(leftOutOrders(design, rows)))
+                .catch(() => setLeftOut([]));
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [ids.join(',')]);
@@ -706,7 +728,7 @@ const PlateModal = ({ design, save, runSql, attachments, onClose, onChanged }) =
                     <button onClick={onClose} className="p-1 rounded hover:bg-slate-100"><X size={18} /></button>
                 </div>
                 <div className="rounded-lg border border-slate-200 p-2.5 space-y-2.5">
-                    <div className="text-sm"><Details p={design} /></div>
+                    <div className="text-sm"><Details p={design} leftOut={leftOut} /></div>
                     <Dates p={design} today={todayEpoch()} />
                 </div>
                 <PlateStrip set={set} notesById={notesById} save={save} attachments={attachments} onChanged={onChanged} />

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-    plateCountText, stereoText, sharedCodes, filterPlates, sortForSheet, rackLabel, slotsOfRack, designText, plateDetails
+    plateCountText, stereoText, sharedCodes, filterPlates, sortForSheet, rackLabel, slotsOfRack, designText, plateDetails, leftOutOrders, leftOutText
 } from './plateTable';
 
 describe('plateCountText and stereoText — the sheet\'s PLATE and STEREO columns', () => {
@@ -98,5 +98,35 @@ describe('designText and plateDetails — one column for what is known of a desi
 
     it('never shows a stereo size on a plate', () => {
         expect(plateDetails({ plateType: 'PLATE', stereoSize: '10 x 12' })).toEqual([]);
+    });
+});
+
+// PL-06086 (JK Fashions, A-86, 23 Nov 2026): the slot on the shop's name had
+// no order on record, because the customer's one plate order was plastic and
+// the register leaves plastic and BOPP plates out (binned after the run). The
+// card shows that order's material and plate type instead of "nothing on record".
+describe('leftOutOrders', () => {
+    const slot = { id: 6086, plateType: 'PLATE', sourceSubOrder: 0, orders: [] };
+    const plastic = { id: 11297, orderId: 'JK1', orderDate: 100, material: 'PLASTIC', plate: 'PLATE', print: 'SINGLE COLOUR', status: 'UPDATED TO FACTORY' };
+
+    it("names the customer's plastic plate order on a slot with no order", () => {
+        expect(leftOutOrders(slot, [plastic]).map((o) => o.id)).toEqual([11297]);
+        expect(leftOutText(plastic)).toEqual(['Plastic', 'Plate']);
+        expect(leftOutText({ ...plastic, material: 'BOPP LAMINATED', print: 'MULTI COLOUR' })).toEqual(['BOPP laminated', 'Digital plate']);
+    });
+
+    it('latest first, and only orders the register left out', () => {
+        const later = { ...plastic, id: 12000, orderDate: 200 };
+        const nonWoven = { ...plastic, id: 3, material: 'NON-WOVEN' };
+        const stereo = { ...plastic, id: 4, plate: 'STEREO' };
+        const cancelled = { ...plastic, id: 5, cancelled: true };
+        const notYet = { ...plastic, id: 6, status: 'NEW' };
+        expect(leftOutOrders(slot, [plastic, nonWoven, stereo, cancelled, notYet, later]).map((o) => o.id)).toEqual([12000, 11297]);
+    });
+
+    it('says nothing for a design that has its own orders, or a stereo slot', () => {
+        expect(leftOutOrders({ ...slot, sourceSubOrder: 9 }, [plastic])).toEqual([]);
+        expect(leftOutOrders({ ...slot, orders: [9] }, [plastic])).toEqual([]);
+        expect(leftOutOrders({ ...slot, plateType: 'STEREO' }, [plastic])).toEqual([]);
     });
 });

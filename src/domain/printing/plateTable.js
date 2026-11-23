@@ -3,7 +3,8 @@
 // stereo -- and the filters that narrow 5,000 rows to one rack or one shop.
 
 import { KIND } from './rackCodes.js';
-import { COMPANY_PLATE } from './printingPlates.js';
+import { COMPANY_PLATE, isReusable, kindOfOrder } from './printingPlates.js';
+import { REACHED_FACTORY } from './plateRegister.js';
 
 const norm = (v) => String(v ?? '').trim().toUpperCase();
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
@@ -111,3 +112,29 @@ export const slotsOfRack = (plates) => {
     }
     return [...groups.values()];
 };
+
+// A slot the office numbered on a shop's name that no order explains is often a
+// plastic or BOPP plate: the register leaves those out, as they are binned
+// after the run (PL-06086, JK Fashions A-86, 23 Nov 2026: its one order was a
+// PL HM plate). These are the customer's orders it left out for that reason,
+// latest first -- what the card can say about the slot. `subOrders` are the
+// customer's: { id, orderDate, material, plate, print, status, cancelled }.
+export const leftOutOrders = (design, subOrders) => {
+    if (num(design?.sourceSubOrder) || (design?.orders || []).length) return [];
+    if (norm(design?.plateType) === KIND.STEREO) return [];
+    return (subOrders || [])
+        .filter((o) => norm(o.status) === REACHED_FACTORY && !o.cancelled)
+        .filter((o) => {
+            const kind = kindOfOrder(o);
+            return kind && !isReusable({ material: o.material, plateType: kind });
+        })
+        .sort((a, b) => num(b.orderDate) - num(a.orderDate) || num(b.id) - num(a.id));
+};
+
+const MATERIAL_TEXT = { PLASTIC: 'Plastic', 'BOPP LAMINATED': 'BOPP laminated', 'NON-WOVEN': 'Non-woven' };
+
+// A left-out order's material and plate type, as the card shows them.
+export const leftOutText = (o) => [
+    MATERIAL_TEXT[norm(o?.material)] || String(o?.material ?? '').trim(),
+    kindOfOrder(o) === KIND.DIGITAL ? 'Digital plate' : 'Plate'
+].filter(Boolean);
