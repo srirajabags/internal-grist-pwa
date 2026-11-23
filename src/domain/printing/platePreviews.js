@@ -83,8 +83,10 @@ export const pictureActions = (set, pictureIds) => {
     return set.plates.map((p) => ['UpdateRecord', SIDES_TABLE, num(p.id), { Picture: ['L', ids[positionOf(p) - 1]] }]);
 };
 
-// A design of more than one plate that no side has a picture or photo for yet.
-export const needsPictures = (set) => (set?.expected || 0) > 1
+// A design that no side has a picture or photo for yet. One-plate designs
+// count too (user, 23 Nov 2026, PL-03018): the picture is how the godown tells
+// a shop's designs apart in one slot, not only the two sides of one design.
+export const needsPictures = (set) => (set?.expected || 0) >= 1
     && !(set?.plates || []).some((p) => (p.preview || []).length);
 
 // The picture's file name in Grist: the plate it shows.

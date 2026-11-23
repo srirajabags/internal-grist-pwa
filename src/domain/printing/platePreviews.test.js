@@ -101,7 +101,16 @@ describe('which plate each picture belongs to', () => {
     it('leaves a design alone once any side has a picture or photo', () => {
         expect(needsPictures(plateSets([s1, s2])[0])).toBe(true);
         expect(needsPictures(plateSets([{ ...s1, preview: [55] }, s2])[0])).toBe(false);
-        expect(needsPictures(plateSets([{ id: 9, designId: 9, plateCount: 1 }])[0])).toBe(false);
+    });
+
+    // PL-03018 (Matheswari Creations, A-20, 23 Nov 2026): a one-plate design
+    // had a design file but no picture, so the godown had nothing to match
+    // the plate in the slot against. One-plate designs get pictures too.
+    it('gives a one-plate design a picture too', () => {
+        const single = { id: 9, designId: 9, plateCount: 1 };
+        expect(needsPictures(plateSets([single])[0])).toBe(true);
+        expect(needsPictures(plateSets([{ ...single, preview: [55] }])[0])).toBe(false);
+        expect(pictureActions(plateSets([single])[0], [901])).toEqual([['UpdateRecord', 'Plate_Sides', 9, { Picture: ['L', 901] }]]);
     });
 
     it('names each picture after its plate', () => {

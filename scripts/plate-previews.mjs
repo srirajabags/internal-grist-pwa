@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// A picture of each plate of a two-plate design, made from its design files
-// (user, 15 Nov 2026), so the person holding a plate can tell which one it is.
+// A picture of each plate of a design, made from its design files (user, 15 Nov
+// 2026), so the person holding a plate can tell which one it is. Two-plate
+// designs first; one-plate designs since 23 Nov 2026 (PL-03018).
 //
-// For every design of more than one plate with no picture yet: find its
+// For every design with no picture yet: find its
 // sub-order's files (plate order, then the designer's TIFF task, then an old
 // TIFF), open archives, and when there is exactly one artwork per plate, draw
 // each as an 800 px JPG, upload them to Grist and write each side's
@@ -105,7 +106,13 @@ const api = async (method, p, body) => {
 const sql = async (q, args = []) => ((await api('POST', '/sql', { sql: q, args })).records || []).map((r) => r.fields);
 const list = (v) => { try { return JSON.parse(v || '[]') || []; } catch { return []; } };
 const chunks = (xs, n = 400) => Array.from({ length: Math.ceil(xs.length / n) }, (_, i) => xs.slice(i * n, i * n + n));
-const sqlIn = async (q, ids) => (await Promise.all(chunks(ids).map((c) => sql(q.replace('(?)', `(${c.map(() => '?').join(',')})`), c)))).flat();
+// One chunk at a time: all at once, Grist refuses with 429 "too many backlogged
+// requests" (23 Nov 2026, once one-plate designs made it ~5,700 designs).
+const sqlIn = async (q, ids) => {
+    const out = [];
+    for (const c of chunks(ids)) out.push(...await sql(q.replace('(?)', `(${c.map(() => '?').join(',')})`), c));
+    return out;
+};
 const tally = { done: 0, skipped: 0, failed: 0 };
 const log = async (entry) => {
     tally[entry.result] += 1;
@@ -113,8 +120,8 @@ const log = async (entry) => {
     if (LOG) await appendFile(LOG, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
 };
 
-// 1. The designs of more than one plate, as their sides.
-const rows = await sql(`SELECT ${SIDE_COLUMNS} FROM ${SIDES_FROM} WHERE p.Plate_Count > 1`);
+// 1. The designs, as their sides.
+const rows = await sql(`SELECT ${SIDE_COLUMNS} FROM ${SIDES_FROM}`);
 let sets = plateSets(rows.map(plateFromRow)).filter(needsPictures);
 if (ONLY_SET) sets = sets.filter((s) => s.key === ONLY_SET);
 if (MADE_SINCE_DAYS) {
@@ -122,7 +129,7 @@ if (MADE_SINCE_DAYS) {
     sets = sets.filter((s) => s.plates.some((p) => Number(p.madeOn) >= from));
 }
 sets = sets.slice(0, LIMIT);
-console.log(`${sets.length} design(s) of more than one plate with no picture yet`);
+console.log(`${sets.length} design(s) with no picture yet`);
 if (!sets.length) process.exit(0);
 
 // 2. Their files.

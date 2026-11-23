@@ -713,19 +713,23 @@ const PlateModal = ({ design, save, runSql, attachments, onClose, onChanged }) =
                 {orders.length > 0 && (
                     <div className="rounded-lg border border-slate-200 overflow-hidden">
                         <div className="px-2.5 py-1.5 bg-slate-50 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Orders printed with it</div>
-                        <div className="max-h-48 overflow-y-auto divide-y divide-slate-100">
+                        <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
                             {orders.map((o) => {
                                 const hasShot = shotOrders.has(o.id);
                                 return (
                                     <button key={o.id} type="button" disabled={!hasShot}
                                         onClick={() => setFocus({ subOrderId: o.id, at: Date.now() })}
                                         title={hasShot ? 'Show its finalised design' : 'No finalisation screenshot for this order'}
-                                        className={`w-full px-2.5 py-1.5 text-xs flex items-center gap-2 text-left ${showing === o.id ? 'bg-rose-50' : ''} ${hasShot ? 'active:bg-slate-100' : ''}`}>
-                                        <span className="tabular-nums text-slate-500 w-20 shrink-0">{dateText(o.order_date)}</span>
-                                        <span className="text-slate-700 flex-1 min-w-0 truncate">
-                                            {[o.order_id, `${o.bag_w}x${o.bag_h}`, o.model, DV_TEXT[o.dv] || o.dv, o.dv === 'OLD' && o.opa === 'NO' ? 'plate made again' : null].filter(Boolean).join(' · ')}
+                                        className={`w-full px-2.5 py-2 text-[13px] leading-snug flex items-start gap-2 text-left ${showing === o.id ? 'bg-rose-50' : ''} ${hasShot ? 'active:bg-slate-100' : ''}`}>
+                                        <span className="tabular-nums text-slate-500 w-[4.5rem] shrink-0">{dateText(o.order_date)}</span>
+                                        {/* Wraps instead of cutting off (user, 23 Nov 2026: "not able to read ... completely"). */}
+                                        <span className="text-slate-800 flex-1 min-w-0 break-words">
+                                            {[o.order_id, `${o.bag_w}x${o.bag_h}`, o.model, DV_TEXT[o.dv] || o.dv].filter(Boolean).join(' · ')}
+                                            {o.dv === 'OLD' && o.opa === 'NO' && (
+                                                <span className="ml-1.5 inline-block rounded bg-amber-50 px-1.5 text-[11px] font-medium text-amber-800 border border-amber-200">plate made again</span>
+                                            )}
                                         </span>
-                                        {hasShot && <ImageIcon size={13} className={showing === o.id ? 'text-rose-700' : 'text-slate-400'} />}
+                                        {hasShot && <ImageIcon size={15} className={`mt-0.5 shrink-0 ${showing === o.id ? 'text-rose-700' : 'text-slate-400'}`} />}
                                     </button>
                                 );
                             })}
