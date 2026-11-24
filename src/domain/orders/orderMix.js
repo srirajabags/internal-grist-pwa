@@ -164,45 +164,89 @@ export const areasLabel = (areas) => {
 
 // ---- Targets ----------------------------------------------------------------
 
-// Each month's value target (Grist Sales_Targets, one row per month, Month the
-// first day). The target covers every order except new customers' first
-// orders, salesmen's included, so what counts against it is Regular + Other.
-// It is the same figure the telecallers' target pay is worked out from.
+// Each month's targets (Grist Sales_Targets, one row per month, Month the first
+// day). A month is set one of two ways:
+//
+// - One figure (Value_Target alone, as October 2026): it covers every order
+//   except new customers' first orders, salesmen's included, so Regular + Other
+//   counts against it and New is shown for reference only.
+// - By category (Regular_Target, Other_Target, New_Target, each with an
+//   optional orders target; from November 2026): Regular, Other and New each
+//   have their own target, kept separate, and all three count towards the
+//   month. Value_Target is then the month's overall figure (₹1 crore for
+//   November); left blank, it is the three added up.
 export const TARGETS_SQL = `
-    SELECT strftime('%Y-%m', Month, 'unixepoch') AS month, Value_Target AS target
+    SELECT strftime('%Y-%m', Month, 'unixepoch') AS month, Value_Target AS target,
+           Regular_Target AS regularTarget, Regular_Orders_Target AS regularOrders,
+           Other_Target AS otherTarget, Other_Orders_Target AS otherOrders,
+           New_Target AS newTarget, New_Orders_Target AS newOrders
     FROM Sales_Targets
     WHERE Month >= ? AND Month < ?`;
 
-// Month → target. A blank or zero target is no target (a row typed in ahead of
-// time and not filled yet must not show 0% or divide by zero). Two rows for one
-// month: the later one wins, as it is the correction.
+// Blank, zero or not a number is no target: a row typed in ahead of time and
+// not filled yet must not show 0% or divide by zero.
+const positive = (v) => (num(v) > 0 ? num(v) : null);
+
+// One Sales_Targets row as { value, kinds }. `kinds` is null for a one-figure
+// month, else { regular, other, new } with { value, orders } each (either may
+// be null: a category with no target of its own). Null when the row sets no
+// target at all.
+export const parseTarget = (r = {}) => {
+    const fields = { [REGULAR]: ['regularTarget', 'regularOrders'], [OTHER]: ['otherTarget', 'otherOrders'], [NEW]: ['newTarget', 'newOrders'] };
+    const kinds = Object.fromEntries(KINDS.map((k) => [k, { value: positive(r[fields[k][0]]), orders: positive(r[fields[k][1]]) }]));
+    const split = KINDS.some((k) => kinds[k].value);
+    const value = positive(r.target) ?? (split ? KINDS.reduce((s, k) => s + (kinds[k].value || 0), 0) : null);
+    return value ? { value, kinds: split ? kinds : null } : null;
+};
+
+// Month → target ({ value, kinds }). Two rows for one month: the later one
+// wins, as it is the correction.
 export const targetMap = (rows = []) => {
     const map = new Map();
     for (const r of rows) {
-        const target = num(r.target);
-        if (r.month && target > 0) map.set(r.month, target);
+        const target = parseTarget(r);
+        if (r.month && target) map.set(r.month, target);
     }
     return map;
 };
 
-// The value that counts against the target: everything but new orders.
-export const targetValue = (line) => line[REGULAR].value + line[OTHER].value;
+// A plain number is a one-figure target (how older callers and tests pass it).
+const asTarget = (t) => (typeof t === 'number' ? (t > 0 ? { value: t, kinds: null } : null) : t || null);
 
-// A line against its target: what counts, the target, and the share reached
-// (0.628 for 62.8%). Null with no target, so the page shows nothing rather
-// than a made-up 0%.
+// Whether New counts towards the month: only when it has a target of its own.
+export const countsNew = (t) => !!asTarget(t)?.kinds?.[NEW]?.value;
+
+// The value that counts against the month's figure: Regular + Other, and New
+// too when the month gives New its own target.
+export const targetValue = (line, t) =>
+    line[REGULAR].value + line[OTHER].value + (countsNew(t) ? line[NEW].value : 0);
+
+// A line against its month's figure: what counts, the figure, the share
+// reached (0.628 for 62.8%) and whether New is in it. Null with no target, so
+// the page shows nothing rather than a made-up 0%.
 export const targetProgress = (line, target) => {
-    if (!line || !(target > 0)) return null;
-    const achieved = targetValue(line);
-    return { achieved, target, share: achieved / target };
+    const t = asTarget(target);
+    if (!line || !t) return null;
+    const achieved = targetValue(line, t);
+    return { achieved, target: t.value, share: achieved / t.value, withNew: countsNew(t) };
 };
 
-// Each kind as its own share of the target: Regular and Other add up to the
-// figure above; New is beside it for reference only, as the target leaves new
-// customers out. Null with no target.
+// Under each column, kind → { share, own, counted, orders }:
+// - by category: the share of that column's own target (own), and its orders
+//   target; a column with no target of its own gets nothing.
+// - one figure: the share of the month's figure; Regular and Other add up to
+//   it, New is beside it for reference only (counted false).
+// Null with no target.
 export const kindShares = (line, target) => {
-    if (!line || !(target > 0)) return null;
-    return Object.fromEntries(KINDS.map((k) => [k, line[k].value / target]));
+    const t = asTarget(target);
+    if (!line || !t) return null;
+    if (t.kinds) {
+        return Object.fromEntries(KINDS.map((k) => {
+            const own = t.kinds[k];
+            return [k, own.value ? { share: line[k].value / own.value, own: true, counted: true, orders: own.orders } : null];
+        }));
+    }
+    return Object.fromEntries(KINDS.map((k) => [k, { share: line[k].value / t.value, own: false, counted: k !== NEW, orders: null }]));
 };
 
 // Every month from `from` to `to`, oldest first.
@@ -212,12 +256,44 @@ export const monthsBetween = ({ from, to }) => {
     return out;
 };
 
-// The range's total target, only when every month in it has one: adding up
+// The range's targets added up, only when every month in it has one: adding up
 // two months' targets against three months' orders would flatter the figure.
+// By category only when every month is set by category; a range mixing the two
+// ways keeps just the overall figure (mixed: no column shares for it).
 export const rangeTarget = (range, targets) => {
     const months = monthsBetween(range);
     if (!months.length || months.some((m) => !targets.has(m))) return null;
-    return months.reduce((sum, m) => sum + targets.get(m), 0);
+    const ts = months.map((m) => asTarget(targets.get(m)));
+    const value = ts.reduce((s, t) => s + t.value, 0);
+    if (!ts.every((t) => t.kinds)) return { value, kinds: null, months: ts, mixed: ts.some((t) => t.kinds) };
+    const sum = (k, f) => {
+        const vals = ts.map((t) => t.kinds[k][f]);
+        return vals.every((v) => v) ? vals.reduce((s, v) => s + v, 0) : null;
+    };
+    const kinds = Object.fromEntries(KINDS.map((k) => [k, { value: sum(k, 'value'), orders: sum(k, 'orders') }]));
+    return { value, kinds, months: ts, mixed: false };
+};
+
+// The range against its added-up figure. Each month counts the way its own
+// target does (New in for a month set by category, out for a one-figure month),
+// so the months' lines are passed in. Null with no range target.
+export const rangeProgress = (monthLines, range, targets) => {
+    const t = rangeTarget(range, targets);
+    if (!t) return null;
+    const byMonth = new Map(monthLines.map((m) => [m.month, m]));
+    const achieved = monthsBetween(range).reduce((s, m) => {
+        const line = byMonth.get(m);
+        return s + (line ? targetValue(line, targets.get(m)) : 0);
+    }, 0);
+    const withNew = t.months.some(countsNew);
+    return { achieved, target: t.value, share: achieved / t.value, withNew, split: !!t.kinds, targets: t };
+};
+
+// What counts towards a figure, in words. A range mixing the two ways counts
+// New in some months only, so it says just "Counted orders".
+export const countedLabel = (progress) => {
+    if (progress?.targets?.mixed) return 'Counted orders';
+    return progress?.withNew ? 'Regular + Other + New' : 'Regular + Other';
 };
 
 // "62.8%": one decimal, so a month that is close shows its last lakh moving.

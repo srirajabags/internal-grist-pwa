@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
     orderKind, buildOrderMix, monthRange, monthBounds, monthLabel, istMonth, NEW, REGULAR, OTHER, NO_AREA,
     parseAreas, areasParam, areasLabel,
-    targetMap, targetProgress, kindShares, rangeTarget, monthsBetween, percentText
+    targetMap, targetProgress, kindShares, rangeTarget, rangeProgress, monthsBetween, percentText, parseTarget, countedLabel
 } from './orderMix';
 
 const row = (month, areaId, area, repeat, category, orders, value) => ({ month, areaId, area, repeat, category, orders, value });
@@ -138,10 +138,12 @@ describe('targets — Regular + Other value against the month\'s target', () => 
     });
     it('gives Regular, Other and New each their own share; only Regular + Other make up the reached figure', () => {
         const shares = kindShares(nov, 6930000);
-        expect(percentText(shares[REGULAR])).toBe('53.0%');
-        expect(percentText(shares[OTHER])).toBe('9.8%');
-        expect(percentText(shares[NEW])).toBe('11.7%');
-        expect(shares[REGULAR] + shares[OTHER]).toBeCloseTo(targetProgress(nov, 6930000).share, 10);
+        expect(percentText(shares[REGULAR].share)).toBe('53.0%');
+        expect(percentText(shares[OTHER].share)).toBe('9.8%');
+        expect(percentText(shares[NEW].share)).toBe('11.7%');
+        expect(shares[NEW].counted).toBe(false);
+        expect(shares[REGULAR].own).toBe(false);
+        expect(shares[REGULAR].share + shares[OTHER].share).toBeCloseTo(targetProgress(nov, 6930000).share, 10);
         expect(kindShares(nov, 0)).toBeNull();
     });
     it('matches the October salary figure: ₹63.8L of ₹80L is 79.8%', () => {
@@ -159,11 +161,11 @@ describe('targets — Regular + Other value against the month\'s target', () => 
             { month: '2026-11', target: 7000000 },
             { month: '2026-11', target: 6930000 }
         ]);
-        expect([...map.entries()]).toEqual([['2026-11', 6930000]]);
+        expect([...map.entries()]).toEqual([['2026-11', { value: 6930000, kinds: null }]]);
     });
     it('totals a range only when every month in it has a target', () => {
         const targets = targetMap([{ month: '2026-10', target: 8000000 }, { month: '2026-11', target: 6930000 }]);
-        expect(rangeTarget({ from: '2026-10', to: '2026-11' }, targets)).toBe(14930000);
+        expect(rangeTarget({ from: '2026-10', to: '2026-11' }, targets).value).toBe(14930000);
         expect(rangeTarget({ from: '2026-09', to: '2026-11' }, targets)).toBeNull();
     });
     it('walks months across a year end', () => {
@@ -172,5 +174,73 @@ describe('targets — Regular + Other value against the month\'s target', () => 
     it('rounds to one decimal and can pass 100%', () => {
         expect(percentText(0.62849)).toBe('62.8%');
         expect(percentText(1.2)).toBe('120.0%');
+    });
+});
+
+describe('targets by category — Regular, Other and New kept separate (from Nov 2026)', () => {
+    // November 2026 as the report showed it on 24 Nov, against the ₹1 crore
+    // set by category: Regular ₹55L / 407, Other ₹14.3L / 141, New ₹30.7L.
+    const nov = buildOrderMix([
+        row('2026-11', 1, 'Adoni', 1, 'REGULAR', 230, 3743343),
+        row('2026-11', 1, 'Adoni', 1, '', 67, 679725),
+        row('2026-11', 1, 'Adoni', 0, 'REGULAR', 70, 885175)
+    ]).months[0];
+    const novRow = {
+        month: '2026-11', target: 10000000,
+        regularTarget: 5500000, regularOrders: 407, otherTarget: 1430000, otherOrders: 141, newTarget: 3070000, newOrders: null
+    };
+    const t = parseTarget(novRow);
+
+    it('reads a row by category, and a blank Value_Target as the three added up', () => {
+        expect(t.value).toBe(10000000);
+        expect(t.kinds[REGULAR]).toEqual({ value: 5500000, orders: 407 });
+        expect(t.kinds[NEW]).toEqual({ value: 3070000, orders: null });
+        expect(parseTarget({ ...novRow, target: null }).value).toBe(10000000);
+    });
+    it('reads zeros in the category columns as a one-figure month (how October looks)', () => {
+        expect(parseTarget({ month: '2026-10', target: 8000000, regularTarget: 0, otherTarget: 0, newTarget: 0 })).toEqual({ value: 8000000, kinds: null });
+        expect(parseTarget({ month: '2026-12', target: 0, regularTarget: 0 })).toBeNull();
+    });
+    it('counts New towards the month once New has its own target', () => {
+        const p = targetProgress(nov, t);
+        expect(p.achieved).toBe(3743343 + 679725 + 885175);
+        expect(percentText(p.share)).toBe('53.1%');
+        expect(countedLabel(p)).toBe('Regular + Other + New');
+    });
+    it('measures each column against its own target, with its orders target', () => {
+        const shares = kindShares(nov, t);
+        expect(percentText(shares[REGULAR].share)).toBe('68.1%');
+        expect(shares[REGULAR]).toMatchObject({ own: true, counted: true, orders: 407 });
+        expect(percentText(shares[OTHER].share)).toBe('47.5%');
+        expect(percentText(shares[NEW].share)).toBe('28.8%');
+        expect(shares[NEW].orders).toBeNull();
+    });
+    it('gives no share to a column with no target of its own', () => {
+        const shares = kindShares(nov, parseTarget({ ...novRow, otherTarget: null }));
+        expect(shares[OTHER]).toBeNull();
+        expect(shares[REGULAR].own).toBe(true);
+    });
+    it('totals a range month by month, each counting the way its own target does', () => {
+        const months = buildOrderMix([
+            row('2026-10', 1, 'Adoni', 1, 'REGULAR', 456, 6382690),
+            row('2026-10', 1, 'Adoni', 0, 'REGULAR', 50, 400000),
+            row('2026-11', 1, 'Adoni', 1, 'REGULAR', 230, 3743343),
+            row('2026-11', 1, 'Adoni', 0, 'REGULAR', 70, 885175)
+        ]).months;
+        const targets = targetMap([{ month: '2026-10', target: 8000000 }, novRow]);
+        const p = rangeProgress(months, { from: '2026-10', to: '2026-11' }, targets);
+        // October without its New ₹4L, November with its New.
+        expect(p.achieved).toBe(6382690 + 3743343 + 885175);
+        expect(p.target).toBe(18000000);
+        expect(p.targets.mixed).toBe(true);
+        expect(p.targets.kinds).toBeNull();
+        expect(countedLabel(p)).toBe('Counted orders');
+    });
+    it('adds up category targets over a range set by category throughout', () => {
+        const targets = targetMap([novRow, { ...novRow, month: '2026-12' }]);
+        const r = rangeTarget({ from: '2026-11', to: '2026-12' }, targets);
+        expect(r.kinds[REGULAR]).toEqual({ value: 11000000, orders: 814 });
+        expect(r.kinds[NEW]).toEqual({ value: 6140000, orders: null });
+        expect(r.mixed).toBe(false);
     });
 });

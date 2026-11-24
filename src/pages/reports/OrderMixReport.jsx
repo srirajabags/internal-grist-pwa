@@ -5,7 +5,7 @@ import Card from '../../components/Card';
 import {
     ORDER_MIX_SQL, buildOrderMix, monthRange, monthBounds, monthLabel, istMonth, KINDS, KIND_LABEL,
     parseAreas, areasParam, areasLabel,
-    TARGETS_SQL, targetMap, targetProgress, kindShares, rangeTarget, percentText, NEW
+    TARGETS_SQL, targetMap, targetProgress, kindShares, rangeProgress, countedLabel, percentText
 } from '../../domain/orders/orderMix';
 import { rupees, compactRupees } from '../../utils/money';
 import { shareElementImage, copyElementImage } from '../../services/shareImage';
@@ -37,27 +37,38 @@ const Money = ({ value }) => (
     </>
 );
 
-// Under a figure: its share of the month's target. New is grey and marked, as
-// the target leaves new customers out and it does not count towards it.
-const Share = ({ share, kind }) => (kind === NEW ? (
-    <div className="text-[10px] text-slate-400" title="Not counted towards the target">
-        {percentText(share)}<span className="hidden sm:inline"> · not in target</span>
-    </div>
-) : (
-    <div className="text-[10px] font-semibold text-amber-700" title="Share of the month's target">{percentText(share)}</div>
-));
+// Under a figure: its share of its target. With targets by category that is
+// the column's own target (green once met); with one figure for the month it
+// is that figure, and New is grey and marked, as it does not count towards it.
+const Share = ({ s }) => {
+    if (!s.counted) {
+        return (
+            <div className="text-[10px] text-slate-400" title="Not counted towards the target">
+                {percentText(s.share)}<span className="hidden sm:inline"> · not in target</span>
+            </div>
+        );
+    }
+    const met = s.own && s.share >= 1;
+    return (
+        <div className={`text-[10px] font-semibold ${met ? 'text-emerald-700' : 'text-amber-700'}`}
+            title={s.own ? 'Share of this column\u2019s own target' : 'Share of the month\u2019s target'}>
+            {percentText(s.share)}
+        </div>
+    );
+};
 
 // One figure: the value, with the order count under it. Blank when nothing.
 // A rule on its left keeps the columns apart.
-const Cell = ({ figure, strong, share, kind }) => (
+const Cell = ({ figure, strong, share }) => (
     <td className={`pl-1 sm:pl-2 ${strong ? 'pr-3 sm:pr-3' : 'pr-1 sm:pr-2'} py-2 text-right tabular-nums align-top whitespace-nowrap border-l border-emerald-300`}>
         {figure.orders ? (
             <>
                 <div className={strong ? 'font-bold text-slate-900' : 'text-slate-800'}><Money value={figure.value} /></div>
-                <div className="text-[10px] text-slate-500">
-                    {figure.orders}<span className="hidden sm:inline"> order{figure.orders === 1 ? '' : 's'}</span>
+                <div className="text-[10px] text-slate-500" title={share?.orders ? `${figure.orders} of ${share.orders} orders target` : undefined}>
+                    {figure.orders}{share?.orders ? <span> / {share.orders}</span> : null}
+                    <span className="hidden sm:inline"> order{figure.orders === 1 && !share?.orders ? '' : 's'}</span>
                 </div>
-                {share != null && <Share share={share} kind={kind} />}
+                {share && <Share s={share} />}
             </>
         ) : <span className="text-slate-300">–</span>}
     </td>
@@ -90,17 +101,18 @@ const rowBg = ({ foot, active, striped }) => {
     return striped ? 'bg-emerald-100/70' : 'bg-white';
 };
 
-// Under a month's name: Regular + Other value as a share of the month's target,
-// with a bar (full at 100%).
+// Under a month's name: what counts (Regular + Other, or all three when the
+// month has targets by category) as a share of the month's figure, with a bar
+// (full at 100%).
 const Progress = ({ progress }) => {
     const pct = Math.max(0, Math.min(100, progress.share * 100));
     const met = progress.share >= 1;
     return (
-        <div className="mt-0.5 font-normal" title={`Regular + Other ${rupees(progress.achieved)} of ${rupees(progress.target)} target`}>
+        <div className="mt-0.5 font-normal" title={`${countedLabel(progress)} ${rupees(progress.achieved)} of ${rupees(progress.target)} target`}>
             <div className="text-[10px] leading-tight">
                 <span className={`font-bold ${met ? 'text-emerald-700' : 'text-amber-700'}`}>{percentText(progress.share)}</span>
                 <span className="text-slate-500"> of {compactRupees(progress.target)}</span>
-                <span className="hidden sm:inline text-slate-500"> · Regular + Other</span>
+                <span className="hidden sm:inline text-slate-500"> · {countedLabel(progress)}</span>
             </div>
             <div className="mt-1 h-1 w-full max-w-[7rem] rounded-full bg-slate-200 overflow-hidden">
                 <div className={`h-full rounded-full ${met ? 'bg-emerald-600' : 'bg-amber-500'}`} style={{ width: `${pct}%` }} />
@@ -109,9 +121,7 @@ const Progress = ({ progress }) => {
     );
 };
 
-const Line = ({ label, line, onClick, active, foot, striped, progress }) => {
-    const shares = progress ? kindShares(line, progress.target) : null;
-    return (
+const Line = ({ label, line, onClick, active, foot, striped, progress, shares }) => (
     <tr
         onClick={onClick}
         className={`${foot ? 'border-t-2 border-emerald-400' : 'border-t border-emerald-100'} ${rowBg({ foot, active, striped })} ${onClick ? 'cursor-pointer hover:bg-amber-50' : ''}`}
@@ -120,16 +130,17 @@ const Line = ({ label, line, onClick, active, foot, striped, progress }) => {
             {label}
             {progress && <Progress progress={progress} />}
         </td>
-        {KINDS.map((k) => <Cell key={k} figure={line[k]} kind={k} share={shares?.[k]} />)}
+        {KINDS.map((k) => <Cell key={k} figure={line[k]} share={shares?.[k]} />)}
         <Cell figure={line.total} strong />
     </tr>
-    );
-};
+);
 
 // Under the card title on a phone: how to read a cell.
 const PhoneKey = ({ targets }) => (
     <p className="sm:hidden text-[10px] text-slate-500">
-        Each cell: value (L = lakh, Cr = crore), order count below{targets ? ', then % of the month\u2019s target (New in grey: not counted)' : ''}.
+        Each cell: value (L = lakh, Cr = crore), order count below{targets === 'split'
+            ? ' (/ orders target), then % of that column\u2019s own target'
+            : targets ? ', then % of the month\u2019s target (New in grey: not counted)' : ''}.
     </p>
 );
 
@@ -219,8 +230,10 @@ const OrderMixReport = ({ getHeaders, getUrl }) => {
     // group in; against a few area groups the share would mean nothing.
     const targets = useMemo(() => targetMap(targetRows), [targetRows]);
     const showTargets = !areas.length && targets.size > 0;
-    const totalTarget = showTargets ? rangeTarget(range, targets) : null;
-    const totalProgress = mix && totalTarget ? targetProgress(mix.total, totalTarget) : null;
+    const totalProgress = mix && showTargets ? rangeProgress(mix.months, range, targets) : null;
+    const totalShares = totalProgress && !totalProgress.targets.mixed ? kindShares(mix.total, totalProgress.targets) : null;
+    // How the phone key explains a cell: by category if any month shown is.
+    const targetMode = showTargets ? ([...targets.values()].some((t) => t.kinds) ? 'split' : 'one') : null;
 
     const setParam = (changes) => {
         const next = new URLSearchParams(params);
@@ -374,7 +387,7 @@ const OrderMixReport = ({ getHeaders, getUrl }) => {
                         </p>
                         {totalProgress && (
                             <p className="text-xs text-slate-700">
-                                Target {rupees(totalProgress.target)} · Regular + Other {rupees(totalProgress.achieved)} ·{' '}
+                                Target {rupees(totalProgress.target)} · {countedLabel(totalProgress)} {rupees(totalProgress.achieved)} ·{' '}
                                 <span className={`font-bold ${totalProgress.share >= 1 ? 'text-emerald-700' : 'text-amber-700'}`}>{percentText(totalProgress.share)} reached</span>
                             </p>
                         )}
@@ -382,7 +395,7 @@ const OrderMixReport = ({ getHeaders, getUrl }) => {
                         {areas.length > 0 && targets.size > 0 && sharing !== 'month' && (
                             <p className="text-[11px] text-slate-500">Targets are for the whole business; clear Area groups to see them.</p>
                         )}
-                        <PhoneKey targets={showTargets} />
+                        <PhoneKey targets={targetMode} />
                     </div>
                     {mix.months.length === 0 ? (
                         <p className="px-4 py-6 text-center text-sm text-slate-500">
@@ -396,11 +409,12 @@ const OrderMixReport = ({ getHeaders, getUrl }) => {
                                 {mix.months.map((m, i) => (
                                     <Line key={m.month} striped={i % 2 === 1} label={monthLabel(m.month)} line={m} active={month?.month === m.month}
                                         progress={showTargets ? targetProgress(m, targets.get(m.month)) : null}
+                                        shares={showTargets ? kindShares(m, targets.get(m.month)) : null}
                                         onClick={() => pick(month?.month === m.month ? ALL : m.month)} />
                                 ))}
                             </tbody>
                             {mix.months.length > 1 && (
-                                <tfoot><Line label="Total" line={mix.total} foot progress={totalProgress} /></tfoot>
+                                <tfoot><Line label="Total" line={mix.total} foot progress={totalProgress} shares={totalShares} /></tfoot>
                             )}
                         </table>
                     )}
@@ -452,10 +466,13 @@ const OrderMixReport = ({ getHeaders, getUrl }) => {
                     New is an order with Is Repeat Order unticked: the customer&rsquo;s first order. Every other order is Regular when the customer&rsquo;s
                     Temp Fallback Sales Category is REGULAR, and Other when it is anything else or blank. A first order counts as New even if that customer is
                     Regular now. The category is read as it stands today, so a customer tagged Regular this week shows as Regular in earlier months too.
-                    Orders are dated by Order Form Date and placed by the order&rsquo;s Area Group. The percentage under a month is Regular + Other value
-                    (every order except new customers&rsquo; first orders, salesmen&rsquo;s included) against that month&rsquo;s value target in Grist&rsquo;s
-                    Sales Targets table. Under each figure is that column&rsquo;s own share of the same target: Regular and Other add up to the month&rsquo;s
-                    figure, and New is shown in grey for reference only, as the target leaves new customers out; a month with no target there shows none, and the Total shows one only when every month in the range has a target. Tap a month to see its area groups; Area groups narrows both
+                    Orders are dated by Order Form Date and placed by the order&rsquo;s Area Group. Targets come from Grist&rsquo;s Sales Targets table, set one of two ways.
+                    By category (from Nov 2026): Regular, Other and New each have their own target, kept separate. Under each figure is its share of
+                    that column&rsquo;s own target, with its orders target after the order count; the percentage under the month is all three together
+                    (salesmen&rsquo;s orders included) against the month&rsquo;s overall target. One figure (Oct 2026): the percentage under the month is
+                    Regular + Other value against it; under each figure is that column&rsquo;s share of the same target, Regular and Other adding up to
+                    the month&rsquo;s figure, and New in grey for reference only. A month with no target shows none; the Total shows one only when every
+                    month in the range has a target, and column shares only when the months are all set the same way. Tap a month to see its area groups; Area groups narrows both
                     tables. Copy puts a table on the clipboard as one picture, to paste in WhatsApp; Share sends it through the phone&rsquo;s share sheet (on a computer
                     without one, the picture is saved instead).
                 </p>
