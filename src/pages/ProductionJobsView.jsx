@@ -379,10 +379,18 @@ const jobScopeCtes = (scope, page) => `
     -- walk to for it. Narrowed to the items actually in scope: aggregating the
     -- whole stock summary and then picking rows out of it costs more than the
     -- figures are worth.
+    --
+    -- Godowns only, never the printing area. Stock already carried to the floor
+    -- is not on the shelf to be fetched, and counting it lets the sheet ask for
+    -- more than the shelf holds: 2026-11-23 - ROLLS TO DCUT - 132 - 1196 asked
+    -- for 49.5 kg of D-cut 12x18 ivory against 13.96 kg in the bags godown,
+    -- because 610 kg of it sat in the printing area. Same filter as the planner
+    -- (batchPlanQueries).
     item_stock AS (
         SELECT Item_ID AS item_id, ROUND(SUM(Available_Weight_Kg_), 2) AS kg
         FROM ${SUMMARY_BY_ID_TABLE}
-        WHERE Incharge_Ack = 1 AND Item_ID IN (SELECT item_id FROM job_item)
+        WHERE Incharge_Ack = 1 AND Location IN ('ROLLS GODOWN', 'BAGS GODOWN')
+          AND Item_ID IN (SELECT item_id FROM job_item)
         GROUP BY Item_ID
     ),
     -- Where an item has stock in more than one godown, the heaviest holding is
@@ -390,7 +398,8 @@ const jobScopeCtes = (scope, page) => `
     item_loc AS (
         SELECT Item_ID AS item_id, Location AS loc, MAX(Available_Weight_Kg_) AS heaviest
         FROM ${SUMMARY_BY_ID_TABLE}
-        WHERE Incharge_Ack = 1 AND Item_ID IN (SELECT item_id FROM job_item)
+        WHERE Incharge_Ack = 1 AND Location IN ('ROLLS GODOWN', 'BAGS GODOWN')
+          AND Item_ID IN (SELECT item_id FROM job_item)
         GROUP BY Item_ID
     ),
     -- Sheets and patty in the bags godown are booked by COUNT and carry 0 kg, so
@@ -401,7 +410,7 @@ const jobScopeCtes = (scope, page) => `
     code_count AS (
         SELECT Item_Code AS code_id, Available_Count_Bundles_ AS cnt, MIN(id) AS first_row
         FROM ${SUMMARY_BY_CODE_TABLE}
-        WHERE Incharge_Ack = 1
+        WHERE Incharge_Ack = 1 AND Location IN ('ROLLS GODOWN', 'BAGS GODOWN')
           AND Item_Code IN (SELECT it.Item_Code FROM job_item ji
                             JOIN ${ITEMS_TABLE} it ON it.id = ji.item_id)
         GROUP BY Item_Code
